@@ -1,0 +1,299 @@
+{
+  "" : {
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpal-primary.dia",
+    "emit-module-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpal-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpal-primary-emit-module.dia",
+    "pch" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpal-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpal-primary.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GeneratedAssetSymbols~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/CalibrationView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/CalibrationView~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/ContentView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ContentView~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/ConversationStore.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ConversationStore~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/DebouncedSaver.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/DebouncedSaver~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/FoldersSidebarView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/GlyphAlign.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/GlyphPDM.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/HandwritingRenderer.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/HandwritingSettings.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/InkAnalyzer.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/InkHand.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/InkRecognizer.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/LigatureEngine.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/MagicPaperView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/NotesListView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/NotesStore.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/OpticalKern.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/PenpalAPI.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/PenpalSettingsView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/PersonalFont.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PersonalFont~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/ReplyEngine.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ReplyEngine~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/ScaleConsensus.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ScaleConsensus~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/SigmaLognormal.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/SigmaLognormal~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/StrokeFont.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeFont~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/StrokeVAE.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StrokeVAE~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/StyleRL.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/StyleRL~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/ZoneFit.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/ZoneFit~partial.swiftmodule"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/penpalApp.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.dia",
+    "index-unit-output-path" : "/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.o",
+    "llvm-bc" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.bc",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.swiftdeps",
+    "swiftmodule" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp~partial.swiftmodule"
+  }
+}

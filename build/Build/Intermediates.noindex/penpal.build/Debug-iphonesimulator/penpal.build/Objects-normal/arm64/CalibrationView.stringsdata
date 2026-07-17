@@ -1,0 +1,160 @@
+{
+  "source": "/Users/anuragsingh/Documents/GitHub/penpal/penpal/CalibrationView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Teach it your hand",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 270
+        }
+      },
+      {
+        "comment": "",
+        "key": "Auto-next",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 276
+        }
+      },
+      {
+        "comment": "",
+        "key": "Done",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 289
+        }
+      },
+      {
+        "comment": "",
+        "key": "For the best echo of your hand",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 301
+        }
+      },
+      {
+        "comment": "",
+        "key": "• Sit letters on the solid blue line",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 304
+        }
+      },
+      {
+        "comment": "",
+        "key": "• Letter bodies reach the dashed teal line",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 305
+        }
+      },
+      {
+        "comment": "",
+        "key": "• Keep the same size across all samples",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 306
+        }
+      },
+      {
+        "comment": "",
+        "key": "• Write at your natural speed — timing is captured too",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 307
+        }
+      },
+      {
+        "comment": "",
+        "key": "• Use your real spacing between letters in words",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 308
+        }
+      },
+      {
+        "comment": "",
+        "key": "The bright lines are the ones this letter should touch — write naturally between them.",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 348
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld of %lld · %lld trained",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 335
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld/%lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 394
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clear",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 374
+        }
+      },
+      {
+        "comment": "",
+        "key": "Save",
+        "location": {
+          "startingColumn": 41,
+          "startingLine": 379
+        }
+      },
+      {
+        "comment": "",
+        "key": "Save sample",
+        "location": {
+          "startingColumn": 50,
+          "startingLine": 379
+        }
+      },
+      {
+        "comment": "",
+        "key": "Next",
+        "location": {
+          "startingColumn": 31,
+          "startingLine": 386
+        }
+      },
+      {
+        "comment": "",
+        "key": "Add letters…",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 400
+        }
+      },
+      {
+        "comment": "",
+        "key": "Add",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 403
+        }
+      },
+      {
+        "comment": "",
+        "key": "Saved samples appear here after you save — so you can check they look right.",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 428
+        }
+      }
+    ]
+  },
+  "version": 1
+}

@@ -1,0 +1,30 @@
+{
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/FoldersSidebarView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/FoldersSidebarView.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/GlyphAlign.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphAlign.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/GlyphPDM.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/GlyphPDM.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/HandwritingRenderer.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingRenderer.swiftdeps"
+  }
+}

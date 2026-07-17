@@ -1,0 +1,456 @@
+{
+  "source": "/Users/anuragsingh/Documents/GitHub/penpal/penpal/ContentView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Penpal",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 146
+        }
+      },
+      {
+        "comment": "",
+        "key": "Find in Note",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 151
+        }
+      },
+      {
+        "comment": "",
+        "key": "OK",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 147
+        }
+      },
+      {
+        "comment": "",
+        "key": "Search",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 152
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 153
+        }
+      },
+      {
+        "comment": "",
+        "key": "Find",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 154
+        }
+      },
+      {
+        "comment": "",
+        "key": "Choose a note or create one.",
+        "location": {
+          "startingColumn": 58,
+          "startingLine": 166
+        }
+      },
+      {
+        "comment": "",
+        "key": "No Note Selected",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 165
+        }
+      },
+      {
+        "comment": "",
+        "key": "Toggle sidebar",
+        "location": {
+          "startingColumn": 33,
+          "startingLine": 211
+        }
+      },
+      {
+        "comment": "",
+        "key": "Show note title",
+        "location": {
+          "startingColumn": 48,
+          "startingLine": 223
+        }
+      },
+      {
+        "comment": "",
+        "key": "Hide note title",
+        "location": {
+          "startingColumn": 68,
+          "startingLine": 223
+        }
+      },
+      {
+        "comment": "",
+        "key": "Undo",
+        "location": {
+          "startingColumn": 33,
+          "startingLine": 233
+        }
+      },
+      {
+        "comment": "",
+        "key": "Redo",
+        "location": {
+          "startingColumn": 33,
+          "startingLine": 242
+        }
+      },
+      {
+        "comment": "",
+        "key": "Format",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 302
+        }
+      },
+      {
+        "comment": "",
+        "key": "Checklist",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 304
+        }
+      },
+      {
+        "comment": "",
+        "key": "Attach Photo",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 306
+        }
+      },
+      {
+        "comment": "",
+        "key": "Share",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 308
+        }
+      },
+      {
+        "comment": "",
+        "key": "Hide Drawing Tools",
+        "location": {
+          "startingColumn": 46,
+          "startingLine": 282
+        }
+      },
+      {
+        "comment": "",
+        "key": "Show Drawing Tools",
+        "location": {
+          "startingColumn": 69,
+          "startingLine": 282
+        }
+      },
+      {
+        "comment": "",
+        "key": "Turn Penpal Off",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 295
+        }
+      },
+      {
+        "comment": "",
+        "key": "Turn Penpal On",
+        "location": {
+          "startingColumn": 62,
+          "startingLine": 295
+        }
+      },
+      {
+        "comment": "",
+        "key": "Find in Note",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 641
+        }
+      },
+      {
+        "comment": "",
+        "key": "Move Note",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 642
+        }
+      },
+      {
+        "comment": "",
+        "key": "Add Page",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 643
+        }
+      },
+      {
+        "comment": "",
+        "key": "Train Handwriting",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 645
+        }
+      },
+      {
+        "comment": "",
+        "key": "Penpal Settings",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 646
+        }
+      },
+      {
+        "comment": "",
+        "key": "Recover Note",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 650
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete Immediately",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 651
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete Note",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 655
+        }
+      },
+      {
+        "comment": "",
+        "key": "Thinking…",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 349
+        }
+      },
+      {
+        "comment": "",
+        "key": "Writing…",
+        "location": {
+          "startingColumn": 63,
+          "startingLine": 349
+        }
+      },
+      {
+        "comment": "",
+        "key": "Penpal on",
+        "location": {
+          "startingColumn": 78,
+          "startingLine": 349
+        }
+      },
+      {
+        "comment": "",
+        "key": "Penpal is thinking…",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 350
+        }
+      },
+      {
+        "comment": "",
+        "key": "Penpal is writing…",
+        "location": {
+          "startingColumn": 36,
+          "startingLine": 351
+        }
+      },
+      {
+        "comment": "",
+        "key": "Penpal is on — write and it replies",
+        "location": {
+          "startingColumn": 61,
+          "startingLine": 351
+        }
+      },
+      {
+        "comment": "",
+        "key": "Turn Penpal off",
+        "location": {
+          "startingColumn": 33,
+          "startingLine": 364
+        }
+      },
+      {
+        "comment": "",
+        "key": "Title",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 432
+        }
+      },
+      {
+        "comment": "",
+        "key": "Take a note…",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 444
+        }
+      },
+      {
+        "comment": "",
+        "key": "Format",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 692
+        }
+      },
+      {
+        "comment": "",
+        "key": "Insert",
+        "location": {
+          "startingColumn": 25,
+          "startingLine": 665
+        }
+      },
+      {
+        "comment": "",
+        "key": "Lists",
+        "location": {
+          "startingColumn": 25,
+          "startingLine": 671
+        }
+      },
+      {
+        "comment": "",
+        "key": "Heading",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 666
+        }
+      },
+      {
+        "comment": "",
+        "key": "Bold",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 667
+        }
+      },
+      {
+        "comment": "",
+        "key": "Italic",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 668
+        }
+      },
+      {
+        "comment": "",
+        "key": "Monospaced",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 669
+        }
+      },
+      {
+        "comment": "",
+        "key": "Bulleted list",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 672
+        }
+      },
+      {
+        "comment": "",
+        "key": "Numbered list",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 676
+        }
+      },
+      {
+        "comment": "",
+        "key": "Checklist",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 680
+        }
+      },
+      {
+        "comment": "",
+        "key": "Show drawing tools",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 683
+        }
+      },
+      {
+        "comment": "",
+        "key": "Penpal mode",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 687
+        }
+      },
+      {
+        "comment": "",
+        "key": "Drawing tools are the system pen tray. Penpal mode reads your writing and replies.",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 689
+        }
+      },
+      {
+        "comment": "",
+        "key": "Done",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 696
+        }
+      },
+      {
+        "comment": "",
+        "key": "Move Note",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 728
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 732
+        }
+      },
+      {
+        "comment": "",
+        "key": "Looks like you?",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 753
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld%%",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 758
+        }
+      }
+    ]
+  },
+  "version": 1
+}

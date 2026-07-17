@@ -1,0 +1,30 @@
+{
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/HandwritingSettings.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/HandwritingSettings.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/InkAnalyzer.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkAnalyzer.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/InkHand.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkHand.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/InkRecognizer.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/InkRecognizer.swiftdeps"
+  }
+}

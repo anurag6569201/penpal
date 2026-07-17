@@ -1,0 +1,30 @@
+{
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/OpticalKern.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/OpticalKern.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/PenpalAPI.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalAPI.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/PenpalSettingsView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/PenpalSettingsView.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/penpalApp.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/penpalApp.swiftdeps"
+  }
+}

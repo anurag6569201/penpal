@@ -1,0 +1,240 @@
+{
+  "source": "/Users/anuragsingh/Documents/GitHub/penpal/penpal/PenpalSettingsView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Penpal Settings",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 66
+        }
+      },
+      {
+        "comment": "",
+        "key": "",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 49
+        }
+      },
+      {
+        "comment": "",
+        "key": "Done",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 70
+        }
+      },
+      {
+        "comment": "",
+        "key": "Reply font",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 84
+        }
+      },
+      {
+        "comment": "",
+        "key": "Only applies when the Penpal pen is selected and it writes a reply.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 86
+        }
+      },
+      {
+        "comment": "",
+        "key": "Pen width",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 119
+        }
+      },
+      {
+        "comment": "",
+        "key": "Smoothness",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 122
+        }
+      },
+      {
+        "comment": "",
+        "key": "Speed",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 126
+        }
+      },
+      {
+        "comment": "",
+        "key": "Variation",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 128
+        }
+      },
+      {
+        "comment": "",
+        "key": "Apple Pencil only",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 130
+        }
+      },
+      {
+        "comment": "",
+        "key": "Pen & ink",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 132
+        }
+      },
+      {
+        "comment": "",
+        "key": "Paper",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 191
+        }
+      },
+      {
+        "comment": "",
+        "key": "Size",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 195
+        }
+      },
+      {
+        "comment": "",
+        "key": "Size",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 202
+        }
+      },
+      {
+        "comment": "",
+        "key": "Writing size",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 206
+        }
+      },
+      {
+        "comment": "",
+        "key": "Letters",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 210
+        }
+      },
+      {
+        "comment": "",
+        "key": "Words",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 213
+        }
+      },
+      {
+        "comment": "",
+        "key": "Lines",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 216
+        }
+      },
+      {
+        "comment": "",
+        "key": "Spacing",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 220
+        }
+      },
+      {
+        "comment": "",
+        "key": "Gemini brain",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 273
+        }
+      },
+      {
+        "comment": "",
+        "key": "API base URL",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 274
+        }
+      },
+      {
+        "comment": "",
+        "key": "Reset conversation",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 278
+        }
+      },
+      {
+        "comment": "",
+        "key": "Brain",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 283
+        }
+      },
+      {
+        "comment": "",
+        "key": "Penpal pen reads handwriting on-device, then sends text to Django → Gemini.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 285
+        }
+      },
+      {
+        "comment": "",
+        "key": "Auto reply (Penpal pen)",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 289
+        }
+      },
+      {
+        "comment": "",
+        "key": "Replies",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 291
+        }
+      },
+      {
+        "comment": "",
+        "key": "Only runs when the Penpal pen is selected in the markup tray. Normal pens never trigger a reply.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 293
+        }
+      },
+      {
+        "comment": "",
+        "key": "Diagnostics",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 297
+        }
+      },
+      {
+        "comment": "",
+        "key": "Debug",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 299
+        }
+      }
+    ]
+  },
+  "version": 1
+}

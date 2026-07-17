@@ -1,0 +1,30 @@
+{
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/LigatureEngine.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/LigatureEngine.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/MagicPaperView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/MagicPaperView.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/NotesListView.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesListView.swiftdeps"
+  },
+  "/Users/anuragsingh/Documents/GitHub/penpal/penpal/NotesStore.swift" : {
+    "const-values" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.swiftconstvalues",
+    "dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.d",
+    "diagnostics" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.dia",
+    "object" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.o",
+    "swift-dependencies" : "/Users/anuragsingh/Documents/GitHub/penpal/build/Build/Intermediates.noindex/penpal.build/Debug-iphonesimulator/penpal.build/Objects-normal/arm64/NotesStore.swiftdeps"
+  }
+}

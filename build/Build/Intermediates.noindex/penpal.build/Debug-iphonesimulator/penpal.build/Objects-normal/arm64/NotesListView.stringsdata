@@ -1,0 +1,328 @@
+{
+  "source": "/Users/anuragsingh/Documents/GitHub/penpal/penpal/NotesListView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Search",
+        "location": {
+          "startingColumn": 29,
+          "startingLine": 47
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename Note",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 59
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete all notes in Recently Deleted? This can't be undone.",
+        "location": {
+          "startingColumn": 29,
+          "startingLine": 75
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete %lld note%@?",
+        "location": {
+          "startingColumn": 29,
+          "startingLine": 80
+        }
+      },
+      {
+        "comment": "",
+        "key": "Title",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 63
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 64
+        }
+      },
+      {
+        "comment": "",
+        "key": "Save",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 65
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete All",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 77
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 78
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 82
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 86
+        }
+      },
+      {
+        "comment": "",
+        "key": "Deselect All",
+        "location": {
+          "startingColumn": 38,
+          "startingLine": 96
+        }
+      },
+      {
+        "comment": "",
+        "key": "Select All",
+        "location": {
+          "startingColumn": 55,
+          "startingLine": 96
+        }
+      },
+      {
+        "comment": "",
+        "key": "Done",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 102
+        }
+      },
+      {
+        "comment": "",
+        "key": "Select Notes",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 107
+        }
+      },
+      {
+        "comment": "",
+        "key": "View as Gallery",
+        "location": {
+          "startingColumn": 48,
+          "startingLine": 112
+        }
+      },
+      {
+        "comment": "",
+        "key": "View as List",
+        "location": {
+          "startingColumn": 68,
+          "startingLine": 112
+        }
+      },
+      {
+        "comment": "",
+        "key": "Recover All",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 119
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete All",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 123
+        }
+      },
+      {
+        "comment": "",
+        "key": "Recover",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 289
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete Immediately",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 290
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 294
+        }
+      },
+      {
+        "comment": "",
+        "key": "Move To…",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 298
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 302
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 313
+        }
+      },
+      {
+        "comment": "",
+        "key": "Recover",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 316
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 321
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 325
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld Notes",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 335
+        }
+      },
+      {
+        "comment": "",
+        "key": "New Note",
+        "location": {
+          "startingColumn": 37,
+          "startingLine": 348
+        }
+      },
+      {
+        "comment": "",
+        "key": "Select Notes",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 393
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld Selected",
+        "location": {
+          "startingColumn": 57,
+          "startingLine": 393
+        }
+      },
+      {
+        "comment": "",
+        "key": "Recover",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 376
+        }
+      },
+      {
+        "comment": "",
+        "key": "Move",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 387
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 404
+        }
+      },
+      {
+        "comment": "",
+        "key": "Move %lld Note%@",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 426
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 430
+        }
+      },
+      {
+        "comment": "",
+        "key": "No Deleted Notes",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 443
+        }
+      },
+      {
+        "comment": "",
+        "key": "No Notes",
+        "location": {
+          "startingColumn": 49,
+          "startingLine": 443
+        }
+      },
+      {
+        "comment": "",
+        "key": "Create Note",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 447
+        }
+      }
+    ]
+  },
+  "version": 1
+}

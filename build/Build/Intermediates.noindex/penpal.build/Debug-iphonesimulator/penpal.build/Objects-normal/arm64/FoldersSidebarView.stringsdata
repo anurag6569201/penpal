@@ -1,0 +1,128 @@
+{
+  "source": "/Users/anuragsingh/Documents/GitHub/penpal/penpal/FoldersSidebarView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Folders",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 46
+        }
+      },
+      {
+        "comment": "",
+        "key": "New Folder",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 61
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename Folder",
+        "location": {
+          "startingColumn": 16,
+          "startingLine": 75
+        }
+      },
+      {
+        "comment": "",
+        "key": "On My iPad",
+        "location": {
+          "startingColumn": 21,
+          "startingLine": 31
+        }
+      },
+      {
+        "comment": "",
+        "key": "Name",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 62
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 63
+        }
+      },
+      {
+        "comment": "",
+        "key": "Save",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 64
+        }
+      },
+      {
+        "comment": "",
+        "key": "Folders stay on this device.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 73
+        }
+      },
+      {
+        "comment": "",
+        "key": "Name",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 79
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 80
+        }
+      },
+      {
+        "comment": "",
+        "key": "Save",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 81
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 138
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 143
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 150
+        }
+      },
+      {
+        "comment": "",
+        "key": "Rename",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 156
+        }
+      }
+    ]
+  },
+  "version": 1
+}
