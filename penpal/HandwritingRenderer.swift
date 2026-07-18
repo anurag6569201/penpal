@@ -9,6 +9,7 @@
 //
 
 import UIKit
+import PencilKit
 
 final class HandwritingRenderer: UIView {
 
@@ -32,7 +33,7 @@ final class HandwritingRenderer: UIView {
     /// owner is expected to have committed the stroke somewhere permanent
     /// (e.g. into the PKCanvas drawing), making the handoff seamless.
     private var strokeFinishedHandler: ((Int) -> Void)?
-    private let penDot = CAShapeLayer()
+    let penDot = CAShapeLayer()
     private let penNib = CAShapeLayer()
     private var generation = 0
     private var generationActive = false
@@ -96,6 +97,8 @@ final class HandwritingRenderer: UIView {
         generationActive = false
         penDot.isHidden = true
         penNib.isHidden = true
+        cancelPondering()
+        cancelCelebrate()
     }
 
     func clearInk() {
@@ -103,6 +106,240 @@ final class HandwritingRenderer: UIView {
         inkLayers.forEach { $0.removeFromSuperlayer() }
         inkLayers.removeAll()
         currentWriteLayers.removeAll()
+    }
+
+    // MARK: - Pondering (thinking beat before an instant answer)
+
+    var ponderLayers: [CALayer] = []
+    var ponderGeneration = 0
+    var celebrateLayers: [CALayer] = []
+    var celebrateGeneration = 0
+
+    /// Soft "reading this" cue: a faint wash under the ink + a breathing
+    /// underline — never a double-drawn stroke overlay on top of PencilKit.
+    /// Only for math reads (`=` / boxed ink), never for companion pauses.
+    func beginAnalyzing(strokes: [PKStroke]) {
+        cancelPondering()
+        guard !strokes.isEmpty else { return }
+        ponderGeneration += 1
+        let start = CACurrentMediaTime() + 0.02
+
+        let bounds = strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+        guard !bounds.isNull, bounds.width > 2, bounds.height > 2 else { return }
+        let padX = max(8, bounds.height * 0.22)
+        let padY = max(4, bounds.height * 0.18)
+        let washRect = bounds.insetBy(dx: -padX, dy: -padY)
+
+        let wash = CAShapeLayer()
+        wash.name = "analyzeWash"
+        wash.path = UIBezierPath(roundedRect: washRect,
+                                 cornerRadius: min(14, washRect.height * 0.4)).cgPath
+        wash.fillColor = inkColor.withAlphaComponent(0.11).cgColor
+        wash.opacity = 0.55
+        layer.insertSublayer(wash, below: penDot)
+        ponderLayers.append(wash)
+
+        let washPulse = CABasicAnimation(keyPath: "opacity")
+        washPulse.fromValue = 0.35
+        washPulse.toValue = 0.9
+        washPulse.duration = 0.85
+        washPulse.autoreverses = true
+        washPulse.repeatCount = .infinity
+        washPulse.beginTime = start
+        washPulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        wash.add(washPulse, forKey: "pulse")
+
+        let y = bounds.maxY + max(3, bounds.height * 0.1)
+        let underline = CAShapeLayer()
+        let line = UIBezierPath()
+        line.move(to: CGPoint(x: bounds.minX, y: y))
+        line.addLine(to: CGPoint(x: bounds.maxX, y: y))
+        underline.path = line.cgPath
+        underline.fillColor = nil
+        underline.strokeColor = inkColor.withAlphaComponent(0.5).cgColor
+        underline.lineWidth = max(1.5, bounds.height * 0.06)
+        underline.lineCap = .round
+        underline.opacity = 0.7
+        layer.insertSublayer(underline, below: penDot)
+        ponderLayers.append(underline)
+
+        let linePulse = CABasicAnimation(keyPath: "opacity")
+        linePulse.fromValue = 0.35
+        linePulse.toValue = 1.0
+        linePulse.duration = 0.7
+        linePulse.autoreverses = true
+        linePulse.repeatCount = .infinity
+        linePulse.beginTime = start + 0.08
+        linePulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        underline.add(linePulse, forKey: "pulse")
+
+        // Living equals + structure filaments (silent magic).
+        attachMathMagic(whileAnalyzing: strokes, at: start)
+    }
+
+    func endAnalyzing() {
+        cancelPondering()
+    }
+
+    /// Soft ink wash under a freshly written answer — bright for a beat, then
+    /// settles away so the result feels newly inked without a highlight box.
+    func celebrateAnswer(in rect: CGRect) {
+        guard !rect.isNull, rect.width > 2, rect.height > 2 else { return }
+        celebrateGeneration += 1
+        let gen = celebrateGeneration
+        celebrateLayers.forEach { $0.removeFromSuperlayer() }
+        celebrateLayers.removeAll()
+
+        let pad = max(4, rect.height * 0.2)
+        let wash = CAShapeLayer()
+        wash.path = UIBezierPath(roundedRect: rect.insetBy(dx: -pad, dy: -pad * 0.5),
+                                 cornerRadius: min(10, rect.height * 0.35)).cgPath
+        wash.fillColor = inkColor.withAlphaComponent(0.16).cgColor
+        wash.opacity = 0
+        layer.insertSublayer(wash, below: penDot)
+        celebrateLayers.append(wash)
+
+        let t0 = CACurrentMediaTime()
+        let fadeIn = CABasicAnimation(keyPath: "opacity")
+        fadeIn.fromValue = 0
+        fadeIn.toValue = 1
+        fadeIn.duration = 0.12
+        fadeIn.beginTime = t0
+        fadeIn.fillMode = .backwards
+
+        let fadeOut = CABasicAnimation(keyPath: "opacity")
+        fadeOut.fromValue = 1
+        fadeOut.toValue = 0
+        fadeOut.beginTime = t0 + 0.28
+        fadeOut.duration = 0.38
+        fadeOut.fillMode = .forwards
+        fadeOut.isRemovedOnCompletion = false
+
+        wash.add(fadeIn, forKey: "in")
+        wash.add(fadeOut, forKey: "out")
+        wash.opacity = 0
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            guard let self, self.celebrateGeneration == gen else { return }
+            wash.removeFromSuperlayer()
+            self.celebrateLayers.removeAll { $0 === wash }
+        }
+    }
+
+    /// Ink-native "working it out" beat: a soft underline draws under the
+    /// expression and three pen dots hop at the answer spot — no bounding
+    /// box. Then `completion` runs (write the answer).
+    func ponder(at point: CGPoint, xHeight: CGFloat, duration: TimeInterval,
+                highlighting: CGRect? = nil,
+                completion: @escaping () -> Void) {
+        cancelPondering()
+        ponderGeneration += 1
+        let gen = ponderGeneration
+        let radius = max(1.8, xHeight * 0.10)
+        let gap = radius * 3.6
+        let start = CACurrentMediaTime() + 0.04
+
+        if let rect = highlighting, !rect.isNull, rect.width > 4 {
+            // Growing underline under the ink — reads as "this is being
+            // solved" without a card/box around the writing.
+            let y = rect.maxY + max(3, xHeight * 0.12)
+            let underline = CAShapeLayer()
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: rect.minX, y: y))
+            path.addLine(to: CGPoint(x: rect.maxX, y: y))
+            underline.path = path.cgPath
+            underline.fillColor = nil
+            underline.strokeColor = inkColor.withAlphaComponent(0.55).cgColor
+            underline.lineWidth = max(1.6, xHeight * 0.07)
+            underline.lineCap = .round
+            underline.strokeEnd = 0
+            underline.opacity = 0
+            layer.insertSublayer(underline, below: penDot)
+            ponderLayers.append(underline)
+
+            let fadeIn = CABasicAnimation(keyPath: "opacity")
+            fadeIn.fromValue = 0
+            fadeIn.toValue = 1
+            fadeIn.duration = 0.18
+            fadeIn.beginTime = start
+            fadeIn.fillMode = .backwards
+            underline.opacity = 1
+
+            let draw = CABasicAnimation(keyPath: "strokeEnd")
+            draw.fromValue = 0
+            draw.toValue = 1
+            draw.duration = min(0.55, duration * 0.45)
+            draw.beginTime = start
+            draw.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            draw.fillMode = .forwards
+            draw.isRemovedOnCompletion = false
+            underline.strokeEnd = 1
+
+            let shimmer = CAKeyframeAnimation(keyPath: "opacity")
+            shimmer.values = [1, 0.45, 1, 0.55, 1]
+            shimmer.keyTimes = [0, 0.25, 0.5, 0.75, 1]
+            shimmer.duration = duration
+            shimmer.beginTime = start
+
+            let fadeOut = CABasicAnimation(keyPath: "opacity")
+            fadeOut.fromValue = 1
+            fadeOut.toValue = 0
+            fadeOut.beginTime = start + duration
+            fadeOut.duration = 0.28
+            fadeOut.fillMode = .forwards
+            fadeOut.isRemovedOnCompletion = false
+
+            underline.add(fadeIn, forKey: "fadeIn")
+            underline.add(draw, forKey: "draw")
+            underline.add(shimmer, forKey: "shimmer")
+            underline.add(fadeOut, forKey: "fadeOut")
+        }
+
+        for i in 0..<3 {
+            let dot = CAShapeLayer()
+            dot.path = UIBezierPath(ovalIn: CGRect(x: -radius, y: -radius,
+                                                   width: 2 * radius,
+                                                   height: 2 * radius)).cgPath
+            dot.fillColor = inkColor.withAlphaComponent(0.9).cgColor
+            dot.position = CGPoint(x: point.x + CGFloat(i) * gap, y: point.y)
+            dot.opacity = 0
+            layer.addSublayer(dot)
+            ponderLayers.append(dot)
+
+            let pulse = CAKeyframeAnimation(keyPath: "opacity")
+            pulse.values = [0, 1, 0.2, 1, 0.2, 1, 0]
+            pulse.keyTimes = [0, 0.12, 0.32, 0.5, 0.68, 0.85, 1]
+            pulse.duration = duration
+            pulse.beginTime = start + Double(i) * 0.12
+            pulse.fillMode = .backwards
+            dot.add(pulse, forKey: "ponder")
+
+            let hop = CAKeyframeAnimation(keyPath: "transform.translation.y")
+            hop.values = [0, -radius * 2.1, 0, -radius * 1.4, 0, -radius * 0.8, 0]
+            hop.keyTimes = [0, 0.18, 0.36, 0.54, 0.72, 0.88, 1]
+            hop.duration = duration
+            hop.beginTime = pulse.beginTime
+            hop.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            dot.add(hop, forKey: "hop")
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.35) { [weak self] in
+            guard let self, self.ponderGeneration == gen else { return }
+            self.cancelPondering()
+            completion()
+        }
+    }
+
+    func cancelPondering() {
+        ponderGeneration += 1
+        ponderLayers.forEach { $0.removeFromSuperlayer() }
+        ponderLayers.removeAll()
+    }
+
+    func cancelCelebrate() {
+        celebrateGeneration += 1
+        celebrateLayers.forEach { $0.removeFromSuperlayer() }
+        celebrateLayers.removeAll()
     }
 
     /// Draws strokes instantly — same layer construction as animated writing
@@ -136,7 +373,11 @@ final class HandwritingRenderer: UIView {
                 if let outline = Self.variableWidthOutline(points: stroke.points, widths: widths) {
                     let fill = CAShapeLayer()
                     fill.path = outline
-                    fill.fillColor = inkColor.withAlphaComponent(0.95).cgColor
+                    // Full opacity — partial alpha meant overlapping ink
+                    // (connectors, retraces, ligature joins) compounded into
+                    // visibly darker patches while single strokes stayed
+                    // lighter, making the tone look uneven letter to letter.
+                    fill.fillColor = inkColor.cgColor
                     fill.strokeColor = nil
                     layer.insertSublayer(fill, below: penDot)
                     inkLayers.append(fill)
@@ -145,7 +386,7 @@ final class HandwritingRenderer: UIView {
             }
             let shape = CAShapeLayer()
             shape.path = centerline.cgPath
-            shape.strokeColor = inkColor.withAlphaComponent(0.92).cgColor
+            shape.strokeColor = inkColor.cgColor
             shape.fillColor = nil
             shape.lineWidth = baseWidth
             shape.lineCap = .round
@@ -332,7 +573,7 @@ final class HandwritingRenderer: UIView {
             // that grows along the centerline.
             let fill = CAShapeLayer()
             fill.path = outline
-            fill.fillColor = inkColor.withAlphaComponent(0.95).cgColor
+            fill.fillColor = inkColor.cgColor
             fill.strokeColor = nil
 
             let mask = CAShapeLayer()
@@ -351,7 +592,7 @@ final class HandwritingRenderer: UIView {
         } else {
             let shape = CAShapeLayer()
             shape.path = centerline.cgPath
-            shape.strokeColor = inkColor.withAlphaComponent(0.92).cgColor
+            shape.strokeColor = inkColor.cgColor
             shape.fillColor = nil
             shape.lineWidth = baseWidth * CGFloat.random(in: 0.8...1.15)
             shape.lineCap = .round

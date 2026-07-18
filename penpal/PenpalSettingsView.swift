@@ -10,15 +10,32 @@ import SwiftUI
 struct PenpalSettingsView: View {
     @ObservedObject var settings: HandwritingSettings
     @Environment(\.dismiss) private var dismiss
-    @State private var tab: Tab = .style
+    @State private var tab: Tab = .capability
     var onStatus: (String) -> Void
 
     enum Tab: String, CaseIterable, Identifiable {
+        case capability = "Penpal"
         case style = "Style"
         case page = "Page"
         case behavior = "Behavior"
         var id: String { rawValue }
     }
+
+    /// (tag, title, icon, blurb) for the capability cards.
+    static let capabilities: [(tag: String, title: String, icon: String, blurb: String)] = [
+        ("companion", "Companion", "heart.text.square",
+         "A friend on the page. Talks with you in the mood you pick."),
+        ("mathematician", "Mathematician", "x.squareroot",
+         "Solves any math step by step — algebra, calculus, word problems and more."),
+    ]
+
+    static let moods: [(tag: String, title: String, icon: String)] = [
+        ("warm", "Warm friend", "cup.and.saucer"),
+        ("playful", "Playful", "party.popper"),
+        ("thoughtful", "Thoughtful", "moon.stars"),
+        ("coach", "Coach", "figure.run"),
+        ("custom", "Custom…", "wand.and.stars"),
+    ]
 
     static let replyFonts: [(name: String, display: String)] = [
         ("SnellRoundhand", "Snell Roundhand"),
@@ -55,6 +72,7 @@ struct PenpalSettingsView: View {
 
                 Form {
                     switch tab {
+                    case .capability: capabilitySettings
                     case .style: styleSettings
                     case .page: pageSettings
                     case .behavior: behaviorSettings
@@ -69,6 +87,107 @@ struct PenpalSettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+        }
+    }
+
+    // MARK: - Capability (what Penpal IS)
+
+    @ViewBuilder private var capabilitySettings: some View {
+        Section {
+            ForEach(Self.capabilities, id: \.tag) { cap in
+                Button {
+                    settings.capability = cap.tag
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: cap.icon)
+                            .font(.title3)
+                            .frame(width: 34, height: 34)
+                            .foregroundStyle(settings.capability == cap.tag ? .white : .primary)
+                            .background(
+                                settings.capability == cap.tag
+                                    ? AnyShapeStyle(Color.accentColor)
+                                    : AnyShapeStyle(Color.secondary.opacity(0.15)),
+                                in: RoundedRectangle(cornerRadius: 8))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(cap.title)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(cap.blurb)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if settings.capability == cap.tag {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.tint)
+                                .fontWeight(.semibold)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Label("Capability", systemImage: "sparkles")
+        } footer: {
+            Text("Who Penpal is when it replies. Switch anytime — also from the Penpal banner on the page.\n\nAlways on, in any capability: write a calculation ending in \"=\" (like 5+5=) and the answer appears instantly — solved on device, no AI. Draw a box or circle around any problem to send exactly that to Penpal.")
+        }
+
+        if settings.capability == "companion" {
+            Section {
+                ForEach(Self.moods, id: \.tag) { mood in
+                    Button {
+                        settings.companionMood = mood.tag
+                    } label: {
+                        HStack {
+                            Label(mood.title, systemImage: mood.icon)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if settings.companionMood == mood.tag {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                                    .fontWeight(.semibold)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                if settings.companionMood == "custom" {
+                    TextField("Describe the persona — e.g. \"a wise old sailor, salty but kind\"",
+                              text: $settings.customMoodText, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+            } header: {
+                Label("Mood", systemImage: "theatermasks")
+            } footer: {
+                Text(settings.companionMood == "custom"
+                     ? "Your words become Penpal's personality. Keep it short and vivid."
+                     : "How your companion talks to you.")
+            }
+        }
+
+        Section {
+            Toggle("Confirm before solving", isOn: $settings.confirmBeforeSolving)
+        } header: {
+            Label("Calculator", systemImage: "equal.circle")
+        } footer: {
+            Text(settings.confirmBeforeSolving
+                 ? "After you write an expression ending in \"=\", Penpal shows how it read your ink with a Solve button — tap the expression to correct it first. Nothing is calculated until you tap Solve."
+                 : "Expressions ending in \"=\" are solved and written immediately.")
+        }
+
+        if settings.capability == "mathematician" {
+            Section {
+                Picker("Detail", selection: $settings.mathDetail) {
+                    Text("Answer only").tag("answer")
+                    Text("Compact steps").tag("compact")
+                    Text("Full working").tag("full")
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Label("Solution detail", systemImage: "list.number")
+            } footer: {
+                Text("Compact shows key steps ending in \"Ans:\". Whatever the level, writing \"explain\" or \"why\" after a solution gets a deeper walkthrough.")
             }
         }
     }
@@ -91,31 +210,62 @@ struct PenpalSettingsView: View {
                 ForEach([("indigo", Color.indigo), ("blue", Color.blue),
                          ("black", Color.primary), ("green", Color.green),
                          ("purple", Color.purple)], id: \.0) { name, color in
-                    Button {
-                        settings.inkColorName = name
-                    } label: {
-                        Circle()
-                            .fill(color)
-                            .frame(width: 30, height: 30)
-                            .overlay {
-                                if settings.inkColorName == name {
-                                    Image(systemName: "checkmark")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundStyle(.white)
-                                }
-                            }
-                            .overlay {
-                                Circle().stroke(
-                                    settings.inkColorName == name
-                                        ? Color.accentColor : .clear, lineWidth: 2.5)
-                                    .padding(-4)
-                            }
-                    }
-                    .buttonStyle(.plain)
+                    inkSwatchButton(name: name, fill: AnyShapeStyle(color))
                 }
+
+                // "Active" — always mirrors whatever color the user currently
+                // has selected in the pen tray, instead of a fixed color.
+                Button {
+                    settings.inkColorName = "active"
+                } label: {
+                    Circle()
+                        .fill(AnyShapeStyle(AngularGradient(
+                            colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red],
+                            center: .center)))
+                        .frame(width: 30, height: 30)
+                        .overlay {
+                            Image(systemName: settings.inkColorName == "active"
+                                  ? "checkmark" : "applepencil.tip")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white)
+                        }
+                        .overlay {
+                            Circle().stroke(
+                                settings.inkColorName == "active"
+                                    ? Color.accentColor : .clear, lineWidth: 2.5)
+                                .padding(-4)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Active — match my pen color")
+
+                // Full color picker — any color, not just the presets.
+                ColorPicker("", selection: Binding(
+                    get: { Color(UIColor(hex: settings.customColorHex) ?? .systemIndigo) },
+                    set: { newColor in
+                        settings.customColorHex = UIColor(newColor).hexString
+                        settings.inkColorName = "custom"
+                    }
+                ), supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 30, height: 30)
+                .overlay {
+                    Circle().stroke(
+                        settings.inkColorName == "custom"
+                            ? Color.accentColor : .clear, lineWidth: 2.5)
+                        .padding(-4)
+                        .allowsHitTesting(false)
+                }
+
                 Spacer()
             }
             .padding(.vertical, 4)
+
+            if settings.inkColorName == "active" {
+                Text("Replies write in whatever color your pen is currently set to.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             LabeledContent("Pen width",
                            value: String(format: "%.1f×", settings.penWidthScale))
@@ -132,6 +282,30 @@ struct PenpalSettingsView: View {
         } header: {
             Label("Pen & ink", systemImage: "applepencil.tip")
         }
+    }
+
+    private func inkSwatchButton(name: String, fill: AnyShapeStyle) -> some View {
+        Button {
+            settings.inkColorName = name
+        } label: {
+            Circle()
+                .fill(fill)
+                .frame(width: 30, height: 30)
+                .overlay {
+                    if settings.inkColorName == name {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .overlay {
+                    Circle().stroke(
+                        settings.inkColorName == name
+                            ? Color.accentColor : .clear, lineWidth: 2.5)
+                        .padding(-4)
+                }
+        }
+        .buttonStyle(.plain)
     }
 
     private func fontRow(tag: String, title: String, preview: Font?) -> some View {

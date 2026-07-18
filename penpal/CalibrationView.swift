@@ -219,9 +219,19 @@ struct GlyphPreview: View {
 struct CalibrationView: View {
     @Environment(\.dismiss) private var dismiss
 
+    private enum TrainMode: String, CaseIterable, Identifiable {
+        case letters = "Letters"
+        case math = "Math"
+        var id: String { rawValue }
+    }
+
     private static let defaultChars = Array(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?':;-()\""
     )
+
+    /// Digits + operators + common algebra vars for on-device calculator
+    /// recognition (no LLM). `× ÷ √` normalize to `* / sqrt` when matching.
+    static let mathChars: [Character] = Array("0123456789+-*/=^%!×÷√().,xy")
 
     @State private var proxy = GuidedCanvasProxy()
     @State private var refresh = 0
@@ -231,13 +241,19 @@ struct CalibrationView: View {
     @State private var saveMessage = ""
     @State private var saveIsWarning = false
     @State private var showTips = false
+    @State private var trainMode: TrainMode = .letters
 
     @State private var extraChars: [Character] =
         Array(UserDefaults.standard.string(forKey: "penpal.extraChars") ?? "")
 
     @State private var selectedChar: Character = "a"
 
-    private var chars: [Character] { Self.defaultChars + extraChars }
+    private var chars: [Character] {
+        switch trainMode {
+        case .letters: return Self.defaultChars + extraChars
+        case .math: return Self.mathChars
+        }
+    }
 
     private var currentLabel: String { String(selectedChar) }
 
@@ -320,6 +336,24 @@ struct CalibrationView: View {
     private var unitTrainer: some View {
         VStack(spacing: 10) {
             if showTips { tipsCard }
+
+            Picker("Train", selection: $trainMode) {
+                ForEach(TrainMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: trainMode) { _, _ in
+                if let first = chars.first { selectChar(first) }
+            }
+
+            if trainMode == .math {
+                Text("Train digits and math signs. Powers: train \"^\" as a caret, or write exponents raised (x²) — Penpal detects superscripts by layout. Fixing the Solve chip also trains from your ink.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             // Compact nav: prev · target · next
             HStack(spacing: 12) {
                 Button { step(-1) } label: {
@@ -397,13 +431,15 @@ struct CalibrationView: View {
                     .foregroundStyle(samples > 0 ? Color.green : Color.secondary)
             }
 
-            HStack(spacing: 8) {
-                TextField("Add letters…", text: $customInput)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                Button("Add") { addCustom() }
-                    .buttonStyle(.bordered)
-                    .disabled(customInput.trimmingCharacters(in: .whitespaces).isEmpty)
+            if trainMode == .letters {
+                HStack(spacing: 8) {
+                    TextField("Add letters…", text: $customInput)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                    Button("Add") { addCustom() }
+                        .buttonStyle(.bordered)
+                        .disabled(customInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
 
             ScrollView {

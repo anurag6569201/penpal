@@ -6,6 +6,11 @@ enum PenpalAPI {
         let message: String
         let conversation_id: String
         let history: [Turn]
+        // Capability routing (see chat/prompts.py in the brain).
+        let capability: String
+        let mood: String
+        let custom_mood: String
+        let math_detail: String
 
         struct Turn: Encodable {
             let role: String
@@ -18,6 +23,7 @@ enum PenpalAPI {
         let conversation_id: String?
         let model: String?
         let error: String?
+        let capability: String?
     }
 
     enum APIError: LocalizedError {
@@ -40,7 +46,11 @@ enum PenpalAPI {
         message: String,
         conversationId: String,
         history: [ChatRequest.Turn],
-        baseURL: String
+        baseURL: String,
+        capability: String = "companion",
+        mood: String = "warm",
+        customMood: String = "",
+        mathDetail: String = "compact"
     ) async throws -> String {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: trimmed + "/api/chat/") else {
@@ -56,7 +66,11 @@ enum PenpalAPI {
         let body = ChatRequest(
             message: message,
             conversation_id: conversationId,
-            history: history
+            history: history,
+            capability: capability,
+            mood: mood,
+            custom_mood: customMood,
+            math_detail: mathDetail
         )
         request.httpBody = try JSONEncoder().encode(body)
 

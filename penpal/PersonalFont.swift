@@ -257,6 +257,46 @@ final class PersonalFontStore {
         return true
     }
 
+    /// Best trained character for live ink among `alphabet`.
+    /// Uses the same unit-space distance as de-duplication at capture time.
+    /// `unit` is a local symbol height in points (e.g. MathInkParser's symbolUnit).
+    func matchChar(from strokes: [PKStroke], among alphabet: [Character],
+                   unit: CGFloat,
+                   maxDistance: CGFloat = 0.28) -> (char: Character, distance: CGFloat)? {
+        guard unit > 2, !strokes.isEmpty, !alphabet.isEmpty else { return nil }
+        let bounds = strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+        guard !bounds.isNull, bounds.width > 0.5 || bounds.height > 0.5 else { return nil }
+        // Digits/ops in the trainer span ~cap height ≈ 2× x-height.
+        let xHeight = max(unit * 0.55, bounds.height * 0.5, 4)
+        let baselineY = bounds.maxY
+        guard let probe = makeAlignedGlyph(from: strokes, baselineY: baselineY,
+                                           xHeight: xHeight) else { return nil }
+
+        var best: (Character, CGFloat)?
+        for ch in alphabet {
+            guard let variants = data.glyphs[String(ch)], !variants.isEmpty else { continue }
+            // Prefer similar stroke counts — a 1-stroke "1" shouldn't win as "8".
+            let strokeCount = probe.strokes.count
+            for variant in variants {
+                let strokePenalty: CGFloat = abs(variant.strokes.count - strokeCount) > 1
+                    ? 0.12 : (variant.strokes.count == strokeCount ? 0 : 0.04)
+                let d = Self.shapeDistance(variant, probe) + strokePenalty
+                if let current = best {
+                    if d < current.1 { best = (ch, d) }
+                } else {
+                    best = (ch, d)
+                }
+            }
+        }
+        guard let best, best.1 <= maxDistance else { return nil }
+        return (best.0, best.1)
+    }
+
+    /// Whether any character in `alphabet` has at least one trained sample.
+    func hasTrained(anyOf alphabet: [Character]) -> Bool {
+        alphabet.contains { variantCount(forChar: $0) > 0 }
+    }
+
     /// Adds a variant for a whole word (any language/script).
     @discardableResult
     func addWord(from strokes: [PKStroke], for word: String,

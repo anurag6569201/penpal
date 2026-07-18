@@ -167,6 +167,22 @@ enum StrokeFont {
         "8": Glyph(width: 0.58, strokes: [.arc(cx: 0.29, cy: 1.17, rx: 0.23, ry: 0.38, a0: 90, a1: 450),
                                           .arc(cx: 0.29, cy: 0.38, rx: 0.25, ry: 0.39, a0: 90, a1: 450)]),
         "9": Glyph(width: 0.58, strokes: [p(0.48, 0.18, 0.49, 1.00, 0.39, 1.50, 0.15, 1.52, 0.04, 1.20, 0.14, 0.86, 0.44, 0.88)]),
+
+        // Math symbols — Mathematician mode writes equations; without these
+        // every "=" or "+" fell back to the "?" glyph.
+        "=": Glyph(width: 0.54, strokes: [p(0.05, 0.70, 0.49, 0.70), p(0.05, 0.40, 0.49, 0.40)]),
+        "+": Glyph(width: 0.54, strokes: [p(0.05, 0.55, 0.49, 0.55), p(0.27, 0.80, 0.27, 0.30)]),
+        "*": Glyph(width: 0.44, strokes: [p(0.22, 0.85, 0.22, 0.45), p(0.05, 0.75, 0.39, 0.55), p(0.05, 0.55, 0.39, 0.75)]),
+        "/": Glyph(width: 0.46, strokes: [p(0.42, 1.35, 0.04, 0.02)]),
+        "^": Glyph(width: 0.44, strokes: [p(0.05, 1.10, 0.22, 1.45, 0.39, 1.10)]),
+        "<": Glyph(width: 0.50, strokes: [p(0.45, 0.90, 0.05, 0.55, 0.45, 0.20)]),
+        ">": Glyph(width: 0.50, strokes: [p(0.05, 0.90, 0.45, 0.55, 0.05, 0.20)]),
+        "%": Glyph(width: 0.62, strokes: [p(0.50, 1.30, 0.10, 0.10),
+                                          .arc(cx: 0.14, cy: 1.18, rx: 0.11, ry: 0.16, a0: 0, a1: 360),
+                                          .arc(cx: 0.46, cy: 0.24, rx: 0.11, ry: 0.16, a0: 0, a1: 360)]),
+        "×": Glyph(width: 0.46, strokes: [p(0.06, 0.85, 0.40, 0.25), p(0.40, 0.85, 0.06, 0.25)]),
+        "÷": Glyph(width: 0.54, strokes: [p(0.05, 0.55, 0.49, 0.55), .dot(0.27, 0.88), .dot(0.27, 0.22)]),
+        "π": Glyph(width: 0.60, strokes: [p(0.03, 1.02, 0.57, 1.02), p(0.16, 1.02, 0.14, 0.02), p(0.44, 1.02, 0.46, 0.02)]),
     ]
 
     static func glyph(for ch: Character) -> Glyph {
@@ -427,7 +443,27 @@ enum StrokeFont {
         }
 
         var clipped = false
-        for token in text.split(separator: " ", omittingEmptySubsequences: false) {
+        // Explicit newlines force a line break — math replies use one step
+        // per line ("3x = 12\nx = 4\nAns: x = 4"), so line structure is
+        // meaning, not just wrapping.
+        var tokens: [Substring] = []
+        let lineBreakToken: Substring = "\n"
+        for (li, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            if li > 0 { tokens.append(lineBreakToken) }
+            tokens.append(contentsOf: line.split(separator: " ", omittingEmptySubsequences: false))
+        }
+        for token in tokens {
+            if token == lineBreakToken {
+                penX = origin.x
+                baseY += lineAdvance
+                drift *= 0.4
+                lastExit = nil
+                lastExitTail = []
+                lastEmitted = nil
+                lastLetterPoints = []
+                if baseY > maxY { clipped = true; break }
+                continue
+            }
             let w = tokenWidth(token)
             if penX + w > maxX, penX > origin.x {
                 penX = origin.x

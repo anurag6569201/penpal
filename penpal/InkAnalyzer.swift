@@ -54,6 +54,109 @@ enum InkAnalyzer {
         return min(26, max(11, h * 0.45))
     }
 
+    /// What we can measure from the user's handwritten question: where the
+    /// line sits, how tall their symbols are, and how thick the pen tip is.
+    struct UserHandMetrics {
+        var baseline: CGFloat
+        var xHeight: CGFloat
+        var tipWidth: CGFloat
+        var trailX: CGFloat
+    }
+
+    /// Baseline + character size + tip width for writing an answer in the
+    /// user's hand. Ignores flat bars (`=`, `−`, fraction bars) so the lower
+    /// equals stroke doesn't pull the answer off the digit line. Symbol
+    /// *clusters* (a whole "2" or "x") drive height — raw stroke height
+    /// under-sizes multi-stroke digits.
+    static func measureUserHand(from strokes: [PKStroke],
+                                fallbackLine: CGRect,
+                                fallbackXHeight: CGFloat) -> UserHandMetrics {
+        let usable = strokes.filter {
+            $0.renderBounds.width > 0.5 || $0.renderBounds.height > 0.5
+        }
+        let unit = max(8, fallbackXHeight)
+        func isFlatBar(_ s: PKStroke) -> Bool {
+            let b = s.renderBounds
+            return b.width > b.height * 2.6 && b.height < unit * 0.5
+        }
+        let body = usable.filter { !isFlatBar($0) }
+        let sample = body.isEmpty ? usable : body
+
+        let baseline: CGFloat
+        if sample.isEmpty {
+            baseline = fallbackLine.maxY - max(2, fallbackLine.height * 0.12)
+        } else {
+            let bottoms = sample.map { $0.renderBounds.maxY }.sorted()
+            baseline = bottoms[bottoms.count / 2]
+        }
+
+        // Character size from single-symbol clusters. Reject wide unions (the
+        // whole "2+2=" blob) — those made answers look huge vs the digits.
+        let lineCap = fallbackLine.height > 6 ? fallbackLine.height * 0.72 : 28
+        var symbolHeights: [CGFloat] = []
+        if !usable.isEmpty {
+            for group in MathInkParser.symbolClusters(in: usable) {
+                let r = group.reduce(CGRect.null) { $0.union($1.renderBounds) }
+                guard !r.isNull, r.height > 4, r.height <= lineCap * 1.15 else { continue }
+                if r.width > r.height * 2.2 && r.height < unit * 0.55 { continue } // "="
+                // One glyph is roughly square-ish; a merged run is much wider.
+                if r.width > r.height * 1.65 { continue }
+                symbolHeights.append(r.height)
+            }
+        }
+        let strokeHeights = sample.map { $0.renderBounds.height }
+            .filter { $0 > 4 && $0 <= lineCap * 1.15 }
+        if symbolHeights.isEmpty { symbolHeights = strokeHeights }
+
+        let xHeight: CGFloat
+        if symbolHeights.isEmpty {
+            xHeight = min(fallbackXHeight, lineCap)
+        } else {
+            let sorted = symbolHeights.sorted()
+            let clusterMed = sorted[sorted.count / 2]
+            // Don't let a tall outlier / loose PK bounds beat typical strokes.
+            let strokeMed: CGFloat = {
+                guard !strokeHeights.isEmpty else { return clusterMed }
+                let s = strokeHeights.sorted()
+                return s[s.count / 2]
+            }()
+            let raw = min(clusterMed, strokeMed * 1.2, lineCap)
+            // Digits' ink bounds run a bit taller than StrokeFont's x-height.
+            xHeight = min(22, max(10, raw * 0.78))
+        }
+
+        // Median Pencil tip size along the body strokes.
+        var tipSamples: [CGFloat] = []
+        for s in sample {
+            for p in s.path.interpolatedPoints(by: .distance(2)) {
+                let w = max(p.size.width, p.size.height)
+                if w > 0.4 { tipSamples.append(w) }
+            }
+        }
+        let tipWidth: CGFloat
+        if tipSamples.isEmpty {
+            tipWidth = max(1.4, xHeight * 0.11)
+        } else {
+            tipSamples.sort()
+            tipWidth = min(12, max(1.2, tipSamples[tipSamples.count / 2]))
+        }
+
+        let bodyMaxX = sample.map { $0.renderBounds.maxX }.max() ?? fallbackLine.maxX
+        let trail = max(bodyMaxX, fallbackLine.maxX)
+        return UserHandMetrics(baseline: baseline, xHeight: xHeight,
+                               tipWidth: tipWidth, trailX: trail)
+    }
+
+    /// Back-compat wrapper used by older call sites.
+    static func inlineWritingMetrics(from strokes: [PKStroke],
+                                     fallbackLine: CGRect,
+                                     fallbackXHeight: CGFloat)
+        -> (baseline: CGFloat, xHeight: CGFloat, maxX: CGFloat) {
+        let m = measureUserHand(from: strokes, fallbackLine: fallbackLine,
+                                fallbackXHeight: fallbackXHeight)
+        return (m.baseline, m.xHeight, m.trailX)
+    }
+
     static func placement(newStrokes: [PKStroke],
                           previousBottom: CGFloat,
                           pageBounds: CGRect,
@@ -101,6 +204,74 @@ enum InkAnalyzer {
                               newInkBounds: bounds,
                               detectedLines: lines,
                               needsNewPage: newPage)
+    }
+
+    // MARK: - Problem box (draw a box/circle around a problem → ask the AI)
+
+    /// A closed loop the user drew around some of their ink. The rect gives
+    /// the AI a visual scope: "the question is HERE". Enclosed strokes are
+    /// what gets read (and later, the region we could send as an image).
+    struct ProblemBox {
+        var rect: CGRect
+        var boxStrokeIndex: Int      // index into the full drawing's strokes
+        var enclosedIndices: [Int]   // indices of the ink inside the box
+    }
+
+    /// Scans the newly drawn strokes (tail of `all`, starting at `newStart`)
+    /// for a box/circle enclosing OTHER ink. Newest first — the enclosure is
+    /// usually the last thing drawn.
+    static func detectProblemBox(all: [PKStroke], newStart: Int) -> ProblemBox? {
+        guard newStart < all.count else { return nil }
+        for idx in stride(from: all.count - 1, through: newStart, by: -1) {
+            guard let rect = enclosureRect(of: all[idx]) else { continue }
+            let inner = rect.insetBy(dx: -4, dy: -4)   // slight tolerance
+            let enclosed = all.indices.filter { i in
+                i != idx && inner.contains(all[i].renderBounds)
+            }
+            guard !enclosed.isEmpty else { continue }
+            // The loop must be an OUTLINE around the ink, not ink that happens
+            // to overlap: enclosed content should sit visibly inside.
+            let contentBounds = enclosed.reduce(CGRect.null) { $0.union(all[$1].renderBounds) }
+            guard contentBounds.width < rect.width * 0.96,
+                  contentBounds.height < rect.height * 0.96 else { continue }
+            return ProblemBox(rect: rect, boxStrokeIndex: idx, enclosedIndices: enclosed)
+        }
+        return nil
+    }
+
+    /// Is this stroke a deliberate closed enclosure (rectangle, circle,
+    /// rounded box)? Returns its bounding rect if so.
+    private static func enclosureRect(of stroke: PKStroke) -> CGRect? {
+        let pts = stroke.path.interpolatedPoints(by: .distance(4)).map(\.location)
+        guard pts.count >= 10 else { return nil }
+        let b = stroke.renderBounds
+        // Big enough to be "around a problem", not a letter (o, 0, box glyph).
+        guard b.width > 70, b.height > 34 else { return nil }
+
+        var length: CGFloat = 0
+        for i in 1..<pts.count {
+            length += hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+        }
+        // Closed: pen returned (nearly) to where it started.
+        let gap = hypot(pts[0].x - pts[pts.count - 1].x, pts[0].y - pts[pts.count - 1].y)
+        guard gap < max(24, length * 0.15) else { return nil }
+
+        // One clean lap: path length ≈ bounds perimeter (rect ≈ 1.0×,
+        // ellipse ≈ 0.8×). A scribble or spiral is much longer.
+        let perimeter = 2 * (b.width + b.height)
+        guard length > perimeter * 0.62, length < perimeter * 1.45 else { return nil }
+
+        // The path hugs the border of its bounds (never cuts through the
+        // middle, where the problem ink lives).
+        let tolerance = max(16, min(b.width, b.height) * 0.26)
+        var hugging = 0
+        for p in pts {
+            let edgeDistance = min(abs(p.x - b.minX), abs(p.x - b.maxX),
+                                   abs(p.y - b.minY), abs(p.y - b.maxY))
+            if edgeDistance < tolerance { hugging += 1 }
+        }
+        guard CGFloat(hugging) / CGFloat(pts.count) > 0.55 else { return nil }
+        return b
     }
 
     /// Converts PencilKit strokes into replayable InkStrokes offset so the block's

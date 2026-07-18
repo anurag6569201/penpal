@@ -105,7 +105,7 @@ final class PaperBackgroundView: UIView {
 
 // MARK: - Magic paper
 
-final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionDelegate {
+final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionDelegate, PKToolPickerObserver {
 
     // MARK: Tunables (set from SwiftUI)
 
@@ -118,6 +118,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     var onWritingStateChange: ((Bool) -> Void)?
     var onThinkingChange: ((Bool) -> Void)?
+    /// True while ink is being OCR'd / math-parsed (the slow local read).
+    var onReadingChange: ((Bool) -> Void)?
     var onStatus: ((String) -> Void)?
     var onDrawingChange: ((PKDrawing) -> Void)?
     var onUndoRedoChange: ((Bool, Bool) -> Void)?
@@ -148,6 +150,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private let paper = PaperBackgroundView()
     private let renderer = HandwritingRenderer()
     private var idleTimer: Timer?
+    /// The floating "5 × 5 — Solve" confirmation, when one is showing.
+    private var intentChip: MathIntentChip?
+    /// Delays the "Reading…" banner so short OCR doesn't flash chrome.
+    private var readingBannerTask: Task<Void, Never>?
     private var lastReplyStrokeCount = 0
     private var lastReplyBottom: CGFloat = 0
     private var provider = HandAwareReplyProvider()
@@ -160,7 +166,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// (or is interrupted) they're persisted with the note as renderer ink —
     /// never converted to PencilKit strokes, which render differently and
     /// would visibly change the reply the moment it finished.
-    private var pendingBake: (strokes: [InkStroke], baseWidth: CGFloat, bottomY: CGFloat)?
+    private var pendingBake: (strokes: [InkStroke], baseWidth: CGFloat,
+                              bottomY: CGFloat, color: UIColor)?
 
     /// Long-press deletion of Penpal content (the PencilKit eraser can't
     /// touch it — replies aren't canvas strokes).
@@ -222,6 +229,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
 
         applySettings()
+        // Load math.js in the background so the first "=" answers instantly.
+        MathEngine.shared.warmUp()
     }
 
     @objc private func undoStateChanged() {
@@ -234,7 +243,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // .anyInput would silently ignore it (finger keeps drawing).
         let policy: PKCanvasViewDrawingPolicy = settings.pencilOnly ? .pencilOnly : .default
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
-        renderer.inkColor = settings.inkColor
+        // Lock the live-writing color to the same light-resolved value used
+        // when the stroke is baked into the canvas (see bakedInkColor).
+        // Using the raw dynamic color here would let it track the device's
+        // current light/dark appearance during animation, then jump to the
+        // fixed light variant the instant the stroke lands on the canvas —
+        // a visible color shift right as ink "gets into canvas".
+        renderer.inkColor = bakedInkColor
         renderer.speed = 120 + CGFloat(settings.speedLevel) * 55
         renderer.widthScale = CGFloat(settings.penWidthScale)
         renderer.smoothness = CGFloat(settings.smoothness)
@@ -263,6 +278,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         bakedUpTo = 0
         renderer.cancelWriting()
         renderer.clearInk()
+        dismissIntentChip()
         idleTimer?.invalidate()
 
         suppressChanges = true
@@ -327,6 +343,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private lazy var toolPicker: PKToolPicker = {
         let picker = PKToolPicker()
         picker.addObserver(canvas)
+        picker.addObserver(self)
         return picker
     }()
 
@@ -337,12 +354,27 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         toolPicker.setVisible(visible, forFirstResponder: canvas)
         if visible {
             canvas.becomeFirstResponder()
+            syncActiveToolColor()
         } else {
             canvas.resignFirstResponder()
         }
     }
 
     var isToolPickerVisible: Bool { toolPicker.isVisible }
+
+    /// Mirrors the color of whatever tool the user currently has selected in
+    /// the system pen tray into `settings.activeToolColor`, so the "Active"
+    /// ink swatch (write replies in whatever color I'm writing with) tracks
+    /// it live instead of needing a manual color match.
+    func toolPickerSelectedToolDidChange(_ toolPicker: PKToolPicker) {
+        syncActiveToolColor()
+    }
+
+    private func syncActiveToolColor() {
+        if let inking = toolPicker.selectedTool as? PKInkingTool {
+            settings.activeToolColor = inking.color
+        }
+    }
 
     func undo() {
         canvas.undoManager?.undo()
@@ -396,9 +428,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// erasable, lassoable, undoable, shared and saved exactly like the
     /// user's own ink. Called stroke-by-stroke as the animation finishes each
     /// one, so the pen appears to write directly onto the page.
-    private func bakeStroke(_ raw: InkStroke, baseWidth: CGFloat) {
+    private func bakeStroke(_ raw: InkStroke, baseWidth: CGFloat, color: UIColor) {
         let smoothed = HandwritingRenderer.smoothed(raw, amount: CGFloat(settings.smoothness))
-        guard let pk = Self.pkStroke(from: smoothed, baseWidth: baseWidth, color: bakedInkColor) else { return }
+        guard let pk = Self.pkStroke(from: smoothed, baseWidth: baseWidth, color: color) else { return }
         suppressChanges = true
         var drawing = canvas.drawing
         // Insert at the reply baseline so strokes the user draws while the AI
@@ -409,6 +441,18 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         lastReplyStrokeCount += 1
         suppressChanges = false
         onDrawingChange?(canvas.drawing)   // debounced persistence
+    }
+
+    /// Tip width + ink color from the user's expression (Pencil tip size along
+    /// the path). Character height is measured separately via `measureUserHand`.
+    private static func sampleUserInk(from strokes: [PKStroke]) -> (width: CGFloat, color: UIColor)? {
+        guard !strokes.isEmpty else { return nil }
+        let line = strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+        let hand = InkAnalyzer.measureUserHand(from: strokes, fallbackLine: line,
+                                               fallbackXHeight: 16)
+        let rawColor = strokes.last?.ink.color ?? .label
+        let color = rawColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        return (hand.tipWidth, color)
     }
 
     /// PencilKit stores stroke colors as light-mode authored and auto-adjusts
@@ -432,7 +476,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         renderer.abandonCurrentWrite()
         if bakedUpTo < pending.strokes.count {
             for stroke in pending.strokes[bakedUpTo...] {
-                bakeStroke(stroke, baseWidth: pending.baseWidth)
+                bakeStroke(stroke, baseWidth: pending.baseWidth, color: pending.color)
             }
         }
         bakedUpTo = 0
@@ -441,41 +485,46 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         publishUndoRedo()
     }
 
-    /// Converts a reply stroke into a PencilKit stroke. Width gets a small
-    /// boost + floor because PencilKit's pen ink reads slightly thinner than
-    /// the animation layer at equal nominal width (tune `boost`/`minWidth`
-    /// if the handoff is ever visible).
+    /// Converts a reply stroke into a PencilKit stroke. PencilKit's `.pen`
+    /// reads thinner/lighter than a stroked CAShapeLayer — but when we stamp
+    /// absolute tip `widths` (matched to the user), only a tiny boost is
+    /// needed so the bake doesn't look like a fade OR a marker blob.
     private static func pkStroke(from stroke: InkStroke,
                                  baseWidth: CGFloat,
                                  color: UIColor) -> PKStroke? {
-        let boost: CGFloat = 1.25
-        let minWidth: CGFloat = 1.8
+        let hasWidths = stroke.widths?.count == stroke.points.count
+        // Matched absolute widths ≈ user tip; bare baseWidth needs a bigger
+        // PK compensation for the animation→canvas handoff.
+        let boost: CGFloat = hasWidths ? 0.95 : 1.9
+        let minWidth: CGFloat = hasWidths
+            ? max(1.2, baseWidth * 0.78)
+            : max(1.9, baseWidth * 0.9)
 
         func point(_ location: CGPoint, _ time: TimeInterval, _ width: CGFloat) -> PKStrokePoint {
             PKStrokePoint(location: location,
                           timeOffset: time,
                           size: CGSize(width: width, height: width),
-                          opacity: 1,
+                          opacity: 0.9,
                           force: 1,
                           azimuth: 0,
                           altitude: .pi / 2)
         }
 
         if stroke.isDot, let c = stroke.points.first {
-            let w = max(minWidth, max(baseWidth * boost, stroke.dotRadius * 2))
+            let w = max(minWidth, max(baseWidth * boost, stroke.dotRadius * 2.2))
             let path = PKStrokePath(controlPoints: [point(c, 0, w), point(c, 0.01, w)],
                                     creationDate: Date())
             return PKStroke(ink: PKInk(.pen, color: color), path: path)
         }
         guard stroke.points.count > 1 else { return nil }
 
-        let hasWidths = stroke.widths?.count == stroke.points.count
         let hasTimes = stroke.pointTimes?.count == stroke.points.count
         var controls: [PKStrokePoint] = []
         controls.reserveCapacity(stroke.points.count)
         var lastTime = -1.0
         for (i, p) in stroke.points.enumerated() {
-            let w = max(minWidth, (hasWidths ? stroke.widths![i] : baseWidth) * boost)
+            let nominal = hasWidths ? stroke.widths![i] : baseWidth
+            let w = max(minWidth, nominal * boost)
             // timeOffset must be strictly increasing or PencilKit misrenders.
             let raw = hasTimes ? stroke.pointTimes![i] : Double(i) * 0.004
             let t = max(raw, lastTime + 0.001)
@@ -619,6 +668,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         layoutPaper()
+        // The confirmation chip is anchored in view space, so scrolling
+        // would drift it away from its expression — retire it instead.
+        dismissIntentChip()
     }
 
     // MARK: Infinite pages
@@ -652,18 +704,30 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             // (identical ink, no animation) and persist it.
             completePendingReplyInstantly()
         }
+        // New ink while the calculator was "pondering" / reading — drop that
+        // answer; the extended expression will retrigger with the full picture.
+        renderer.cancelPondering()
+        renderer.cancelCelebrate()
+        setReadingBanner(false)
+        // Same for a pending confirmation: the expression just changed, so
+        // the chip is stale. A fresh one appears at the next pause.
+        dismissIntentChip()
         // Writing near the bottom edge? Grow the paper quietly.
         if let last = canvasView.drawing.strokes.last {
             ensureRoom(below: last.renderBounds.maxY + lineGap * 2)
         }
         onDrawingChange?(canvasView.drawing)
         publishUndoRedo()
+        // Erasing or undoing can shrink the stroke list below our "already
+        // seen" marker — clamp it or new ink would never trigger again.
+        lastReplyStrokeCount = min(lastReplyStrokeCount, canvasView.drawing.strokes.count)
         idleTimer?.invalidate()
-        // Penpal replies only when the special Penpal pen is active.
-        guard autoReply else { return }
+        // The idle check always runs: the instant calculator ("5+5=") works
+        // in ANY mode, even with Penpal off. replyNow(auto:) decides what is
+        // actually allowed to respond.
         idleTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in self.replyNow() }
+            Task { @MainActor in self.replyNow(auto: true) }
         }
     }
 
@@ -720,7 +784,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     message: trimmed,
                     conversationId: store.conversationId,
                     history: history,
-                    baseURL: settings.apiBaseURL
+                    baseURL: settings.apiBaseURL,
+                    capability: settings.capability,
+                    mood: settings.companionMood,
+                    customMood: settings.customMoodText,
+                    mathDetail: settings.mathDetail
                 )
                 store.append(role: "user", content: trimmed)
                 store.append(role: "assistant", content: reply)
@@ -798,18 +866,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         scrollToReveal(placement.origin.y)
 
         let baseWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
+        let bakeColor = bakedInkColor
         onWritingStateChange?(true)
-        pendingBake = (strokes, baseWidth, bottomY)
+        pendingBake = (strokes, baseWidth, bottomY, bakeColor)
         bakedUpTo = 0
 
         let preRoll = showDetection ? 0.45 : 0.10
         DispatchQueue.main.asyncAfter(deadline: .now() + preRoll) { [weak self] in
             guard let self else { return }
+            self.renderer.inkColor = bakeColor
             self.renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
                 // Each finished stroke becomes real canvas ink immediately.
                 guard let self, let pending = self.pendingBake,
                       i < pending.strokes.count else { return }
-                self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth)
+                self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth,
+                                color: pending.color)
                 self.bakedUpTo = i + 1
             }) { [weak self] in
                 guard let self else { return }
@@ -822,14 +893,31 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
     }
 
-    func replyNow() {
+    /// Trigger rules, per mode:
+    /// - On-device calculator: "=" when Penpal is off, or Penpal + Companion.
+    ///   Penpal + Mathematician never uses it — "=" goes to the brain/LLM.
+    /// - Boxing: only Penpal + Mathematician.
+    /// - Penpal + Companion: replies after the writing pause (as before).
+    /// `auto` is true when the idle timer fired; false for an explicit
+    /// "reply now" request from the user.
+    func replyNow(auto: Bool = false) {
         idleTimer?.invalidate()
         guard !renderer.isWriting else { return }
 
         let all = canvas.drawing.strokes
         guard all.count > lastReplyStrokeCount else { return }
-        let newStrokes = Array(all[lastReplyStrokeCount...])
+        let newStart = lastReplyStrokeCount
+        let newStrokes = Array(all[newStart...])
         lastReplyStrokeCount = all.count
+
+        let mathematicianMode = penpalEnabled && settings.capability == "mathematician"
+
+        // Boxed problem: Penpal + Mathematician only.
+        if mathematicianMode,
+           let box = InkAnalyzer.detectProblemBox(all: all, newStart: newStart) {
+            solveBoxedProblem(box, all: all)
+            return
+        }
 
         // Offer one extra virtual page to the placer — pages are infinite,
         // so "page full" just means "grow".
@@ -846,64 +934,569 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                                     rulesTopInset: rulesTopInset,
                                                     occupiedStrokes: all,
                                                     preferredXHeight: lineRelativeXHeight) else {
-            onStatus?("Write a little more before asking for a reply.")
+            // Only nag when the user explicitly asked for a reply.
+            if !auto { onStatus?("Write a little more before asking for a reply.") }
             return
         }
 
-        if showDetection {
+        if showDetection, penpalEnabled {
             renderer.flashDetection(bounds: placement.newInkBounds,
                                     lines: placement.detectedLines,
                                     baseline: placement.origin)
         }
 
-        // With the brain on, read the handwriting and let Gemini answer it —
-        // exactly like the typed bar, but the "message" is your own ink.
-        if settings.useBrain {
-            onThinkingChange?(true)
-            onWritingStateChange?(true)
-            onStatus?("")
-            let inkToRead = newStrokes
-            let traits = traitCollection
-            Task { @MainActor in
-                let heard = await InkRecognizer.recognize(strokes: inkToRead, traits: traits)
-                let trimmed = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Read the ink, then route. Highlight animation only for math with
+        // "=" (or a boxed problem) — never for ordinary companion pauses.
+        let inkToRead = newStrokes
+        let traits = traitCollection
 
-                guard !trimmed.isEmpty else {
-                    // Couldn't read the ink — answer with a friendly local line
-                    // so the page never goes silent.
-                    self.onThinkingChange?(false)
-                    self.onWritingStateChange?(false)
-                    self.renderLocalReply(placement: placement, newStrokes: inkToRead)
-                    return
-                }
-
-                let store = ConversationStore.shared
-                let history = store.historyForAPI()
-                do {
-                    let reply = try await PenpalAPI.chat(
-                        message: trimmed,
-                        conversationId: store.conversationId,
-                        history: history,
-                        baseURL: self.settings.apiBaseURL
-                    )
-                    store.append(role: "user", content: trimmed)
-                    store.append(role: "assistant", content: reply)
-                    self.onThinkingChange?(false)
-                    self.onWritingStateChange?(false)
-                    self.renderReply(reply, placement: placement)
-                } catch {
-                    self.onThinkingChange?(false)
-                    self.onWritingStateChange?(false)
-                    self.onStatus?(error.localizedDescription)
-                    // Keep the conversation flowing with a local line on failure.
-                    self.renderLocalReply(placement: placement, newStrokes: inkToRead)
+        Task { @MainActor in
+            var analyzing = false
+            // When a Solve chip is up we keep the analyze magic (living =,
+            // filaments) until the chip dismisses or solves.
+            var releaseAnalyzing = true
+            defer {
+                if analyzing && releaseAnalyzing {
+                    self.renderer.endAnalyzing()
+                    self.setReadingBanner(false)
                 }
             }
-            return
+
+            // Cheap OCR first (no highlight yet) — we need to know if there's
+            // an "=" before spending the slow structured parse / animation.
+            let candidates = await InkRecognizer.recognizeCandidates(strokes: inkToRead,
+                                                                     traits: traits)
+            let trimmed = (candidates.first ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let hasEquals = trimmed.contains("=")
+                || MathInkParser.looksLikeEqualsAsk(inkToRead)
+
+            if hasEquals {
+                self.renderer.beginAnalyzing(strokes: inkToRead)
+                self.setReadingBanner(true)
+                analyzing = true
+            }
+
+            // Prefer a full-line reading when "=" is only in the latest stroke.
+            var fullLineText: String?
+            if hasEquals {
+                let lastLineRect = (InkAnalyzer.clusterLines(inkToRead)
+                    .max { $0.rect.maxY < $1.rect.maxY })?.rect
+                    ?? inkToRead.reduce(CGRect.null) { $0.union($1.renderBounds) }
+                if !lastLineRect.isNull {
+                    let bandMinY = lastLineRect.minY - max(8, lastLineRect.height * 0.6)
+                    let bandMaxY = lastLineRect.maxY + max(6, lastLineRect.height * 0.4)
+                    let lineMates = all.filter { s in
+                        let mid = s.renderBounds.midY
+                        return mid >= bandMinY && mid <= bandMaxY
+                    }
+                    if lineMates.count > inkToRead.count {
+                        let lineCandidates = await InkRecognizer.recognizeCandidates(
+                            strokes: lineMates, traits: traits)
+                        fullLineText = lineCandidates.first?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if mathematicianMode {
+                            self.renderer.beginAnalyzing(strokes: lineMates)
+                            analyzing = true
+                            self.setReadingBanner(true)
+                        }
+                    }
+                }
+            }
+
+            // Penpal + Mathematician: "=" is for the brain only — never the
+            // local Solve chip / on-device calculator (that conflicted with LLM).
+            if mathematicianMode {
+                var bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+                if hasEquals || bestText.contains("=") {
+                    bestText = Self.ensureTrailingEquals(bestText)
+                    guard self.settings.useBrain else {
+                        self.onStatus?("Solving this needs the brain — enable it in Settings → Behavior.")
+                        return
+                    }
+                    self.askBrain(bestText, placement: placement,
+                                  capability: "mathematician", fallbackInk: nil)
+                }
+                return
+            }
+
+            // Local calculator — Companion, or Penpal off. Requires "=".
+            let structured = hasEquals
+                ? await MathInkParser.parse(strokes: inkToRead, traits: traits)
+                : nil
+            let mathCandidates = Self.withTrailingEquals(
+                [structured].compactMap { $0 } + candidates, force: hasEquals)
+
+            if hasEquals, let hit = Self.calculatorHit(in: mathCandidates) {
+                if self.offerCalculation(expression: hit.expression, answer: hit.answer,
+                                         placement: placement, strokes: inkToRead) {
+                    releaseAnalyzing = false
+                }
+                return
+            }
+
+            if hasEquals, let full = fullLineText, !full.isEmpty {
+                let lineCandidates = [full]
+                let lineMath = Self.withTrailingEquals(lineCandidates, force: true)
+                if let hit = Self.calculatorHit(in: lineMath) {
+                    if self.offerCalculation(expression: hit.expression, answer: hit.answer,
+                                             placement: placement, strokes: inkToRead) {
+                        releaseAnalyzing = false
+                    }
+                    return
+                }
+            }
+
+            if hasEquals {
+                if let expr = Self.bestEqualsExpression(in: mathCandidates)
+                    ?? (trimmed.isEmpty ? nil : Self.ensureTrailingEquals(trimmed)) {
+                    if self.offerCalculation(expression: expr, answer: nil,
+                                             placement: placement, strokes: inkToRead) {
+                        releaseAnalyzing = false
+                    }
+                    return
+                }
+                if self.offerCalculation(expression: "=", answer: nil,
+                                         placement: placement, strokes: inkToRead) {
+                    releaseAnalyzing = false
+                }
+                return
+            }
+
+            // Companion (and other non-mathematician Penpal) below.
+            guard self.penpalEnabled else { return }
+
+            var bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+
+            if bestText.hasSuffix("="), self.looksLikeMath(bestText),
+               self.settings.useBrain {
+                self.askBrain(bestText, placement: placement,
+                              capability: "mathematician", fallbackInk: nil)
+                return
+            }
+
+            guard !auto || self.settings.autoReply else { return }
+
+            guard !trimmed.isEmpty else {
+                self.renderLocalReply(placement: placement, newStrokes: inkToRead)
+                return
+            }
+            guard self.settings.useBrain else {
+                self.renderLocalReply(placement: placement, newStrokes: inkToRead)
+                return
+            }
+            self.askBrain(trimmed, placement: placement,
+                          capability: self.settings.capability, fallbackInk: inkToRead)
+        }
+    }
+
+    /// OCR often drops the trailing "=". When geometry already saw one, put it back.
+    private static func ensureTrailingEquals(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return "=" }
+        return t.hasSuffix("=") ? t : t + "="
+    }
+
+    private static func withTrailingEquals(_ candidates: [String], force: Bool) -> [String] {
+        guard force else { return candidates }
+        var seen = Set<String>()
+        var out: [String] = []
+        for c in candidates {
+            let e = ensureTrailingEquals(c)
+            guard !e.isEmpty, seen.insert(e).inserted else { continue }
+            out.append(e)
+        }
+        return out
+    }
+
+    /// Prefer a candidate that looks like a real expression (not bare "=").
+    private static func bestEqualsExpression(in candidates: [String]) -> String? {
+        let usable = candidates
+            .map { ensureTrailingEquals($0) }
+            .filter { $0 != "=" && $0.count > 1 }
+        return usable.first
+    }
+
+    /// Tries the calculator against every reading. The FIRST candidate is
+    /// privileged — that's the structured stroke-geometry parse, which reads
+    /// fractions and operators far more reliably than sentence OCR. The rest
+    /// are tried most-math-looking first ("2^10" beats "210"), so one bad
+    /// reading doesn't sink a solvable expression — or worse, silently
+    /// compute the wrong one.
+    private static func calculatorHit(in candidates: [String])
+        -> (expression: String, answer: String)? {
+        func mathScore(_ s: String) -> Int {
+            s.reduce(0) { "^*/+-()%!".contains($1) ? $0 + 2 : ($1.isNumber ? $0 + 1 : $0) }
+        }
+        func attempt(_ candidate: String) -> (String, String)? {
+            let text = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let answer = MathEvaluator.instantAnswer(for: text) else { return nil }
+            return (text, answer)
+        }
+        if let first = candidates.first, let hit = attempt(first) { return hit }
+        for candidate in candidates.dropFirst()
+            .sorted(by: { mathScore($0) > mathScore($1) }) {
+            if let hit = attempt(candidate) { return hit }
+        }
+        return nil
+    }
+
+    /// Sends recognized ink to the brain and writes the reply. `fallbackInk`
+    /// non-nil means "keep the conversation alive with a local line on
+    /// failure" (companion); nil means fail silently with a status (math).
+    private func askBrain(_ message: String, placement: ReplyPlacement,
+                          capability: String, fallbackInk: [PKStroke]?) {
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("")
+        Task { @MainActor in
+            let store = ConversationStore.shared
+            let history = store.historyForAPI()
+            do {
+                let reply = try await PenpalAPI.chat(
+                    message: message,
+                    conversationId: store.conversationId,
+                    history: history,
+                    baseURL: self.settings.apiBaseURL,
+                    capability: capability,
+                    mood: self.settings.companionMood,
+                    customMood: self.settings.customMoodText,
+                    mathDetail: self.settings.mathDetail
+                )
+                store.append(role: "user", content: message)
+                store.append(role: "assistant", content: reply)
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.renderReply(reply, placement: placement,
+                                 matchStrokes: fallbackInk ?? [])
+            } catch {
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(error.localizedDescription)
+                if let ink = fallbackInk {
+                    self.renderLocalReply(placement: placement, newStrokes: ink)
+                }
+            }
+        }
+    }
+
+    // MARK: - Instant math + boxed problems
+
+    /// Confirmation step: float a chip showing HOW the ink was parsed
+    /// ("5 × 5") with a Solve button, so a misread never silently becomes a
+    /// wrong answer. Tapping the expression lets the user correct it first.
+    /// `answer` may be nil when we saw "=" but couldn't evaluate yet — the
+    /// chip still appears so a pulse never ends in silence.
+    /// Returns `true` when a chip is showing (caller should hold analyze FX).
+    @discardableResult
+    private func offerCalculation(expression: String,
+                                  answer: String?,
+                                  placement: ReplyPlacement,
+                                  strokes: [PKStroke]) -> Bool {
+        let query = Self.ensureTrailingEquals(expression)
+
+        if !settings.confirmBeforeSolving, let answer {
+            commitCalculation(expression: query, answer: answer,
+                              placement: placement, sourceStrokes: strokes)
+            return false
+        }
+        // Confirm off but no answer yet — try once more, else fall through
+        // to the chip so the user can fix the reading.
+        if !settings.confirmBeforeSolving {
+            if let computed = MathEvaluator.instantAnswer(for: query) {
+                commitCalculation(expression: query, answer: computed,
+                                  placement: placement, sourceStrokes: strokes)
+                return false
+            }
         }
 
-        // Brain off: reply with a local canned line.
-        renderLocalReply(placement: placement, newStrokes: newStrokes)
+        dismissIntentChip()
+        let body = query.hasSuffix("=") ? String(query.dropLast()) : query
+        let shown = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let needsReview = answer == nil
+
+        if needsReview {
+            renderer.setAnalyzingUncertain(true)
+        }
+
+        let chip = MathIntentChip(expression: shown, needsReview: needsReview)
+        chip.onSolve = { [weak self] edited in
+            guard let self else { return }
+            let learned = shown.isEmpty ? 0 : MathCorrectionTrainer.learn(
+                from: strokes, original: shown, corrected: edited)
+            if learned > 0 {
+                let n = learned
+                self.onStatus?(n == 1
+                    ? "Learned 1 symbol from your correction"
+                    : "Learned \(n) symbols from your correction")
+            }
+            let solveQuery = Self.ensureTrailingEquals(edited)
+            guard let solved = MathEvaluator.instantAnswer(for: solveQuery) else {
+                self.onStatus?("Couldn't solve \"\(edited)\" — check the expression.")
+                return
+            }
+            let inline = self.inlineAnswerPlacement(answer: solved, from: placement,
+                                                    sourceStrokes: strokes)
+            let targetCanvas = CGPoint(x: inline.origin.x,
+                                       y: inline.origin.y - inline.xHeight * 0.35)
+            let target = self.canvas.convert(targetCanvas, to: self)
+            self.intentChip = nil
+            self.renderer.endAnalyzing()
+            self.setReadingBanner(false)
+
+            let corrected = edited.trimmingCharacters(in: .whitespacesAndNewlines) != shown
+            let go = {
+                chip.dismissToward(target) {
+                    self.commitCalculation(expression: solveQuery, answer: solved,
+                                           placement: placement, sourceStrokes: strokes)
+                }
+            }
+            if corrected, !shown.isEmpty {
+                // Wrong reading crumples away before the answer writes.
+                self.renderer.crumple(strokes: strokes, completion: go)
+            } else {
+                go()
+            }
+        }
+        chip.onDismiss = { [weak self] in
+            self?.intentChip = nil
+            self?.renderer.endAnalyzing()
+            self?.setReadingBanner(false)
+        }
+
+        let inkRect = placement.detectedLines
+            .max(by: { $0.rect.maxY < $1.rect.maxY })?.rect ?? placement.newInkBounds
+        let anchor = canvas.convert(inkRect, to: self)
+        chip.present(in: self, below: anchor, visibleRect: bounds)
+        intentChip = chip
+        return true
+    }
+
+    /// Banner only after a short delay — short OCR shouldn't flash chrome
+    /// on top of the ink pulse.
+    private func setReadingBanner(_ on: Bool) {
+        readingBannerTask?.cancel()
+        readingBannerTask = nil
+        if on {
+            readingBannerTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                guard let self, !Task.isCancelled else { return }
+                self.onReadingChange?(true)
+            }
+        } else {
+            onReadingChange?(false)
+        }
+    }
+
+    /// Same origin math as `writeInstantAnswer` — used to aim the chip dissolve.
+    /// Character size + baseline come from measuring the user's question ink
+    /// (symbol clusters + tip width), not the ruled-line default.
+    private func inlineAnswerPlacement(answer: String,
+                                       from placement: ReplyPlacement,
+                                       sourceStrokes: [PKStroke] = []) -> ReplyPlacement {
+        let line = placement.detectedLines
+            .max(by: { $0.rect.maxY < $1.rect.maxY })?.rect
+            ?? placement.newInkBounds
+        let hand = InkAnalyzer.measureUserHand(
+            from: sourceStrokes,
+            fallbackLine: line,
+            fallbackXHeight: placement.xHeight)
+        var origin = CGPoint(x: hand.trailX + hand.xHeight * 0.4,
+                             y: hand.baseline)
+        let estimatedWidth = CGFloat(answer.count) * hand.xHeight * 0.7 + 20
+        if origin.x + estimatedWidth > placement.maxX {
+            // Not enough room on the line — fall back to the reply spot below,
+            // still using the matched writing size.
+            origin = placement.origin
+        }
+        var inline = placement
+        inline.origin = origin
+        inline.xHeight = hand.xHeight
+        return inline
+    }
+
+    private func commitCalculation(expression: String, answer: String,
+                                   placement: ReplyPlacement,
+                                   sourceStrokes: [PKStroke] = []) {
+        if penpalEnabled {
+            // Keep it in history so "explain" follow-ups have context.
+            let store = ConversationStore.shared
+            store.append(role: "user", content: expression)
+            store.append(role: "assistant", content: answer)
+        }
+        writeInstantAnswer(answer, placement: placement, expression: expression,
+                           sourceStrokes: sourceStrokes)
+    }
+
+    func dismissIntentChip() {
+        intentChip?.dismiss(animated: false, notify: false)
+        intentChip = nil
+    }
+
+    /// Writes the locally computed answer right after the user's "=" — same
+    /// baseline, their writing size — like Apple Notes' inline math results.
+    /// Ponder → optional ghost scratch (hard "=" press) → answer, with ink
+    /// dust morphing from the expression toward the result.
+    private func writeInstantAnswer(_ answer: String, placement: ReplyPlacement,
+                                    expression: String = "",
+                                    sourceStrokes: [PKStroke] = []) {
+        let inline = inlineAnswerPlacement(answer: answer, from: placement,
+                                           sourceStrokes: sourceStrokes)
+        let line = placement.detectedLines
+            .max(by: { $0.rect.maxY < $1.rect.maxY })?.rect
+            ?? placement.newInkBounds
+
+        let thinkTime = min(1.3, 0.55 + Double(expression.count) * 0.03)
+        let dotSpot = CGPoint(x: inline.origin.x + inline.xHeight * 0.3,
+                              y: inline.origin.y - inline.xHeight * 0.4)
+
+        // Hard press on "=" (or thick stroke) → show ghost scratch work.
+        let intensity = sourceStrokes.isEmpty
+            ? 0
+            : MathInkParser.equalsAskIntensity(in: sourceStrokes)
+        let showWork = intensity >= 0.48
+        let ghostLines = showWork
+            ? MathGhostWork.steps(for: expression, answer: answer)
+            : []
+
+        if !sourceStrokes.isEmpty {
+            renderer.morphToward(dotSpot, from: sourceStrokes, duration: thinkTime * 0.9)
+        }
+
+        renderer.ponder(at: dotSpot, xHeight: placement.xHeight,
+                        duration: thinkTime,
+                        highlighting: line) { [weak self] in
+            guard let self else { return }
+            // Morph dust has landed — clear before ghost / answer ink.
+            self.renderer.cancelCelebrate()
+            let finish = {
+                self.renderReply(answer, placement: inline, celebrate: true,
+                                 matchStrokes: sourceStrokes)
+            }
+            guard !ghostLines.isEmpty else {
+                finish()
+                return
+            }
+            // Ghost steps sit just above the answer baseline.
+            let ghostOrigin = CGPoint(x: inline.origin.x,
+                                      y: inline.origin.y - inline.xHeight * 1.35)
+            var stepStrokeGroups: [[InkStroke]] = []
+            for lineText in ghostLines {
+                let seq = StrokeFont.layoutSequence(
+                    text: lineText,
+                    origin: ghostOrigin,
+                    xHeight: inline.xHeight * 0.85,
+                    maxX: placement.maxX,
+                    lineGap: self.lineGap,
+                    maxY: placement.maxY,
+                    messiness: self.messiness * 0.6,
+                    useUserHand: true,
+                    settings: self.settings)
+                if !seq.strokes.isEmpty { stepStrokeGroups.append(seq.strokes) }
+            }
+            let baseWidth = max(1.0, inline.xHeight * 0.09 * CGFloat(self.settings.penWidthScale))
+            self.renderer.playGhostSteps(stepStrokeGroups, baseWidth: baseWidth,
+                                         hold: 0.4, completion: finish)
+        }
+    }
+
+    /// Heuristic: does recognized text look like a math problem?
+    private func looksLikeMath(_ text: String) -> Bool {
+        if text.contains(where: { "0123456789=+−-×*/÷^√".contains($0) }) { return true }
+        let mathWords = ["solve", "integr", "deriv", "equation", "simplif",
+                        "factor", "fraction", "percent", "angle", "area", "volume"]
+        let lower = text.lowercased()
+        return mathWords.contains { lower.contains($0) }
+    }
+
+    /// The selection pipeline: the boxed region IS the question. Read only
+    /// the ink inside the box, show where Penpal is looking, send to the
+    /// brain, and write the worked answer below the box.
+    /// (Next step on this road: send the boxed region as an image so the
+    /// model sees the actual notation, not just OCR text.)
+    private func solveBoxedProblem(_ box: InkAnalyzer.ProblemBox, all: [PKStroke]) {
+        let enclosed = box.enclosedIndices.map { all[$0] }
+        let boxStroke = all[box.boxStrokeIndex]
+        let traits = traitCollection
+
+        // Pulse the ink inside the box (not a dashed rectangle) while we read.
+        renderer.beginAnalyzing(strokes: enclosed)
+        setReadingBanner(true)
+
+        guard settings.useBrain else {
+            renderer.endAnalyzing()
+            setReadingBanner(false)
+            onStatus?("Boxed problems need the brain — enable it in Settings → Behavior.")
+            return
+        }
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("")
+
+        Task { @MainActor in
+            defer {
+                self.renderer.endAnalyzing()
+                self.setReadingBanner(false)
+            }
+            let heard = await InkRecognizer.recognize(strokes: enclosed, traits: traits)
+            let trimmed = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?("Couldn't read the ink inside the box — try writing a little larger.")
+                return
+            }
+
+            // Boxing is Mathematician-only — always the brain, never the
+            // on-device calculator (same rule as "=" in this mode).
+            let capability = "mathematician"
+
+            let store = ConversationStore.shared
+            let history = store.historyForAPI()
+            do {
+                let reply = try await PenpalAPI.chat(
+                    message: trimmed,
+                    conversationId: store.conversationId,
+                    history: history,
+                    baseURL: self.settings.apiBaseURL,
+                    capability: capability,
+                    mood: self.settings.companionMood,
+                    customMood: self.settings.customMoodText,
+                    mathDetail: self.settings.mathDetail
+                )
+                store.append(role: "user", content: trimmed)
+                store.append(role: "assistant", content: reply)
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.writeBoxedReply(reply, boxStroke: boxStroke,
+                                     boxRect: box.rect, all: all,
+                                     matchStrokes: enclosed)
+            } catch {
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Places a reply directly below the boxed problem, aligned to the box.
+    private func writeBoxedReply(_ text: String, boxStroke: PKStroke,
+                                 boxRect: CGRect, all: [PKStroke],
+                                 matchStrokes: [PKStroke] = []) {
+        let virtualBounds = CGRect(x: 0, y: 0,
+                                   width: bounds.width,
+                                   height: contentHeight + max(400, bounds.height))
+        guard let placement = InkAnalyzer.placement(
+            newStrokes: [boxStroke],
+            previousBottom: max(lastReplyBottom, boxRect.maxY),
+            pageBounds: virtualBounds,
+            leftMargin: leftMargin,
+            lineGap: lineGap,
+            rulesTopInset: rulesTopInset,
+            occupiedStrokes: all,
+            preferredXHeight: lineRelativeXHeight) else { return }
+        renderReply(text, placement: placement, matchStrokes: matchStrokes)
     }
 
     // MARK: - Reply rendering (shared by pencil + local paths)
@@ -911,18 +1504,38 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Picks a local canned line for the new ink and renders it.
     private func renderLocalReply(placement: ReplyPlacement, newStrokes: [PKStroke]) {
         guard case .text(let text) = provider.reply(toNewInk: newStrokes) else { return }
-        renderReply(text, placement: placement)
+        renderReply(text, placement: placement, matchStrokes: newStrokes)
     }
 
     /// Writes `text` at `placement`, either as typeset font or drawn in the
     /// user's trained hand, then advances the reply baseline.
-    private func renderReply(_ text: String, placement: ReplyPlacement) {
+    /// `celebrate` adds a soft wash under the finished ink (instant math).
+    /// `matchStrokes` — when set, answer width/color track the user's ink so
+    /// the bake into PencilKit doesn't look thinner/fainter than what they wrote.
+    private func renderReply(_ text: String, placement: ReplyPlacement,
+                             celebrate: Bool = false,
+                             matchStrokes: [PKStroke] = []) {
+        let matched = Self.sampleUserInk(from: matchStrokes)
+        let formulaWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
+        // Tip tracks their Pencil width (slightly lighter); glyph height comes
+        // from `placement.xHeight`, which instant math sets from their symbols.
+        let baseWidth = matched.map { max(formulaWidth * 0.85, $0.width * 1.05) }
+            ?? (formulaWidth * 0.9)
+        let bakeColor = matched?.color ?? bakedInkColor
+
         // Typed-font replies bypass the stroke pipeline entirely.
         if settings.replyStyle == "font" {
-            let bottom = writeTypedReply(text, placement: placement)
+            let bottom = writeTypedReply(text, placement: placement, color: bakeColor)
             lastReplyBottom = bottom
             ensureRoom(below: bottom + lineGap * 2)
             scrollToReveal(placement.origin.y)
+            if celebrate {
+                let w = CGFloat(text.count) * placement.xHeight * 0.55 + 8
+                let rect = CGRect(x: placement.origin.x,
+                                  y: placement.origin.y - placement.xHeight * 1.1,
+                                  width: w, height: placement.xHeight * 1.35)
+                renderer.celebrateAnswer(in: rect)
+            }
             return
         }
 
@@ -948,7 +1561,17 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         if settings.diagnostics, sequence.confidence < 0.55 {
             onStatus?("This reply uses low-confidence fallback glyphs. Train its words for a closer match.")
         }
-        let strokes = sequence.strokes
+        // Stamp constant tip width so the animation uses the opaque filled
+        // outline path (same visual weight as real Pencil ink), not a thin stroke.
+        let strokes: [InkStroke] = sequence.strokes.map { s in
+            var copy = s
+            if copy.isDot {
+                copy.dotRadius = max(copy.dotRadius, baseWidth * 0.45)
+            } else if copy.points.count > 1 {
+                copy.widths = Array(repeating: baseWidth, count: copy.points.count)
+            }
+            return copy
+        }
         let bottomY = sequence.bottomY
 
         let letters = text.filter { $0.isLetter || $0.isNumber }.count
@@ -961,28 +1584,51 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         ensureRoom(below: bottomY + lineGap * 2)
         scrollToReveal(placement.origin.y)
 
-        let baseWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
         onWritingStateChange?(true)
-        pendingBake = (strokes, baseWidth, bottomY)
+        pendingBake = (strokes, baseWidth, bottomY, bakeColor)
         bakedUpTo = 0
+
+        let celebrateRect: CGRect = {
+            let union = strokes.reduce(CGRect.null) { partial, s in
+                let pts = s.points
+                guard let first = pts.first else { return partial }
+                var r = CGRect(origin: first, size: .zero)
+                for p in pts.dropFirst() { r = r.union(CGRect(origin: p, size: .zero)) }
+                return partial.union(r.insetBy(dx: -2, dy: -placement.xHeight * 0.15))
+            }
+            return union.isNull
+                ? CGRect(x: placement.origin.x,
+                         y: placement.origin.y - placement.xHeight,
+                         width: CGFloat(text.count) * placement.xHeight * 0.55,
+                         height: placement.xHeight * 1.3)
+                : union
+        }()
 
         let preRoll = showDetection ? 0.45 : 0.10
         DispatchQueue.main.asyncAfter(deadline: .now() + preRoll) { [weak self] in
             guard let self else { return }
+            // Match animation color to bake color (and to the user's ink).
+            self.renderer.inkColor = bakeColor
+            // widths are already absolute tip sizes — don't re-scale by pen slider.
+            let savedScale = self.renderer.widthScale
+            self.renderer.widthScale = 1
             self.renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
-                // Each finished stroke becomes real canvas ink immediately.
                 guard let self, let pending = self.pendingBake,
                       i < pending.strokes.count else { return }
-                self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth)
+                self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth,
+                                color: pending.color)
                 self.bakedUpTo = i + 1
             }) { [weak self] in
                 guard let self else { return }
+                self.renderer.widthScale = savedScale
                 self.pendingBake = nil
                 self.bakedUpTo = 0
                 self.lastReplyBottom = bottomY
                 self.onWritingStateChange?(false)
                 self.publishUndoRedo()
-                // If the user kept writing while we replied, answer that too.
+                if celebrate {
+                    self.renderer.celebrateAnswer(in: celebrateRect)
+                }
                 if self.autoReply, self.canvas.drawing.strokes.count > self.lastReplyStrokeCount {
                     self.canvasViewDrawingDidChange(self.canvas)
                 }

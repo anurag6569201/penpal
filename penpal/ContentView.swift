@@ -21,6 +21,7 @@ struct MagicPaper: UIViewRepresentable {
     var penpalEnabled: Bool
     var onWritingStateChange: (Bool) -> Void
     var onThinkingChange: (Bool) -> Void
+    var onReadingChange: (Bool) -> Void
     var onStatus: (String) -> Void
     var onDrawingChange: (PKDrawing) -> Void
     var onUndoRedoChange: (Bool, Bool) -> Void
@@ -43,6 +44,7 @@ struct MagicPaper: UIViewRepresentable {
         view.penpalEnabled = penpalEnabled
         view.onWritingStateChange = onWritingStateChange
         view.onThinkingChange = onThinkingChange
+        view.onReadingChange = onReadingChange
         view.onStatus = onStatus
         view.onDrawingChange = onDrawingChange
         view.onUndoRedoChange = onUndoRedoChange
@@ -63,6 +65,7 @@ struct ContentView: View {
     @State private var stickyHidden = true
     @State private var isWriting = false
     @State private var isThinking = false
+    @State private var isReading = false
     @State private var canUndo = false
     @State private var canRedo = false
     @State private var showTraining = false
@@ -288,15 +291,44 @@ struct ContentView: View {
         }
     }
 
+    private var isMathematician: Bool { settings.capability == "mathematician" }
+
+    private var penpalBannerText: String {
+        if isReading { return "Reading expression…" }
+        if isThinking { return isMathematician ? "Penpal is solving…" : "Penpal is thinking…" }
+        if isWriting { return "Penpal is writing…" }
+        return isMathematician
+            ? "Mathematician — write a problem, end with ="
+            : "Companion — write and it replies"
+    }
+
     private var penpalBanner: some View {
         HStack(spacing: 8) {
-            if isWriting || isThinking {
+            if isWriting || isThinking || isReading {
                 ProgressView().controlSize(.small)
             } else {
-                Image(systemName: "signature").foregroundStyle(.indigo)
+                // Quick capability switcher — one tap, no settings trip.
+                Menu {
+                    ForEach(PenpalSettingsView.capabilities, id: \.tag) { cap in
+                        Button {
+                            settings.capability = cap.tag
+                        } label: {
+                            Label(cap.title, systemImage:
+                                settings.capability == cap.tag ? "checkmark" : cap.icon)
+                        }
+                    }
+                    Divider()
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Label("Capability settings…", systemImage: "slider.horizontal.3")
+                    }
+                } label: {
+                    Image(systemName: isMathematician ? "x.squareroot" : "signature")
+                        .foregroundStyle(.indigo)
+                }
             }
-            Text(isThinking ? "Penpal is thinking…"
-                 : (isWriting ? "Penpal is writing…" : "Penpal is on — write and it replies"))
+            Text(penpalBannerText)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
             Button {
@@ -331,6 +363,7 @@ struct ContentView: View {
                     }
                 },
                 onThinkingChange: { isThinking = $0 },
+                onReadingChange: { isReading = $0 },
                 onStatus: { message in
                     guard !message.isEmpty else { return }
                     statusMessage = message

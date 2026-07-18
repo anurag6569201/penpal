@@ -21,6 +21,10 @@ enum GlyphAlign {
     /// Small marks keep their drawn position and size — snapping a comma to
     /// the baseline or scaling an apostrophe to x-height mangles them.
     private static let smallMarks: Set<Character> = [".", ",", "'", "\"", ":", ";", "-"]
+    /// Math operators — keep drawn size; don't snap like letters.
+    private static let mathMarks: Set<Character> = [
+        "+", "*", "/", "=", "^", "%", "!", "×", "÷", "√", "(", ")"
+    ]
 
     /// LINE TRUST: the user writes against visible guide lines in the trainer,
     /// so the captured geometry (already normalized by those lines) IS the
@@ -30,7 +34,7 @@ enum GlyphAlign {
     /// the baseline when a capture clearly floated off it — shifts move ink,
     /// they never distort it.
     static func normalize(_ glyph: PersonalGlyph, forChar ch: Character? = nil) -> PersonalGlyph {
-        if let ch, smallMarks.contains(ch) {
+        if let ch, smallMarks.contains(ch) || mathMarks.contains(ch) {
             return rebaseWidth(glyph)
         }
         var g = glyph
