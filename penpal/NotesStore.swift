@@ -167,6 +167,13 @@ nonisolated struct ReplyInk: Identifiable, Codable, Hashable {
     }
 }
 
+/// What kind of paper a note is. `.ink` is the classic PencilKit canvas;
+/// `.coded` renders the note's HTML in a web view — the page IS the paper.
+nonisolated enum NoteKind: String, Codable, Hashable {
+    case ink
+    case coded
+}
+
 nonisolated struct Note: Identifiable, Codable, Hashable {
     var id: UUID
     var folderID: UUID
@@ -180,6 +187,10 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     /// AI hand-written replies, stored as renderer strokes (optional for
     /// backward compatibility).
     var replyInks: [ReplyInk]?
+    /// Paper kind (optional for backward compatibility — nil means .ink).
+    var kind: NoteKind?
+    /// Source of a coded paper (HTML/CSS/JS). Only used when kind == .coded.
+    var htmlContent: String?
     var createdAt: Date
     var modifiedAt: Date
     var deletedAt: Date?
@@ -192,6 +203,8 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
          attachments: [NoteAttachment] = [],
          typedTexts: [TypedNoteText]? = nil,
          replyInks: [ReplyInk]? = nil,
+         kind: NoteKind? = nil,
+         htmlContent: String? = nil,
          createdAt: Date = .now,
          modifiedAt: Date = .now,
          deletedAt: Date? = nil) {
@@ -203,12 +216,16 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
         self.attachments = attachments
         self.typedTexts = typedTexts
         self.replyInks = replyInks
+        self.kind = kind
+        self.htmlContent = htmlContent
         self.createdAt = createdAt
         self.modifiedAt = modifiedAt
         self.deletedAt = deletedAt
     }
 
     var isDeleted: Bool { deletedAt != nil }
+
+    var isCoded: Bool { kind == .coded }
 
     var displayTitle: String {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -219,6 +236,7 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
             .map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !firstLine.isEmpty { return firstLine }
+        if isCoded { return "Coded paper" }
         if !drawingData.isEmpty || !(replyInks ?? []).isEmpty { return "Handwritten note" }
         if let first = typedTexts?.first?.text.trimmingCharacters(in: .whitespacesAndNewlines),
            !first.isEmpty {
@@ -235,6 +253,7 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
                 .prefix(120)
                 .description
         }
+        if isCoded { return "Coded paper — HTML page" }
         if !drawingData.isEmpty || !(replyInks ?? []).isEmpty { return "Handwritten note" }
         if let texts = typedTexts, !texts.isEmpty {
             return texts.map(\.text).joined(separator: " ")
@@ -398,10 +417,14 @@ final class NotesStore: ObservableObject {
     }
 
     @discardableResult
-    func createNote(in folderID: UUID? = nil) -> Note {
+    func createNote(in folderID: UUID? = nil, kind: NoteKind = .ink) -> Note {
         let targetFolder = resolveWritableFolderID(folderID)
         var note = Note(folderID: targetFolder)
         note.title = ""
+        if kind == .coded {
+            note.kind = .coded
+            note.htmlContent = CodedPaper.starterHTML
+        }
         notes.insert(note, at: 0)
         selectedFolderID = targetFolder
         selectedNoteID = note.id
@@ -442,6 +465,8 @@ final class NotesStore: ObservableObject {
            existing.attachments == note.attachments,
            (existing.typedTexts ?? []) == (note.typedTexts ?? []),
            (existing.replyInks ?? []) == (note.replyInks ?? []),
+           existing.kind == note.kind,
+           existing.htmlContent == note.htmlContent,
            existing.folderID == note.folderID {
             return
         }
@@ -495,6 +520,18 @@ final class NotesStore: ObservableObject {
               let idx = notes.firstIndex(where: { $0.id == id }) else { return }
         guard (notes[idx].typedTexts ?? []) != texts else { return }
         notes[idx].typedTexts = texts
+        notes[idx].modifiedAt = .now
+        scheduleSave()
+    }
+
+    /// HTML source for a coded paper (persisted with it). Targets an explicit
+    /// note ID — the selection may already have moved on when a debounced
+    /// save from the editor lands.
+    func updateHTML(_ html: String, for id: UUID) {
+        guard let idx = notes.firstIndex(where: { $0.id == id }),
+              notes[idx].isCoded else { return }
+        guard notes[idx].htmlContent != html else { return }
+        notes[idx].htmlContent = html
         notes[idx].modifiedAt = .now
         scheduleSave()
     }

@@ -99,6 +99,61 @@ enum PenpalAPI {
         return reply
     }
 
+    /// Boxed problems: send the ink image straight to the Mathematician —
+    /// no OCR, no transcription. The model reads the notation as drawn.
+    static func solveMathImage(
+        pngData: Data,
+        history: [ChatRequest.Turn],
+        baseURL: String,
+        mathDetail: String = "compact"
+    ) async throws -> String {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/solve-math/") else {
+            throw APIError.badURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Full-page problems run solve + verify (+ maybe a correction pass).
+        request.timeoutInterval = 120
+
+        struct SolveMathRequest: Encodable {
+            let image: String
+            let history: [ChatRequest.Turn]
+            let math_detail: String
+        }
+        let body = SolveMathRequest(
+            image: pngData.base64EncodedString(),
+            history: history,
+            math_detail: mathDetail
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200...299).contains(code) {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            if let parsed = try? JSONDecoder().decode(ChatResponse.self, from: data),
+               let err = parsed.error, !err.isEmpty {
+                throw APIError.http(code, err)
+            }
+            throw APIError.http(code, text.isEmpty ? "no body" : text)
+        }
+
+        let parsed = try JSONDecoder().decode(ChatResponse.self, from: data)
+        let reply = parsed.reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else { throw APIError.emptyReply }
+        return reply
+    }
+
     static func health(baseURL: String) async -> Bool {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: trimmed + "/api/health/") else { return false }

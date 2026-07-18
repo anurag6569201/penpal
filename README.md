@@ -8,9 +8,17 @@ Pick who Penpal is in Settings → Penpal (or one tap from the banner):
 
 - **Companion** — conversation, in a mood you choose: warm friend, playful,
   thoughtful, coach, or a custom persona described in your own words.
-- **Mathematician** — solves anything step by step (algebra, calculus, trig,
-  word problems…), verified before it's written, one step per ruled line,
-  ending in `Ans:`. Write "explain" after a solution for a deeper walkthrough.
+- **Mathematician** — solves anything step by step, from arithmetic to
+  university level (algebra, calculus, linear algebra, differential
+  equations, number theory, probability, proofs, olympiad problems…).
+  Every answer runs through a three-stage pipeline: a SymPy computer-algebra
+  engine computes exact results first where it can, Gemini writes the steps
+  around them, then an independent referee pass re-derives the answer and
+  triggers a rewrite if anything is off. One step per ruled line, ending in
+  `Ans:`. After a solution, tappable chips offer one-tap follow-ups —
+  Explain, Another way, Harder — or write "check" above your own work to
+  find your first wrong line. Detail level (Answer / Compact / Full / Proof)
+  switches from the on-page banner or Settings.
 
 Always on, in any capability:
 
@@ -21,8 +29,10 @@ Always on, in any capability:
   No cloud call for plain calculation. Fixing the Solve chip also trains
   those glyphs from your ink automatically.
 - **Box a problem** — draw a box or circle around any written problem and
-  Penpal reads exactly what's inside, shows where it looked, and writes the
-  answer below the box. Math inside a box goes to the Mathematician even in
+  the ink inside is sent to the model as an image, no OCR in between: it
+  sees stacked fractions, exponents, roots and matrices exactly as drawn,
+  states its reading ("Reading as: ..."), and writes the verified answer
+  below the box. Math inside a box goes to the Mathematician even in
   Companion mode.
 
 ## Quick start (brain)

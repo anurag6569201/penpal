@@ -208,69 +208,180 @@ enum InkAnalyzer {
 
     // MARK: - Problem box (draw a box/circle around a problem → ask the AI)
 
-    /// A closed loop the user drew around some of their ink. The rect gives
-    /// the AI a visual scope: "the question is HERE". Enclosed strokes are
-    /// what gets read (and later, the region we could send as an image).
+    /// A loop the user drew around some of their ink. The rect gives the AI
+    /// a visual scope: "the question is HERE". Enclosed strokes are what
+    /// gets sent (as an image). The loop itself may be one stroke or a box
+    /// drawn as 2–4 segments with pen lifts at the corners.
     struct ProblemBox {
         var rect: CGRect
-        var boxStrokeIndex: Int      // index into the full drawing's strokes
+        var boxStrokeIndices: [Int]  // indices of the loop stroke(s)
         var enclosedIndices: [Int]   // indices of the ink inside the box
+        var boxStrokeIndex: Int { boxStrokeIndices[0] }
     }
 
     /// Scans the newly drawn strokes (tail of `all`, starting at `newStart`)
-    /// for a box/circle enclosing OTHER ink. Newest first — the enclosure is
-    /// usually the last thing drawn.
+    /// for a box/circle/loop enclosing OTHER ink. Newest first — the
+    /// enclosure is usually the last thing drawn. Falls back to combining
+    /// the last 2–4 strokes, for boxes drawn edge by edge.
     static func detectProblemBox(all: [PKStroke], newStart: Int) -> ProblemBox? {
-        guard newStart < all.count else { return nil }
+        guard newStart < all.count, all.count >= 2 else { return nil }
+
+        // 1) Single-stroke loop (rectangle, circle, rounded box, sloppy oval).
         for idx in stride(from: all.count - 1, through: newStart, by: -1) {
-            guard let rect = enclosureRect(of: all[idx]) else { continue }
-            let inner = rect.insetBy(dx: -4, dy: -4)   // slight tolerance
-            let enclosed = all.indices.filter { i in
-                i != idx && inner.contains(all[i].renderBounds)
+            let pts = all[idx].path.interpolatedPoints(by: .distance(4)).map(\.location)
+            guard let rect = enclosureRect(pointGroups: [pts]) else { continue }
+            if let box = problemBox(rect: rect, boxIdxs: [idx], all: all) {
+                return box
             }
-            guard !enclosed.isEmpty else { continue }
-            // The loop must be an OUTLINE around the ink, not ink that happens
-            // to overlap: enclosed content should sit visibly inside.
-            let contentBounds = enclosed.reduce(CGRect.null) { $0.union(all[$1].renderBounds) }
-            guard contentBounds.width < rect.width * 0.96,
-                  contentBounds.height < rect.height * 0.96 else { continue }
-            return ProblemBox(rect: rect, boxStrokeIndex: idx, enclosedIndices: enclosed)
+        }
+
+        // 2) Multi-stroke box: the newest stroke plus up to 3 before it,
+        //    drawn close together in time, forming one outline.
+        let last = all.count - 1
+        for k in 2...4 {
+            let start = last - k + 1
+            guard start >= 0 else { break }
+            let segment = Array(start...last)
+            // Same gesture: segments drawn within a short window.
+            let dates = segment.map { all[$0].path.creationDate }
+            guard let first = dates.min(), let latest = dates.max(),
+                  latest.timeIntervalSince(first) < 10 else { continue }
+            let groups = segment.map { i in
+                all[i].path.interpolatedPoints(by: .distance(4)).map(\.location)
+            }
+            guard let rect = enclosureRect(pointGroups: groups) else { continue }
+            if let box = problemBox(rect: rect, boxIdxs: segment, all: all) {
+                return box
+            }
         }
         return nil
     }
 
-    /// Is this stroke a deliberate closed enclosure (rectangle, circle,
-    /// rounded box)? Returns its bounding rect if so.
-    private static func enclosureRect(of stroke: PKStroke) -> CGRect? {
-        let pts = stroke.path.interpolatedPoints(by: .distance(4)).map(\.location)
+    /// Builds the ProblemBox for a candidate loop: collects the ink inside.
+    /// A stroke counts as enclosed when fully inside, or mostly inside with
+    /// just a tail poking out. The actual payload sent to the model is a
+    /// CROP of the whole region, so this list only drives the highlight
+    /// animation — misclassifying a stroke here can't lose problem content.
+    private static func problemBox(rect: CGRect, boxIdxs: [Int],
+                                   all: [PKStroke]) -> ProblemBox? {
+        let inner = rect.insetBy(dx: -6, dy: -6)
+        let boxSet = Set(boxIdxs)
+        var enclosed: [Int] = []
+        for i in all.indices where !boxSet.contains(i) {
+            let rb = all[i].renderBounds
+            if inner.contains(rb) {
+                enclosed.append(i)
+                continue
+            }
+            let inter = inner.intersection(rb)
+            guard !inter.isNull, rb.width * rb.height > 0 else { continue }
+            let overlap = (inter.width * inter.height) / (rb.width * rb.height)
+            if overlap > 0.4, inner.contains(CGPoint(x: rb.midX, y: rb.midY)) {
+                enclosed.append(i)
+            }
+        }
+        // The loop must contain SOME ink — that's all. A tight box around a
+        // full page of work is still a box; no "content must be visibly
+        // smaller" ratio (that's what rejected big tight boxes).
+        guard !enclosed.isEmpty else { return nil }
+        return ProblemBox(rect: rect, boxStrokeIndices: boxIdxs,
+                          enclosedIndices: enclosed)
+    }
+
+    /// Do these point groups form a deliberate enclosure (rectangle, circle,
+    /// rounded box — closed, or nearly closed with a small gap)? Returns the
+    /// bounding rect if so.
+    private static func enclosureRect(pointGroups: [[CGPoint]]) -> CGRect? {
+        let pts = pointGroups.flatMap { $0 }
         guard pts.count >= 10 else { return nil }
-        let b = stroke.renderBounds
-        // Big enough to be "around a problem", not a letter (o, 0, box glyph).
-        guard b.width > 70, b.height > 34 else { return nil }
-
-        var length: CGFloat = 0
-        for i in 1..<pts.count {
-            length += hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
-        }
-        // Closed: pen returned (nearly) to where it started.
-        let gap = hypot(pts[0].x - pts[pts.count - 1].x, pts[0].y - pts[pts.count - 1].y)
-        guard gap < max(24, length * 0.15) else { return nil }
-
-        // One clean lap: path length ≈ bounds perimeter (rect ≈ 1.0×,
-        // ellipse ≈ 0.8×). A scribble or spiral is much longer.
-        let perimeter = 2 * (b.width + b.height)
-        guard length > perimeter * 0.62, length < perimeter * 1.45 else { return nil }
-
-        // The path hugs the border of its bounds (never cuts through the
-        // middle, where the problem ink lives).
-        let tolerance = max(16, min(b.width, b.height) * 0.26)
-        var hugging = 0
+        var b = CGRect.null
         for p in pts {
-            let edgeDistance = min(abs(p.x - b.minX), abs(p.x - b.maxX),
-                                   abs(p.y - b.minY), abs(p.y - b.maxY))
-            if edgeDistance < tolerance { hugging += 1 }
+            b = b.union(CGRect(x: p.x, y: p.y, width: 0.1, height: 0.1))
         }
-        guard CGFloat(hugging) / CGFloat(pts.count) > 0.55 else { return nil }
+        // Big enough to be "around a problem", not a letter (o, 0, box glyph).
+        guard b.width > 56, b.height > 26 else { return nil }
+
+        // Path length within each segment (never across pen lifts).
+        var length: CGFloat = 0
+        for group in pointGroups {
+            for i in 1..<max(1, group.count) {
+                length += hypot(group[i].x - group[i - 1].x,
+                                group[i].y - group[i - 1].y)
+            }
+        }
+        // One lap: length ≈ bounds perimeter (rect ≈ 1.0×, ellipse ≈ 0.8×,
+        // diagonal-ish lasso ≈ 0.7×). A spiral is much longer; a line shorter.
+        let perimeter = 2 * (b.width + b.height)
+        guard length > perimeter * 0.5, length < perimeter * 2.2 else { return nil }
+
+        // Edge proximity — binned COVERAGE along each edge, so two corner
+        // clusters can't fake a whole edge (kills U- and C-shapes).
+        let tolerance = max(18, min(b.width, b.height) * 0.30)
+        let binCount = 8
+        var hugging = 0
+        var leftBins = Set<Int>(), rightBins = Set<Int>()
+        var topBins = Set<Int>(), bottomBins = Set<Int>()
+        for p in pts {
+            let dl = abs(p.x - b.minX), dr = abs(p.x - b.maxX)
+            let dt = abs(p.y - b.minY), db = abs(p.y - b.maxY)
+            if min(dl, dr, dt, db) < tolerance { hugging += 1 }
+            let xBin = min(binCount - 1, max(0, Int((p.x - b.minX) / b.width * CGFloat(binCount))))
+            let yBin = min(binCount - 1, max(0, Int((p.y - b.minY) / b.height * CGFloat(binCount))))
+            if dl < tolerance { leftBins.insert(yBin) }
+            if dr < tolerance { rightBins.insert(yBin) }
+            if dt < tolerance { topBins.insert(xBin) }
+            if db < tolerance { bottomBins.insert(xBin) }
+        }
+        let hugRatio = CGFloat(hugging) / CGFloat(pts.count)
+        let needBins = binCount / 2 + 1
+        let allFourEdges = leftBins.count >= needBins && rightBins.count >= needBins
+            && topBins.count >= needBins && bottomBins.count >= needBins
+
+        if pointGroups.count == 1 {
+            // Anti-spiral: net rotation of one deliberate loop ≈ ±360°.
+            // A spiral turns far more; cap at ~576° (some corner wobble is fine).
+            var turning: CGFloat = 0
+            var lastHeading: CGFloat? = nil
+            for i in 1..<pts.count {
+                let dx = pts[i].x - pts[i - 1].x, dy = pts[i].y - pts[i - 1].y
+                guard dx * dx + dy * dy > 1 else { continue }
+                let heading = atan2(dy, dx)
+                if let prev = lastHeading {
+                    var d = heading - prev
+                    while d > .pi { d -= 2 * .pi }
+                    while d < -.pi { d += 2 * .pi }
+                    turning += d
+                }
+                lastHeading = heading
+            }
+            guard abs(turning) < 3.2 * .pi else { return nil }
+
+            // Does the stroke actually ENCIRCLE area? Shoelace area of the
+            // closed polygon: a real loop — round, boxy, sloppy, page-sized,
+            // shape doesn't matter — surrounds most of its bounds; scribbles
+            // and lines surround almost none. This is what makes big lazy
+            // lassos work where "hug the bounding rect" fails.
+            var area2: CGFloat = 0
+            for i in 0..<pts.count {
+                let p = pts[i], q = pts[(i + 1) % pts.count]
+                area2 += p.x * q.y - q.x * p.y
+            }
+            let area = abs(area2) / 2
+            let encircles = area > b.width * b.height * 0.30
+                && area > length * length * 0.035
+
+            let gap = hypot(pts[0].x - pts[pts.count - 1].x,
+                            pts[0].y - pts[pts.count - 1].y)
+            let closed = gap < max(48, length * 0.28)
+
+            if encircles, closed || allFourEdges { return b }
+            // Rectangle-ish fallback: closed and hugging its bounds.
+            if closed, hugRatio > 0.5 { return b }
+            return nil
+        }
+
+        // Multi-segment box: every edge inked, path near the border.
+        guard hugRatio > 0.5, allFourEdges else { return nil }
         return b
     }
 

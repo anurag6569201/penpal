@@ -1410,24 +1410,39 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         return mathWords.contains { lower.contains($0) }
     }
 
-    /// The selection pipeline: the boxed region IS the question. Read only
-    /// the ink inside the box, show where Penpal is looking, send to the
-    /// brain, and write the worked answer below the box.
-    /// (Next step on this road: send the boxed region as an image so the
-    /// model sees the actual notation, not just OCR text.)
+    /// The selection pipeline: the boxed region IS the question. The ink
+    /// inside the box is rendered to an image and sent DIRECTLY to the
+    /// model — no OCR, no transcription. The model sees stacked fractions,
+    /// exponents, roots and matrices exactly as drawn, states its reading
+    /// ("Reading as: ..."), solves, and the answer is written below the box.
     private func solveBoxedProblem(_ box: InkAnalyzer.ProblemBox, all: [PKStroke]) {
         let enclosed = box.enclosedIndices.map { all[$0] }
+        let boxStrokes = box.boxStrokeIndices.map { all[$0] }
         let boxStroke = all[box.boxStrokeIndex]
-        let traits = traitCollection
 
-        // Pulse the ink inside the box (not a dashed rectangle) while we read.
+        // Pulse the ink inside the box, and trace the box itself so the
+        // user sees the gesture landed before anything else happens.
         renderer.beginAnalyzing(strokes: enclosed)
+        boxStrokes.forEach { renderer.traceBox($0) }
         setReadingBanner(true)
 
         guard settings.useBrain else {
             renderer.endAnalyzing()
             setReadingBanner(false)
             onStatus?("Boxed problems need the brain — enable it in Settings → Behavior.")
+            return
+        }
+        // The picture is a CROP of the boxed region — every stroke visible
+        // inside the loop is in it (minus the loop itself), so nothing the
+        // user boxed can go missing from the problem.
+        let boxSet = Set(box.boxStrokeIndices)
+        let content = all.indices.filter { !boxSet.contains($0) }.map { all[$0] }
+        let region = box.rect.insetBy(dx: -10, dy: -10)
+        guard !enclosed.isEmpty,
+              let png = Self.renderInkImage(strokes: content, region: region) else {
+            renderer.endAnalyzing()
+            setReadingBanner(false)
+            onStatus?("Nothing readable inside the box — write the problem, then box it.")
             return
         }
         onThinkingChange?(true)
@@ -1439,36 +1454,24 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 self.renderer.endAnalyzing()
                 self.setReadingBanner(false)
             }
-            let heard = await InkRecognizer.recognize(strokes: enclosed, traits: traits)
-            let trimmed = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                self.onThinkingChange?(false)
-                self.onWritingStateChange?(false)
-                self.onStatus?("Couldn't read the ink inside the box — try writing a little larger.")
-                return
-            }
-
-            // Boxing is Mathematician-only — always the brain, never the
-            // on-device calculator (same rule as "=" in this mode).
-            let capability = "mathematician"
-
             let store = ConversationStore.shared
             let history = store.historyForAPI()
             do {
-                let reply = try await PenpalAPI.chat(
-                    message: trimmed,
-                    conversationId: store.conversationId,
+                let reply = try await PenpalAPI.solveMathImage(
+                    pngData: png,
                     history: history,
                     baseURL: self.settings.apiBaseURL,
-                    capability: capability,
-                    mood: self.settings.companionMood,
-                    customMood: self.settings.customMoodText,
                     mathDetail: self.settings.mathDetail
                 )
-                store.append(role: "user", content: trimmed)
+                // The reply opens with "Reading as: ..." — that line carries
+                // the problem into conversation history for follow-ups.
+                store.append(role: "user", content: "(boxed handwritten problem, sent as image)")
                 store.append(role: "assistant", content: reply)
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
+                // The box was an instruction, not content — dissolve it as
+                // the answer starts writing, leaving only real work on the page.
+                self.dissolveBoxStrokes(boxStrokes)
                 self.writeBoxedReply(reply, boxStroke: boxStroke,
                                      boxRect: box.rect, all: all,
                                      matchStrokes: enclosed)
@@ -1478,6 +1481,65 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 self.onStatus?(error.localizedDescription)
             }
         }
+    }
+
+    /// Renders strokes to a white-background PNG the vision model can read.
+    /// Forces light appearance so dark-mode ink doesn't come out white-on-white.
+    /// `region`: crop to this rect (the inside of the user's loop) instead of
+    /// the strokes' own bounds — everything visible there makes the picture,
+    /// including strokes that only pass through.
+    static func renderInkImage(strokes: [PKStroke], region: CGRect? = nil) -> Data? {
+        let drawing = PKDrawing(strokes: strokes)
+        var rect = region ?? drawing.bounds.insetBy(dx: -16, dy: -16)
+        guard !rect.isNull, rect.width > 4, rect.height > 4 else { return nil }
+        // Cap the long side so the upload stays under the API limit, but keep
+        // enough pixels that a half-page or full-page problem stays legible —
+        // handwriting PNGs compress well, so 2560px is still a small file.
+        let maxSide: CGFloat = 2560
+        let scale = min(2, maxSide / max(rect.width, rect.height))
+        rect = rect.integral
+
+        var inkImage = UIImage()
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            inkImage = drawing.image(from: rect, scale: scale)
+        }
+        guard inkImage.size.width > 0, inkImage.size.height > 0 else { return nil }
+
+        // Flatten onto white at full pixel resolution (rect points × scale).
+        let pixelSize = CGSize(width: rect.width * scale, height: rect.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
+        let flattened = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: pixelSize))
+            inkImage.draw(in: CGRect(origin: .zero, size: pixelSize))
+        }
+        return flattened.pngData()
+    }
+
+    /// Removes the box gesture stroke(s) from the canvas while the renderer
+    /// fades ghosts of them — the gesture served its purpose; the page keeps
+    /// only actual work. Handles boxes drawn as one loop or several segments.
+    private func dissolveBoxStrokes(_ boxStrokes: [PKStroke]) {
+        var strokes = canvas.drawing.strokes
+        var removedAny = false
+        for boxStroke in boxStrokes {
+            guard let idx = strokes.firstIndex(where: {
+                $0.renderBounds == boxStroke.renderBounds
+            }) else { continue }
+            let removed = strokes.remove(at: idx)
+            renderer.dissolveStrokeGhost(removed)
+            removedAny = true
+        }
+        guard removedAny else { return }
+        suppressChanges = true
+        canvas.drawing = PKDrawing(strokes: strokes)
+        suppressChanges = false
+        lastReplyStrokeCount = min(lastReplyStrokeCount, strokes.count)
+        onDrawingChange?(canvas.drawing)
+        publishUndoRedo()
     }
 
     /// Places a reply directly below the boxed problem, aligned to the box.
@@ -1496,7 +1558,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             rulesTopInset: rulesTopInset,
             occupiedStrokes: all,
             preferredXHeight: lineRelativeXHeight) else { return }
-        renderReply(text, placement: placement, matchStrokes: matchStrokes)
+        // Celebrate: the soft ink wash under the finished answer — the same
+        // "newly inked" beat instant math gets.
+        renderReply(text, placement: placement, celebrate: true,
+                    matchStrokes: matchStrokes)
     }
 
     // MARK: - Reply rendering (shared by pencil + local paths)

@@ -72,6 +72,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showPrefer = false
     @State private var naturalness: Double = 0.5
+    @State private var showMathChips = false
     @State private var statusMessage = ""
     @State private var showStatus = false
     @State private var showFormat = false
@@ -123,6 +124,13 @@ struct ContentView: View {
         }
         .onChange(of: penpalOn) { _, on in
             if on { proxy.view?.syncReplyBaselineToCurrentInk() }
+            else { showMathChips = false }
+        }
+        .onChange(of: settings.capability) { _, _ in
+            showMathChips = false
+        }
+        .onChange(of: store.selectedNoteID) { _, _ in
+            showMathChips = false
         }
         .onChange(of: photoItem) { _, item in
             Task { await importPhoto(item) }
@@ -170,19 +178,30 @@ struct ContentView: View {
         ZStack(alignment: .bottom) {
             Color(.systemBackground).ignoresSafeArea()
 
-            if store.selectedNote != nil {
-                noteSurface
+            if let note = store.selectedNote {
+                if note.isCoded {
+                    // Coded paper: the note is a rendered HTML page, not a canvas.
+                    CodedPaperView(store: store)
+                } else {
+                    noteSurface
 
-                if penpalOn {
-                    penpalBanner
-                        .padding(.bottom, 20)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+                    if penpalOn {
+                        penpalBanner
+                            .padding(.bottom, 20)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
 
-                if showPrefer, settings.replyStyle == "hand", !isWriting, !isThinking {
-                    preferenceBar
-                        .padding(.bottom, penpalOn ? 76 : 28)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    if mathChipsVisible {
+                        mathFollowUpBar
+                            .padding(.bottom, 76)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
+                    if showPrefer, settings.replyStyle == "hand", !isWriting, !isThinking {
+                        preferenceBar
+                            .padding(.bottom, (penpalOn ? 76 : 28) + (mathChipsVisible ? 52 : 0))
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
             } else {
                 ContentUnavailableView("No Note Selected", systemImage: "note.text",
@@ -193,7 +212,11 @@ struct ContentView: View {
         .toolbar { editorToolbar }
         .toolbarRole(.editor)
         .animation(.spring(response: 0.35, dampingFraction: 0.86), value: penpalOn)
+        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: mathChipsVisible)
     }
+
+    /// Ink-only toolbar actions don't apply when the note is a coded paper.
+    private var selectedIsCoded: Bool { store.selectedNote?.isCoded == true }
 
     @ToolbarContentBuilder
     private var editorToolbar: some ToolbarContent {
@@ -223,13 +246,13 @@ struct ContentView: View {
             Button { proxy.view?.undo() } label: {
                 Image(systemName: "arrow.uturn.backward.circle")
             }
-            .disabled(store.selectedNote == nil || !canUndo)
+            .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
             .keyboardShortcut("z", modifiers: .command)
 
             Button { proxy.view?.redo() } label: {
                 Image(systemName: "arrow.uturn.forward.circle")
             }
-            .disabled(store.selectedNote == nil || !canRedo)
+            .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
             .keyboardShortcut("z", modifiers: [.command, .shift])
 
             Button { showFormat = true } label: {
@@ -255,7 +278,7 @@ struct ContentView: View {
             } label: {
                 Image(systemName: toolsVisible ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle")
             }
-            .disabled(store.selectedNote == nil)
+            .disabled(store.selectedNote == nil || selectedIsCoded)
 
             // Penpal mode — the special mode; only this makes ink get a reply.
             Button {
@@ -271,7 +294,7 @@ struct ContentView: View {
                 Image(systemName: "signature")
                     .foregroundStyle(penpalOn ? Color.indigo : Color.primary)
             }
-            .disabled(store.selectedNote == nil)
+            .disabled(store.selectedNote == nil || selectedIsCoded)
 
             Button(action: shareCurrentNote) {
                 Image(systemName: "square.and.arrow.up")
@@ -285,17 +308,71 @@ struct ContentView: View {
             }
             .disabled(store.selectedNote == nil)
 
-            Button(action: createNote) {
+            Menu {
+                Button {
+                    createNote()
+                } label: {
+                    Label("New Note", systemImage: "square.and.pencil")
+                }
+                Button {
+                    createCodedNote()
+                } label: {
+                    Label("New Coded Paper", systemImage: "curlybraces.square")
+                }
+            } label: {
                 Image(systemName: "square.and.pencil")
+            } primaryAction: {
+                createNote()
             }
         }
     }
 
     private var isMathematician: Bool { settings.capability == "mathematician" }
 
+    private var mathChipsVisible: Bool {
+        penpalOn && isMathematician && showMathChips
+            && !isWriting && !isThinking && !isReading
+    }
+
+    /// One-tap follow-ups after a math reply — the words the brain understands.
+    private var mathFollowUpBar: some View {
+        HStack(spacing: 8) {
+            mathChip("Explain", icon: "questionmark.circle", send: "explain")
+            mathChip("Another way", icon: "arrow.triangle.branch", send: "another way")
+            mathChip("Harder", icon: "flame", send: "harder")
+            Button {
+                showMathChips = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.indigo.opacity(0.2), lineWidth: 1))
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+    }
+
+    private func mathChip(_ title: String, icon: String, send message: String) -> some View {
+        Button {
+            showMathChips = false
+            proxy.view?.sendTextMessage(message)
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.footnote.weight(.medium))
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .tint(.indigo)
+    }
+
     private var penpalBannerText: String {
         if isReading { return "Reading expression…" }
-        if isThinking { return isMathematician ? "Penpal is solving…" : "Penpal is thinking…" }
+        if isThinking { return isMathematician ? "Solving & verifying…" : "Penpal is thinking…" }
         if isWriting { return "Penpal is writing…" }
         return isMathematician
             ? "Mathematician — write a problem, end with ="
@@ -315,6 +392,19 @@ struct ContentView: View {
                         } label: {
                             Label(cap.title, systemImage:
                                 settings.capability == cap.tag ? "checkmark" : cap.icon)
+                        }
+                    }
+                    if isMathematician {
+                        Divider()
+                        Menu {
+                            Picker("Solution detail", selection: $settings.mathDetail) {
+                                Label("Answer only", systemImage: "equal").tag("answer")
+                                Label("Compact steps", systemImage: "list.bullet").tag("compact")
+                                Label("Full working", systemImage: "list.number").tag("full")
+                                Label("Proof", systemImage: "checkmark.seal").tag("proof")
+                            }
+                        } label: {
+                            Label("Solution detail", systemImage: "list.number")
                         }
                     }
                     Divider()
@@ -360,6 +450,10 @@ struct ContentView: View {
                     if !writing, settings.replyStyle == "hand", penpalOn {
                         naturalness = Double(StyleRL.shared.lastNaturalness)
                         showPrefer = StyleRL.shared.hasCritic
+                    }
+                    // A finished math reply invites a follow-up.
+                    if !writing, penpalOn, isMathematician {
+                        showMathChips = true
                     }
                 },
                 onThinkingChange: { isThinking = $0 },
@@ -481,6 +575,14 @@ struct ContentView: View {
         bodyFocused = false
     }
 
+    private func createCodedNote() {
+        flushEditor()
+        penpalOn = false
+        toolsVisible = false
+        _ = store.createNote(in: store.selectedFolderID, kind: .coded)
+        bodyFocused = false
+    }
+
     private func syncEditorFromStore(force: Bool) {
         guard let note = store.selectedNote else {
             titleText = ""
@@ -493,6 +595,13 @@ struct ContentView: View {
             titleText = note.title
             bodyText = note.body
             loadedNoteID = note.id
+            if note.isCoded {
+                // Coded paper renders in CodedPaperView — no canvas to load,
+                // and ink-only modes make no sense here.
+                penpalOn = false
+                toolsVisible = false
+                return
+            }
             // Defer load until the representable has a view.
             DispatchQueue.main.async {
                 self.proxy.view?.loadDrawing(note.drawing,
@@ -507,12 +616,14 @@ struct ContentView: View {
 
     private func flushEditor() {
         if let id = loadedNoteID, var note = store.notes.first(where: { $0.id == id }) {
-            // If Penpal is mid-write, bake the reply into the drawing first so
-            // it isn't lost when the note is saved/switched.
-            proxy.view?.finalizePendingWriting()
             note.title = titleText
             note.body = bodyText
-            if let view = proxy.view {
+            // Coded papers have no canvas — and proxy.view may still hold the
+            // previous ink note's content, which must not leak into this one.
+            if !note.isCoded, let view = proxy.view {
+                // If Penpal is mid-write, bake the reply into the drawing first
+                // so it isn't lost when the note is saved/switched.
+                view.finalizePendingWriting()
                 note.drawing = view.currentDrawing
                 note.typedTexts = view.currentTypedTexts
                 note.replyInks = view.currentReplyInks
@@ -552,6 +663,9 @@ struct ContentView: View {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n\n")
         if !text.isEmpty { items.append(text) }
+        if note.isCoded, let html = note.htmlContent, !html.isEmpty {
+            items.append(html)
+        }
         let drawing = note.drawing
         if !drawing.strokes.isEmpty {
             let bounds = drawing.bounds.insetBy(dx: -40, dy: -40)

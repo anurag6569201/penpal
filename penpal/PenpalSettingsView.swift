@@ -26,7 +26,7 @@ struct PenpalSettingsView: View {
         ("companion", "Companion", "heart.text.square",
          "A friend on the page. Talks with you in the mood you pick."),
         ("mathematician", "Mathematician", "x.squareroot",
-         "Solves any math step by step — algebra, calculus, word problems and more."),
+         "Any math, school to university — algebra, calculus, proofs, olympiad. Every answer independently verified."),
     ]
 
     static let moods: [(tag: String, title: String, icon: String)] = [
@@ -179,15 +179,16 @@ struct PenpalSettingsView: View {
         if settings.capability == "mathematician" {
             Section {
                 Picker("Detail", selection: $settings.mathDetail) {
-                    Text("Answer only").tag("answer")
-                    Text("Compact steps").tag("compact")
-                    Text("Full working").tag("full")
+                    Text("Answer").tag("answer")
+                    Text("Compact").tag("compact")
+                    Text("Full").tag("full")
+                    Text("Proof").tag("proof")
                 }
                 .pickerStyle(.segmented)
             } header: {
                 Label("Solution detail", systemImage: "list.number")
             } footer: {
-                Text("Compact shows key steps ending in \"Ans:\". Whatever the level, writing \"explain\" or \"why\" after a solution gets a deeper walkthrough.")
+                Text("Compact shows key steps ending in \"Ans:\". Full adds a reason for every step. Proof gives complete rigor ending in QED.\n\nAfter any solution, write (or tap): \"explain\" for a deeper walkthrough, \"another way\" for a second method, \"harder\" for a practice problem — or \"check\" above your own working to find your first wrong line.\n\nBehind the scenes each answer is computed with an exact math engine where possible and re-checked by an independent verifier before it's written.")
             }
         }
     }

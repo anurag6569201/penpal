@@ -181,6 +181,86 @@ final class HandwritingRenderer: UIView {
         cancelPondering()
     }
 
+    // MARK: - Box gesture feedback (boxed problems)
+
+    /// Quick draw-on trace of the box stroke — "I see your box." Registered
+    /// with the analyzing layers so endAnalyzing cleans it up automatically.
+    func traceBox(_ stroke: PKStroke) {
+        guard let (path, width, color) = Self.ghostPath(for: stroke) else { return }
+        let trace = CAShapeLayer()
+        trace.name = "boxTrace"
+        trace.path = path.cgPath
+        trace.fillColor = nil
+        trace.strokeColor = color.withAlphaComponent(0.55).cgColor
+        trace.lineWidth = width + 1.5
+        trace.lineCap = .round
+        trace.lineJoin = .round
+        trace.opacity = 0.9
+        layer.insertSublayer(trace, below: penDot)
+        ponderLayers.append(trace)
+
+        let draw = CABasicAnimation(keyPath: "strokeEnd")
+        draw.fromValue = 0
+        draw.toValue = 1
+        draw.duration = 0.35
+        draw.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        trace.add(draw, forKey: "draw")
+
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 0.35
+        pulse.toValue = 0.9
+        pulse.duration = 0.85
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.beginTime = CACurrentMediaTime() + 0.4
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        trace.add(pulse, forKey: "pulse")
+    }
+
+    /// The box did its job — a ghost of the stroke fades away while the real
+    /// stroke is removed from the canvas, so the page keeps only actual work.
+    func dissolveStrokeGhost(_ stroke: PKStroke) {
+        guard let (path, width, color) = Self.ghostPath(for: stroke) else { return }
+        let ghost = CAShapeLayer()
+        ghost.name = "boxDissolve"
+        ghost.path = path.cgPath
+        ghost.fillColor = nil
+        ghost.strokeColor = color.cgColor
+        ghost.lineWidth = width
+        ghost.lineCap = .round
+        ghost.lineJoin = .round
+        ghost.opacity = 0.9
+        layer.insertSublayer(ghost, below: penDot)
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.9
+        fade.toValue = 0
+        fade.duration = 0.55
+        fade.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        fade.fillMode = .forwards
+        fade.isRemovedOnCompletion = false
+        ghost.add(fade, forKey: "fade")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) {
+            ghost.removeFromSuperlayer()
+        }
+    }
+
+    /// Polyline of the stroke in drawing coordinates, with its pen width and
+    /// ink color — the raw material for trace/dissolve ghosts.
+    private static func ghostPath(for stroke: PKStroke) -> (UIBezierPath, CGFloat, UIColor)? {
+        var pts: [CGPoint] = []
+        for p in stroke.path.interpolatedPoints(by: .distance(3)) {
+            pts.append(p.location.applying(stroke.transform))
+        }
+        guard pts.count > 1 else { return nil }
+        let path = UIBezierPath()
+        path.move(to: pts[0])
+        for p in pts.dropFirst() { path.addLine(to: p) }
+        let width = max(2, stroke.path.first.map { $0.size.width } ?? 3)
+        return (path, width, stroke.ink.color)
+    }
+
     /// Soft ink wash under a freshly written answer — bright for a beat, then
     /// settles away so the result feels newly inked without a highlight box.
     func celebrateAnswer(in rect: CGRect) {
