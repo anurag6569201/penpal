@@ -87,7 +87,15 @@ final class FragmentBank {
     private struct Persist: Codable {
         // v4: width-prior slice boundaries (uniform-sliced fragments discarded).
         // v5: adds harvested connectors (optional — v4 files still load).
-        var version: Int? = 5
+        // v6: point-level cropping — pre-v6 fragments harvested from cursive
+        //     words carry their donor word's ENTIRE ink (the "theat" bug) and
+        //     must be discarded; bootstrap re-harvests from the word bank.
+        // v7: boundary hygiene — v6 fragments can still carry neighbor-letter
+        //     slivers and edge dots at their window edges (stray marks in
+        //     stitched words); re-harvest with the edge filters.
+        // v8: ink-refined slice boundaries — priors alone land mid-letter on
+        //     cursive words; boundaries now snap to thin connector points.
+        var version: Int? = 8
         var fragments: [String: [PersonalGlyph]]
         var connectors: [String: [ConnectorSample]]? = nil
     }
@@ -111,13 +119,17 @@ final class FragmentBank {
         let chars = Array(key)
         let n = chars.count
 
-        // Cumulative width prior per boundary, scaled to the captured width.
+        // Cumulative width prior per boundary, scaled to the captured width —
+        // then REFINED against the actual ink: a prior that lands mid-letter
+        // poisons every fragment cut with it.
         var cum: [CGFloat] = [0]
         for ch in chars {
             cum.append(cum.last! + max(0.15, StrokeFont.glyph(for: ch).width))
         }
         let total = max(0.3, cum.last!)
-        func boundary(_ i: Int) -> CGFloat { glyph.width * cum[i] / total }
+        let priors = (0...n).map { glyph.width * cum[$0] / total }
+        let bounds = Self.refineBoundaries(priors: priors, glyph: glyph)
+        func boundary(_ i: Int) -> CGFloat { bounds[i] }
 
         for len in Self.ngramRange {
             guard len <= n else { continue }
@@ -132,6 +144,60 @@ final class FragmentBank {
         }
         harvestConnectors(chars: chars, glyph: glyph, boundary: boundary)
         save()
+    }
+
+    /// Width priors give only APPROXIMATE letter boundaries, and on a cursive
+    /// word a boundary landing mid-letter means half an "o" travels with the
+    /// "v" in every fragment cut from it. Refine each internal boundary to
+    /// the nearest "thin" x — where a vertical line cuts the ink at most
+    /// once (the connector between letters, or a pen lift) — searching ±35%
+    /// of the narrower adjacent letter's width. This is classic cursive
+    /// ligature detection; endpoints stay fixed and order stays monotone.
+    static func refineBoundaries(priors: [CGFloat], glyph: PersonalGlyph) -> [CGFloat] {
+        guard priors.count >= 3 else { return priors }
+        var out = priors
+        let segments: [(CGPoint, CGPoint)] = glyph.strokes.flatMap { pts -> [(CGPoint, CGPoint)] in
+            guard pts.count >= 2 else { return [] }
+            return (1..<pts.count).map { (pts[$0 - 1], pts[$0]) }
+        }
+        guard !segments.isEmpty else { return priors }
+
+        for i in 1..<(priors.count - 1) {
+            let leftW = priors[i] - priors[i - 1]
+            let rightW = priors[i + 1] - priors[i]
+            let radius = min(leftW, rightW) * 0.35
+            guard radius > 0.02 else { continue }
+            var bestX = priors[i]
+            var bestScore = CGFloat.greatestFiniteMagnitude
+            let steps = 16
+            for s in 0...steps {
+                let x = priors[i] - radius + 2 * radius * CGFloat(s) / CGFloat(steps)
+                var crossings = 0
+                var yLo = CGFloat.greatestFiniteMagnitude
+                var yHi = -CGFloat.greatestFiniteMagnitude
+                for (a, b) in segments where (a.x < x) != (b.x < x) {
+                    crossings += 1
+                    let t = (x - a.x) / (b.x - a.x)
+                    let y = a.y + (b.y - a.y) * t
+                    yLo = min(yLo, y)
+                    yHi = max(yHi, y)
+                }
+                // 0 crossings = a pen lift (perfect cut); 1 = a clean
+                // connector; more = we're slicing through a letter's loops.
+                let spread = crossings > 0 ? max(0, yHi - yLo) : 0
+                let score = CGFloat(crossings) + spread * 0.8
+                    + abs(x - priors[i]) / max(radius, 0.01) * 0.25
+                if score < bestScore {
+                    bestScore = score
+                    bestX = x
+                }
+            }
+            out[i] = bestX
+        }
+        for i in 1..<out.count where out[i] < out[i - 1] + 0.05 {
+            out[i] = out[i - 1] + 0.05
+        }
+        return out
     }
 
     /// Crop the real ink that crosses each internal letter boundary — that IS
@@ -241,9 +307,14 @@ final class FragmentBank {
         let key = word.lowercased().filter(\.isLetter)
         guard key.count >= 2 else { return nil }
         let chars = Array(key)
-        struct Path { var score: CGFloat; var parts: [PersonalGlyph]; var seams: [String] }
+        struct Path {
+            var score: CGFloat
+            var parts: [PersonalGlyph]
+            var subs: [String]
+            var seams: [String]
+        }
         var best = Array<Path?>(repeating: nil, count: chars.count + 1)
-        best[0] = Path(score: 0, parts: [], seams: [])
+        best[0] = Path(score: 0, parts: [], subs: [], seams: [])
 
         for i in 0..<chars.count {
             guard let prefix = best[i] else { continue }
@@ -260,14 +331,30 @@ final class FragmentBank {
                         let seam = i > 0 ? ["\(chars[i - 1])\(chars[i])"] : []
                         best[i + len] = Path(score: score,
                                              parts: prefix.parts + [glyph],
+                                             subs: prefix.subs + [sub],
                                              seams: prefix.seams + seam)
                     }
                 }
             }
         }
         guard let path = best[chars.count], !path.parts.isEmpty else { return nil }
-        if path.parts.count == 1 { return path.parts[0] }
-        return join(path.parts, seams: path.seams, connectedness: connectedness)
+        let result: PersonalGlyph?
+        if path.parts.count == 1 {
+            result = path.parts[0]
+        } else {
+            result = join(path.parts, subs: path.subs, seams: path.seams,
+                          connectedness: connectedness)
+        }
+        // SANITY GATE: a stitch whose width is far off the word's prior width
+        // almost certainly carries donor ink or dropped letters. Rendering
+        // the WRONG letters in the user's own hand is the worst failure this
+        // system has — falling through to VAE/letters is always better.
+        guard let g = result else { return nil }
+        let expected = chars.reduce(CGFloat(0)) {
+            $0 + max(0.15, StrokeFont.glyph(for: $1).width)
+        }
+        guard g.width < expected * 1.55, g.width > expected * 0.45 else { return nil }
+        return g
     }
 
     private static func seamCost(_ a: PersonalGlyph, _ b: PersonalGlyph) -> CGFloat {
@@ -279,8 +366,43 @@ final class FragmentBank {
         return vertical + abs(aw - bw) * 1.5
     }
 
-    private func join(_ parts: [PersonalGlyph], seams: [String],
+    private func join(_ parts: [PersonalGlyph], subs: [String], seams: [String],
                       connectedness: CGFloat) -> PersonalGlyph? {
+        // SIZE UNIFICATION. Fragments arrive at their donor words' scales, so
+        // a piece cut from a large-written donor renders as a mid-word size
+        // jump — reads as a stray capital ("loVely"). Pull every measurable
+        // part toward the parts' median body height before packing. Parts
+        // whose letters have no x-height body (an "ll" fragment is all stem)
+        // are left alone: their stem height IS their size and comparing it
+        // to bowl heights would shrink them wrongly.
+        var parts = parts
+        func measurableBody(_ sub: String, _ g: PersonalGlyph) -> CGFloat? {
+            guard sub.contains(where: {
+                ScaleConsensus.xBodyLetters.contains($0)
+                    || ScaleConsensus.partBodyLetters.contains($0)
+            }) else { return nil }
+            if sub.count >= 2 {
+                return ScaleConsensus.bodyHeight(word: sub, glyph: g)
+                    ?? GlyphAlign.bodyHeight(g)
+            }
+            return GlyphAlign.bodyHeight(g)
+        }
+        let bodies: [CGFloat?] = parts.indices.map { i in
+            i < subs.count ? measurableBody(subs[i], parts[i]) : nil
+        }
+        let valid = bodies.compactMap { $0 }.filter { $0 > 0.2 }
+        if valid.count >= 2 {
+            let sorted = valid.sorted()
+            let target = sorted[sorted.count / 2]
+            for i in parts.indices {
+                guard let b = bodies[i], b > 0.2 else { continue }
+                let s = min(1.3, max(0.75, 1 + (target / b - 1) * 0.85))
+                if abs(s - 1) > 0.08 {
+                    parts[i] = GlyphAlign.reseat(ScaleConsensus.apply(s, to: parts[i]))
+                }
+            }
+        }
+
         var pairs: [(Character, PersonalGlyph)] = []
         for (i, part) in parts.enumerated() {
             pairs.append((Character(String(i % 10)), part))
@@ -464,8 +586,19 @@ final class FragmentBank {
         fragments[key] = list
     }
 
-    /// Keep strokes/points whose centroid x lies in [x0, x1), rebase to 0.
-    private static func crop(_ g: PersonalGlyph, fromX x0: CGFloat, toX x1: CGFloat) -> PersonalGlyph? {
+    /// Cut a horizontal slice of real ink out of a captured word, rebased to 0.
+    ///
+    /// POINT-LEVEL clipping, not stroke-level selection. The old centroid rule
+    /// ("keep whole strokes whose centre falls in the slice") was correct for
+    /// printed hands, where the pen lifts between letters — but in a CURSIVE
+    /// hand one stroke spans the whole word, so a "th" fragment cropped from
+    /// "the" carried the ENTIRE word's ink, and stitched words rendered with
+    /// their donors' letters spliced in ("the"+"at" → "theat", "da"+"ay" →
+    /// "daay"). Strokes are now cut at the slice boundaries: each contiguous
+    /// run of points inside [x0, x1) becomes its own stroke, with widths,
+    /// timing and pencil telemetry sliced to the same run — so a fragment
+    /// contains exactly the letters it names, printed or cursive.
+    static func crop(_ g: PersonalGlyph, fromX x0: CGFloat, toX x1: CGFloat) -> PersonalGlyph? {
         var strokes: [[CGPoint]] = []
         var widths: [[CGFloat]] = []
         var durations: [Double] = []
@@ -478,35 +611,87 @@ final class FragmentBank {
 
         for (si, pts) in g.strokes.enumerated() {
             guard !pts.isEmpty else { continue }
-            let cx = pts.map(\.x).reduce(0, +) / CGFloat(pts.count)
-            // Keep if center in range, or stroke overlaps the slice substantially.
-            let minX = pts.map(\.x).min()!
-            let maxX = pts.map(\.x).max()!
-            let overlap = min(maxX, x1) - max(minX, x0)
-            let keep = (cx >= x0 - pad && cx < x1 + pad) || overlap > (maxX - minX) * 0.45
-            guard keep else { continue }
 
-            // Clip points roughly to slice with a soft margin.
-            let clipped = pts.map { CGPoint(x: $0.x - x0, y: $0.y) }
-            strokes.append(clipped)
-            if let ws = g.widths, si < ws.count {
-                widths.append(ws[si])
-            } else {
-                widths.append(Array(repeating: 0.12, count: pts.count))
+            // Contiguous runs of points inside the slice. A cursive stroke
+            // that leaves and re-enters (an o-loop straddling the boundary)
+            // yields multiple runs, each its own stroke.
+            var runs: [Range<Int>] = []
+            var runStart: Int?
+            for (pi, p) in pts.enumerated() {
+                if p.x >= x0 - pad && p.x < x1 + pad {
+                    if runStart == nil { runStart = pi }
+                } else if let s = runStart {
+                    runs.append(s..<pi)
+                    runStart = nil
+                }
             }
-            if let d = g.durations, si < d.count { durations.append(d[si]) }
-            else { durations.append(0.06) }
-            if gaps.isEmpty { gaps.append(0) }
-            else if let gp = g.gaps, si < gp.count { gaps.append(gp[si]) }
-            else { gaps.append(0.03) }
-            pointTimes.append(g.pointTimes.flatMap { si < $0.count ? $0[si] : nil }
-                ?? Array(repeating: 0, count: pts.count))
-            forces.append(g.forces.flatMap { si < $0.count ? $0[si] : nil }
-                ?? Array(repeating: 0, count: pts.count))
-            altitudes.append(g.altitudes.flatMap { si < $0.count ? $0[si] : nil }
-                ?? Array(repeating: 0, count: pts.count))
-            azimuths.append(g.azimuths.flatMap { si < $0.count ? $0[si] : nil }
-                ?? Array(repeating: 0, count: pts.count))
+            if let s = runStart { runs.append(s..<pts.count) }
+
+            for run in runs {
+                let count = run.count
+                // Dots survive; sub-3-point slivers of a passing stroke don't.
+                guard count >= (pts.count == 1 ? 1 : 3) else { continue }
+
+                let runPts = Array(pts[run])
+                if pts.count == 1 {
+                    // Donor tittles/dots: keep only when clearly interior to
+                    // this slice — an edge dot belongs to a neighbor letter
+                    // and renders as a stray mark ("ab.out").
+                    guard runPts[0].x > x0 + 0.05, runPts[0].x < x1 - 0.05 else { continue }
+                } else {
+                    // Near-zero-width run hugging a window edge is a NEIGHBOR
+                    // letter's stroke clipped at the boundary — it renders as
+                    // a stray stem or flick. A genuine stem (an "l" 1-gram)
+                    // sits centered in its own slice and is kept.
+                    let xs = runPts.map(\.x)
+                    let span = (xs.max() ?? 0) - (xs.min() ?? 0)
+                    if span < 0.05,
+                       (xs.min() ?? 0) < x0 + 0.04 || (xs.max() ?? 0) > x1 - 0.04 {
+                        continue
+                    }
+                }
+
+                strokes.append(runPts.map { CGPoint(x: $0.x - x0, y: $0.y) })
+
+                if let ws = g.widths, si < ws.count, ws[si].count == pts.count {
+                    widths.append(Array(ws[si][run]))
+                } else {
+                    widths.append(Array(repeating: 0.12, count: count))
+                }
+
+                // Timing rebased so the run starts at 0; duration follows the
+                // run's own span rather than the donor stroke's full length.
+                let rowTimes: [Double]
+                if let ts = g.pointTimes, si < ts.count, ts[si].count == pts.count {
+                    let slice = Array(ts[si][run])
+                    let t0 = slice.first ?? 0
+                    rowTimes = slice.map { $0 - t0 }
+                } else {
+                    rowTimes = Array(repeating: 0, count: count)
+                }
+                pointTimes.append(rowTimes)
+                durations.append(max(0.02, rowTimes.last ?? 0.06))
+
+                if strokes.count == 1 {
+                    gaps.append(0)
+                } else if run.lowerBound == 0, let gp = g.gaps, si < gp.count {
+                    // Run begins where the real stroke began — keep its pause.
+                    gaps.append(gp[si])
+                } else {
+                    // Mid-stroke cut: the pen never lifted here.
+                    gaps.append(0.02)
+                }
+
+                func row(_ arr: [[CGFloat]]?) -> [CGFloat] {
+                    if let a = arr, si < a.count, a[si].count == pts.count {
+                        return Array(a[si][run])
+                    }
+                    return Array(repeating: 0, count: count)
+                }
+                forces.append(row(g.forces))
+                altitudes.append(row(g.altitudes))
+                azimuths.append(row(g.azimuths))
+            }
         }
         guard !strokes.isEmpty else { return nil }
         let allX = strokes.flatMap { $0.map(\.x) }
@@ -544,11 +729,13 @@ final class FragmentBank {
     private func load() {
         guard let raw = try? Data(contentsOf: fileURL) else { return }
         if let payload = try? JSONDecoder().decode(Persist.self, from: raw),
-           (payload.version ?? 0) >= 4 {
+           (payload.version ?? 0) >= 8 {
             fragments = payload.fragments
             connectors = payload.connectors ?? [:]
         }
-        // Older fragments were sliced at uniform letter widths — drop them;
-        // PersonalFontStore.load() bootstraps a fresh harvest from the word bank.
+        // Older fragments are poisoned (v<4: uniform slicing cut through
+        // letters; v<6: whole-stroke crops from cursive words carry the donor
+        // word's entire ink) — drop them; PersonalFontStore.load() bootstraps
+        // a fresh harvest from the word bank.
     }
 }

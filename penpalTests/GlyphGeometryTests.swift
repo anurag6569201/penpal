@@ -415,4 +415,209 @@ final class GlyphGeometryTests: XCTestCase {
         XCTAssertEqual(g.pointTimes?.count, raw.pointTimes?.count)
         XCTAssertEqual(g.refSize, raw.refSize)
     }
+
+    // MARK: - Part-aware measurement (ScaleConsensus)
+
+    /// Multi-zone letters must vote with their BODY part: in a synthetic "bo"
+    /// where b's bowl tops at ~1.0 but its stem reaches 1.65, ScaleConsensus
+    /// must (a) produce an observation for b at all — before part-aware
+    /// measurement it was skipped entirely — and (b) read b's body near the
+    /// x-height, not let the stem drag it toward ascender height.
+    func testPartLettersVoteWithTheirBody() {
+        func ellipse(cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat,
+                     n: Int = 48) -> [CGPoint] {
+            (0...n).map { i in
+                let a = CGFloat(i) / CGFloat(n) * 2 * .pi
+                return CGPoint(x: cx + rx * cos(a), y: cy + ry * sin(a))
+            }
+        }
+        func vline(x: CGFloat, from y0: CGFloat, to y1: CGFloat,
+                   n: Int = 24) -> [CGPoint] {
+            (0...n).map { i in
+                CGPoint(x: x, y: y0 + (y1 - y0) * CGFloat(i) / CGFloat(n))
+            }
+        }
+
+        // b: stem on the left up to 1.65 + bowl topping at 1.0.
+        // o: plain ring topping at 1.0, to the right.
+        let g = make([
+            vline(x: 0.04, from: 0, to: 1.65),
+            ellipse(cx: 0.3, cy: 0.5, rx: 0.28, ry: 0.5),
+            ellipse(cx: 0.95, cy: 0.5, rx: 0.25, ry: 0.5),
+        ])
+
+        let obs = ScaleConsensus.letterHeights(word: "bo", glyph: g)
+        XCTAssertTrue(obs.contains { $0.0 == "b" },
+                      "part letter b produced no body observation")
+        XCTAssertTrue(obs.contains { $0.0 == "o" })
+        for (ch, h) in obs {
+            XCTAssertLessThan(h, 1.45, "\(ch) body read as stem/ascender height")
+            XCTAssertGreaterThan(h, 0.5, "\(ch) body reading implausibly small")
+        }
+    }
+
+    // MARK: - Sizing dispersion (the "some words big, some small" metric)
+
+    /// The dispersion metric must catch exactly the bug it exists for: a
+    /// corpus where one capture is 35% larger must read clearly less even
+    /// than a uniform corpus, and a uniform corpus must read near zero.
+    func testSizingDispersionDetectsMixedScales() {
+        func ellipse(cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat,
+                     n: Int = 48) -> [CGPoint] {
+            (0...n).map { i in
+                let a = CGFloat(i) / CGFloat(n) * 2 * .pi
+                return CGPoint(x: cx + rx * cos(a), y: cy + ry * sin(a))
+            }
+        }
+        // "oo": two rings whose bodies top at 1.0 — clean x-body evidence.
+        let base = make([
+            ellipse(cx: 0.3, cy: 0.5, rx: 0.28, ry: 0.5),
+            ellipse(cx: 0.95, cy: 0.5, rx: 0.25, ry: 0.5),
+        ])
+        let big = ScaleConsensus.apply(1.35, to: base)
+
+        guard let h = ScaleConsensus.bodyHeight(word: "oo", glyph: base),
+              let hBig = ScaleConsensus.bodyHeight(word: "oo", glyph: big) else {
+            return XCTFail("body height unmeasurable on synthetic rings")
+        }
+
+        let uniform: [CGFloat] = [h, h, h, h, h]
+        let mixed: [CGFloat] = [h, h, h, h, hBig]
+
+        guard let cvUniform = ScaleConsensus.coefficientOfVariation(uniform),
+              let cvMixed = ScaleConsensus.coefficientOfVariation(mixed) else {
+            return XCTFail("dispersion unmeasurable")
+        }
+        XCTAssertLessThan(cvUniform, 0.02, "uniform corpus must read even")
+        XCTAssertGreaterThan(cvMixed, 0.08,
+                             "a 35% outlier must be clearly visible in the metric")
+        XCTAssertGreaterThan(cvMixed, cvUniform)
+    }
+
+    // MARK: - Capitals seat on the baseline
+
+    /// Capital G/J/P/Q/Y were classified through `lowercased()` and inherited
+    /// their lowercase twin's descender class — snapBaseline then seated them
+    /// with ~38% of their ink below the line, hanging toward the descender
+    /// line. A capital drawn between the baseline and the cap line must stay
+    /// seated ON the baseline.
+    func testCapitalsAreNotSeatedAsDescenders() {
+        func ellipse(cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat,
+                     n: Int = 48) -> [CGPoint] {
+            (0...n).map { i in
+                let a = CGFloat(i) / CGFloat(n) * 2 * .pi
+                return CGPoint(x: cx + rx * cos(a), y: cy + ry * sin(a))
+            }
+        }
+        for ch: Character in ["G", "J", "P", "Q", "Y"] {
+            // Cap body: baseline 0 up to ~1.64 (cap height), nothing below.
+            let raw = make([ellipse(cx: 0.4, cy: 0.82, rx: 0.35, ry: 0.82)])
+            let g = GlyphAlign.normalize(raw, forChar: ch)
+            let lo = g.strokes.flatMap { $0 }.map(\.y).min() ?? 0
+            XCTAssertGreaterThan(lo, -0.15,
+                "capital \(ch) hung below the baseline like a descender")
+        }
+        // And the lowercase twins must still be allowed their tails: a "g"
+        // with real ink below the line keeps a below-baseline floor.
+        let tail = make([
+            ellipse(cx: 0.3, cy: 0.5, rx: 0.28, ry: 0.5),
+            (0...24).map { i in
+                CGPoint(x: 0.55, y: 0.9 - 1.5 * CGFloat(i) / 24)
+            },
+        ])
+        let g = GlyphAlign.normalize(tail, forChar: "g")
+        let lo = g.strokes.flatMap { $0 }.map(\.y).min() ?? 0
+        XCTAssertLessThan(lo, -0.2, "lowercase g lost its descender tail")
+    }
+
+    // MARK: - Cursive fragment cropping (the "theat" bug)
+
+    /// In a cursive hand one stroke spans the whole word, and stroke-level
+    /// crop selection made every fragment carry its donor word's ENTIRE ink —
+    /// stitched words then rendered with the donors' letters spliced in
+    /// ("the"+"at" → "theat"). A slice cropped from a one-stroke word must
+    /// contain only the ink inside its window.
+    func testCropCutsCursiveStrokesAtSliceBoundary() {
+        // One continuous stroke sweeping x 0→1.2 (a fully connected "word"),
+        // plus a neighbor letter's stem just past the slice boundary that
+        // leans a few points into the window — the source of stray marks
+        // ("ab.out") when kept.
+        let sweep: [CGPoint] = (0...120).map { i in
+            let t = CGFloat(i) / 120
+            return CGPoint(x: t * 1.2, y: 0.5 + 0.45 * sin(t * 6 * .pi))
+        }
+        let neighborStem: [CGPoint] = (0...24).map { i in
+            let t = CGFloat(i) / 24
+            return CGPoint(x: 0.585 + t * 0.06, y: t * 1.4)
+        }
+        let word = make([sweep, neighborStem])
+
+        guard let piece = FragmentBank.crop(word, fromX: 0, toX: 0.6) else {
+            return XCTFail("crop returned nothing for a valid slice")
+        }
+        XCTAssertEqual(piece.strokes.count, 1,
+            "neighbor-letter sliver at the window edge must be rejected")
+        let xs = piece.strokes.flatMap { $0 }.map(\.x)
+        let maxX = xs.max() ?? 0
+        // Rebased to 0; everything must sit inside the 0.6-wide window
+        // (small pad allowed). The old centroid rule kept all 1.2 units.
+        XCTAssertLessThan(maxX, 0.68,
+            "fragment carries ink beyond its slice — donor letters will splice into stitched words")
+        XCTAssertLessThan(piece.width, 0.68)
+        XCTAssertGreaterThan(maxX, 0.4, "fragment lost most of its own slice")
+
+        // Parallel per-point rows must stay aligned with the cut strokes.
+        if let ws = piece.widths {
+            for (si, s) in piece.strokes.enumerated() where si < ws.count {
+                XCTAssertEqual(ws[si].count, s.count, "widths row desynced from cut stroke")
+            }
+        }
+    }
+
+    // MARK: - Critic feature parity (the "Looks like you? 0%" bug)
+
+    /// The critic's distribution is built from captured glyphs (unit space)
+    /// while episodes are scored from laid-out view-space ink. The SAME ink
+    /// measured through both paths must produce comparable features —
+    /// widthUnits used to be per-glyph on one side and whole-reply span on
+    /// the other, a ~40 z-score that pinned every reply at 0%.
+    func testCriticFeaturesAgreeAcrossCaptureAndLayout() {
+        // A 5-letter "word": five bumps, 3 units wide, one stroke each.
+        var unitStrokes: [[CGPoint]] = []
+        for k in 0..<5 {
+            let x0 = CGFloat(k) * 0.6
+            unitStrokes.append((0...20).map { i in
+                let t = CGFloat(i) / 20
+                return CGPoint(x: x0 + t * 0.5, y: 0.5 + 0.45 * sin(t * .pi))
+            })
+        }
+        let glyph = make(unitStrokes)
+        let real = HandFeatures.extract(from: glyph, letterCount: 5)
+
+        // The same ink laid out at xHeight 20 (view space: y grows DOWN).
+        let xHeight: CGFloat = 20
+        let laidOut: [InkStroke] = glyph.strokes.map { pts in
+            InkStroke(points: pts.map { CGPoint(x: $0.x * xHeight,
+                                                y: -$0.y * xHeight) },
+                      widths: Array(repeating: 2.4, count: pts.count),
+                      duration: 0.3)
+        }
+        let episode = HandFeatures.extract(from: laidOut, xHeight: xHeight,
+                                           letterCount: 5)
+
+        // Per-letter width must agree closely — this is the feature that
+        // broke. Both sides should read ~0.6 x-heights per letter.
+        XCTAssertEqual(Double(real.widthUnits), Double(episode.widthUnits),
+                       accuracy: 0.15,
+                       "widthUnits diverged between capture and layout paths")
+        XCTAssertLessThan(real.widthUnits, 1.5,
+                          "capture-side widthUnits is not per-letter")
+        // Shape features measured on identical geometry must match closely.
+        XCTAssertEqual(Double(real.slantMean), Double(episode.slantMean),
+                       accuracy: 0.1)
+        XCTAssertEqual(Double(real.curvature), Double(episode.curvature),
+                       accuracy: 0.2)
+        XCTAssertEqual(Double(real.strokesPerLetter),
+                       Double(episode.strokesPerLetter), accuracy: 0.01)
+    }
 }

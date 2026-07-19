@@ -17,6 +17,10 @@
 //  and careful but write it small and fast inside words. Words built from the
 //  char bank apply this gain so both sources sit at one visual size.
 //
+//  Measurement is PART-AWARE: multi-zone letters vote with the part of them
+//  that touches the x-height (b's bowl, h's arch, y's vee), not just the
+//  letters that are all body. See partBodyLetters.
+//
 
 import CoreGraphics
 import Foundation
@@ -111,9 +115,31 @@ enum ScaleConsensus {
     }
 
     /// Letters whose body top IS the x-height (no ascender/descender/cap).
-    /// Only these give clean size observations.
+    /// These give the cleanest size observations.
     static let xBodyLetters: Set<Character> = ["a", "c", "e", "i", "m", "n", "o",
                                                "r", "s", "u", "v", "w", "x", "z"]
+
+    /// PART-AWARE MEASUREMENT: multi-zone letters whose BODY still tops out
+    /// at the x-height — the bowl of b/d/g/p/q, the arch of h, the vee of y.
+    /// The column-top-envelope measure already resists the minority of
+    /// columns a stem lifts (and descender tails only affect column BOTTOMS,
+    /// which bodyHeight never reads), so their body part is x-height evidence
+    /// too: "b tells you how big a should be" because both are measured
+    /// against the same line. This nearly doubles the letters that vote, so
+    /// almost every capture cross-constrains the joint solve.
+    ///
+    /// Excluded on purpose: k (its arm holds ascender height across the right
+    /// half, defeating the quantile), and f/l/t/j (no x-height body at all).
+    static let partBodyLetters: Set<Character> = ["b", "d", "g", "h", "p", "q", "y"]
+
+    /// Reading point in the sorted column-top envelope for part letters —
+    /// below the median so stem-lifted columns can't drag the body up.
+    private static let partQuantile: CGFloat = 0.4
+
+    /// A part-letter body reading this tall means the slice was dominated by
+    /// its stem (windows are width-prior estimates, not true segmentation) —
+    /// that's ascender evidence, not body evidence. Dropped, never clamped.
+    private static let partBodyCeiling: CGFloat = 1.45
 
     // MARK: Observations
 
@@ -132,10 +158,14 @@ enum ScaleConsensus {
         let points = GlyphAlign.measurablePoints(glyph)
 
         var out: [(Character, CGFloat)] = []
-        for (i, ch) in chars.enumerated() where xBodyLetters.contains(ch) {
+        for (i, ch) in chars.enumerated() {
+            let isPart = partBodyLetters.contains(ch)
+            guard xBodyLetters.contains(ch) || isPart else { continue }
             let x0 = glyph.width * cum[i] / total
             let x1 = glyph.width * cum[i + 1] / total
-            if let h = GlyphAlign.bodyHeight(points: points, minX: x0, maxX: x1) {
+            if let h = GlyphAlign.bodyHeight(points: points, minX: x0, maxX: x1,
+                                             bodyQuantile: isPart ? partQuantile : 0.5) {
+                if isPart && h > partBodyCeiling { continue }
                 out.append((ch, h))
             }
         }
@@ -213,9 +243,14 @@ enum ScaleConsensus {
         var ratios: [CGFloat] = []
         for (key, variants) in chars {
             guard key.count == 1, let ch = key.first,
-                  xBodyLetters.contains(ch), let m = means[ch] else { continue }
+                  xBodyLetters.contains(ch) || partBodyLetters.contains(ch),
+                  let m = means[ch] else { continue }
             for glyph in variants {
-                if let h = GlyphAlign.bodyHeight(glyph), h > 0.2 {
+                // Part letters: a stem-dominated reading is ascender
+                // evidence, not body evidence — skip it (same rule as
+                // letterHeights).
+                if let h = GlyphAlign.bodyHeight(glyph), h > 0.2,
+                   !(partBodyLetters.contains(ch) && h > partBodyCeiling) {
                     ratios.append(m / h)
                 }
             }
@@ -275,6 +310,20 @@ enum ScaleConsensus {
         g.widths = g.widths?.map { row in row.map { $0 * s } }   // PEN-31
         g.width *= s
         return g
+    }
+
+    // MARK: Dispersion
+
+    /// Coefficient of variation (sd / mean) — THE number for "some letters
+    /// big, some small". 0 means every measurement is identical. Computed
+    /// over resolved word body heights by HandwritingInsights, and asserted
+    /// in the regression suite so a sizing regression can't ship silently.
+    static func coefficientOfVariation(_ values: [CGFloat]) -> CGFloat? {
+        guard values.count >= 2 else { return nil }
+        let mean = values.reduce(0, +) / CGFloat(values.count)
+        guard mean > 0.01 else { return nil }
+        let varSum = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) }
+        return (varSum / CGFloat(values.count)).squareRoot() / mean
     }
 
     // MARK: Helpers

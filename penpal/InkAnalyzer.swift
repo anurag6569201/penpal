@@ -185,8 +185,23 @@ enum InkAnalyzer {
         let raw = contentBottom + xHeight * 0.8
         var baseline = rulesTopInset + lineGap * ceil((raw - rulesTopInset) / lineGap)
 
-        // Align to the user's own left margin, but keep room for at least a few words.
-        var x = max(leftMargin, min(bounds.minX, pageBounds.maxX - 220))
+        // Align to the user's own left margin, but keep room for at least a
+        // few words. The NEW strokes may be only a mid-sentence continuation
+        // ("academy!" added after a pause) whose minX sits mid-page —
+        // aligning to that indents the whole reply. Anchor to the full
+        // detected LINE the new ink belongs to instead, so the reply returns
+        // to where the user's sentence actually started.
+        var anchorX = bounds.minX
+        if !occupiedStrokes.isEmpty {
+            let contextLines = clusterLines(occupiedStrokes)
+            if let host = contextLines
+                .filter({ $0.rect.intersects(bounds)
+                    || abs($0.rect.midY - bounds.midY) < lineGap * 0.7 })
+                .min(by: { $0.rect.minX < $1.rect.minX }) {
+                anchorX = min(anchorX, host.rect.minX)
+            }
+        }
+        var x = max(leftMargin, min(anchorX, pageBounds.maxX - 220))
 
         let safe = pageBounds.insetBy(dx: 16, dy: max(12, lineGap * 0.35))
         let maxY = safe.maxY - lineGap * 0.25

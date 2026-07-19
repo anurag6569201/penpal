@@ -100,7 +100,52 @@ enum HandwritingInsights {
             detail: "Penpal uses this spacing when it writes, so a reply sits at your own rhythm on the line.",
             systemImage: "arrow.left.and.right"))
 
+        // Sizing evenness — described as a property of PENPAL'S ECHO, never
+        // of the user's hand, which keeps the observation-not-correction
+        // framing intact: the number grades the pipeline's calibration, and
+        // when it's loose the fix offered is retraining data, not "writing
+        // better".
+        if let evenness = sizingEvenness() {
+            let pct = Int((evenness.cv * 100).rounded())
+            insights.append(Insight(
+                title: pct <= 8
+                    ? "Replies hold one even size"
+                    : "Reply sizing is still settling (±\(pct)%)",
+                detail: pct <= 8
+                    ? "Across \(evenness.wordsMeasured) of your trained words, Penpal's letter bodies stay within a few percent of one shared size — the sizing pipeline is well calibrated to your hand."
+                    : "Across \(evenness.wordsMeasured) trained words, Penpal's letter bodies vary about \(pct)% in size. Checking the sample strip for words that look bigger or smaller than the rest — and redrawing those — usually tightens this.",
+                systemImage: "ruler"))
+        }
+
         return insights
+    }
+
+    // MARK: - Sizing evenness
+
+    struct SizingEvenness {
+        /// Coefficient of variation of resolved word body heights.
+        /// 0 = every word renders at one perfectly shared size.
+        var cv: CGFloat
+        var wordsMeasured: Int
+    }
+
+    /// How tightly the render pipeline holds ONE size across words, measured
+    /// on the pipeline's actual OUTPUT: each essential word is resolved
+    /// exactly as a reply would resolve it (exact → fragments → VAE) and its
+    /// body height read back. Using the designed Words list keeps the number
+    /// comparable across training sessions and builds — it's the regression
+    /// metric for "some words big, some words small".
+    static func sizingEvenness(minWords: Int = 6) -> SizingEvenness? {
+        let store = PersonalFontStore.shared
+        var heights: [CGFloat] = []
+        for word in CalibrationView.essentialWords {
+            if let h = store.unitBodyHeight(forWord: word), h > 0.2 {
+                heights.append(h)
+            }
+        }
+        guard heights.count >= minWords,
+              let cv = ScaleConsensus.coefficientOfVariation(heights) else { return nil }
+        return SizingEvenness(cv: cv, wordsMeasured: heights.count)
     }
 
     // MARK: - Wording

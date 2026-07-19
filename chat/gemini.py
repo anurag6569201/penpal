@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from typing import Any
 
 from django.conf import settings
@@ -39,6 +41,44 @@ def _client() -> genai.Client:
     return genai.Client(api_key=key)
 
 
+# The model occasionally leaks its own stage directions onto the page —
+# "(45 words, plain):", "(under 45 words)", "(keep it short):" — despite the
+# prompt. These are meta about the reply, never part of it.
+_META_PAREN = re.compile(
+    r"\(\s*[^)]{0,12}?\d+\s*words?[^)]*\)\s*:?\s*"
+    r"|\(\s*(?:plain(?:\s+text)?|no\s+markdown|keep\s+it\s+\w+|tone:[^)]*)\s*\)\s*:?\s*",
+    re.IGNORECASE,
+)
+
+# Handwriting renders only trained glyphs; smart punctuation silently
+# disappears from the page. Fold it to drawable ASCII equivalents.
+_SMART_PUNCT = {
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    "–": "-", "—": "-", "…": "...", " ": " ",
+}
+
+
+def _fold_for_ink(text: str) -> str:
+    """Fold accented Latin letters to their base letter (cliché → cliche).
+
+    The renderer drops characters it has no glyph for, so without folding
+    "cliché" draws as "clich" — a typo in the user's own hand. Non-Latin
+    characters without an ASCII base (π, √, …) pass through untouched.
+    """
+    out = []
+    for ch in text:
+        if ord(ch) < 128:
+            out.append(ch)
+            continue
+        folded = unicodedata.normalize("NFKD", ch)
+        stripped = "".join(c for c in folded if not unicodedata.combining(c))
+        if stripped and all(ord(c) < 128 for c in stripped):
+            out.append(stripped)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _clean_reply(text: str, keep_newlines: bool = False) -> str:
     text = (text or "").strip()
     # Strip accidental markdown fences / labels.
@@ -48,13 +88,27 @@ def _clean_reply(text: str, keep_newlines: bool = False) -> str:
     for prefix in ("Penpal:", "Reply:", "Note:"):
         if text.lower().startswith(prefix.lower()):
             text = text[len(prefix) :].strip()
+    text = _META_PAREN.sub("", text)
+    for src, dst in _SMART_PUNCT.items():
+        text = text.replace(src, dst)
     if keep_newlines:
         # Math steps: keep line structure (one step per line), collapse
-        # only intra-line whitespace and drop blank lines.
+        # only intra-line whitespace and drop blank lines. No diacritic
+        # folding here — NFKD would flatten x² to x2 and change the math.
         lines = [" ".join(line.split()) for line in text.splitlines()]
         return "\n".join(line for line in lines if line)
+    # Prose is drawn with the user's trained glyphs: fold what the pen can't
+    # draw, and drop markdown emphasis remnants the prompt already forbids.
+    original = text
+    text = text.replace("*", "").replace("`", "")
+    text = _fold_for_ink(text)
     # Prose: collapse all whitespace for handwriting layout.
-    return " ".join(text.split())
+    result = " ".join(text.split())
+    # SAFETY: sanitizing must never turn a real reply into "empty reply" —
+    # if everything was stripped, fall back to the unsanitized text.
+    if not result and original.strip():
+        return " ".join(original.split())
+    return result
 
 
 def transcribe_math(image_bytes: bytes, mime_type: str = "image/png") -> str:
@@ -88,7 +142,10 @@ def transcribe_math(image_bytes: bytes, mime_type: str = "image/png") -> str:
                 system_instruction=MATH_VISION_PROMPT,
                 # Transcription is not a creative task.
                 temperature=0.0,
-                max_output_tokens=180,
+                # Headroom for thinking-model reasoning tokens (see the
+                # companion call) — 180 returned empty transcriptions on
+                # gemini-2.5+/3.x models.
+                max_output_tokens=1024,
             ),
         )
     except Exception as exc:  # noqa: BLE001 — surface as API error
@@ -977,7 +1034,13 @@ def generate_reply(
                 # Conversation needs life.
                 temperature=0.9,
                 top_p=0.95,
-                max_output_tokens=220,
+                # Generous ON PURPOSE. Thinking-class models (gemini-2.5+ /
+                # 3.x) spend output tokens on internal reasoning BEFORE the
+                # visible text; a tight cap (this was 220) returns an EMPTY
+                # reply → 503 "Gemini returned an empty reply." The prompt
+                # already constrains the note to ~45 words, so the cap only
+                # needs to cover reasoning headroom, not limit prose length.
+                max_output_tokens=2048,
             ),
         )
     except Exception as exc:  # noqa: BLE001 — surface as API error

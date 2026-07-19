@@ -304,7 +304,14 @@ enum GlyphAlign {
 
         let ys = body.map(\.y).sorted()
         let hasDescender: Bool = {
-            if let ch = char?.lowercased().first, descenders.contains(ch) { return true }
+            // Only LOWERCASE g/j/p/q/y are descenders by class. A capital
+            // G/J/P/Q/Y must NOT inherit its lowercase twin's tail — caps
+            // live between the baseline and the cap line, and classifying
+            // them through `lowercased()` seated them like descenders with
+            // ~38% of their ink hanging below the line. Uppercase ink still
+            // passes through the auto-detect below, so a hand that genuinely
+            // writes "J" with a diving tail keeps it.
+            if let ch = char, ch.isLowercase, descenders.contains(ch) { return true }
             // Auto-detect: significant ink below the main body cluster.
             let q15 = quantile(ys, 0.15)
             let q50 = quantile(ys, 0.50)
@@ -460,7 +467,13 @@ enum GlyphAlign {
     }
 
     /// Same measure restricted to a horizontal window (a letter slice).
-    static func bodyHeight(points: [CGPoint], minX: CGFloat, maxX: CGFloat) -> CGFloat? {
+    /// `bodyQuantile` picks where in the sorted column-top envelope the body
+    /// is read: 0.5 (median) for pure x-body letters; part-aware callers pass
+    /// a lower quantile (e.g. 0.4) for multi-zone letters like b/d/h so the
+    /// minority of columns their stem lifts to ascender height can't drag
+    /// the body estimate upward.
+    static func bodyHeight(points: [CGPoint], minX: CGFloat, maxX: CGFloat,
+                           bodyQuantile: CGFloat = 0.5) -> CGFloat? {
         let span = maxX - minX
         guard span > 0.04 else { return nil }
         let columns = max(4, min(48, Int(span * 12)))
@@ -472,7 +485,7 @@ enum GlyphAlign {
         }
         let filled = tops.filter { $0 > 0.08 }.sorted()
         guard filled.count >= 3 else { return nil }
-        return max(0.2, quantile(filled, 0.5))
+        return max(0.2, quantile(filled, bodyQuantile))
     }
 
     // MARK: Helpers

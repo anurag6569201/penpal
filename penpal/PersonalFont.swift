@@ -928,7 +928,11 @@ final class PersonalFontStore {
         // mis-corrected) and without tittle exclusion — re-solve with the
         // letter-aware, dot-blind measurement. Uniform rescales are lossless,
         // so re-running recovers rather than compounds.
-        let flag = "penpal.scaleConsensus.v2"
+        // v3: part-aware measurement — b/d/g/h/p/q/y now vote with their body
+        // part, nearly doubling the letters that constrain the joint solve.
+        // Words that previously had no x-body letters ("body", "hug") were
+        // unconstrained and could drift; re-solving picks them up.
+        let flag = "penpal.scaleConsensus.v3"
         guard !UserDefaults.standard.bool(forKey: flag) else { return }
         UserDefaults.standard.set(true, forKey: flag)
 
@@ -970,8 +974,12 @@ final class PersonalFontStore {
     /// their capture happened to have. Re-running is lossless (a glyph already
     /// at its anchor is left untouched), so this repairs banks trained before
     /// the rule existed — no retraining needed.
+    /// v8: capital G/J/P/Q/Y were classified through lowercased() and seated
+    /// like descenders (ink hanging below the baseline). snapBaseline now
+    /// keys descender class off lowercase only; re-normalizing reseats any
+    /// capitals stored with the old placement.
     private func realignStoredGlyphsIfNeeded() {
-        let flag = "penpal.glyphsAligned.v7"
+        let flag = "penpal.glyphsAligned.v8"
         guard !UserDefaults.standard.bool(forKey: flag) else { return }
         let firstRun = !UserDefaults.standard.bool(forKey: "penpal.glyphsAligned.v3")
         for (key, list) in data.glyphs {

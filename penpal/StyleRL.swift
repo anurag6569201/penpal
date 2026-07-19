@@ -36,7 +36,11 @@ struct HandFeatures: Codable {
     var speedMean: CGFloat = 8
     /// Turning energy per unit length (real hands curve; stiff glyphs don't).
     var curvature: CGFloat = 0.4
-    /// Glyph width in x-heights.
+    /// Ink width PER LETTER in x-heights — comparable across a single trained
+    /// letter, a captured word, and a whole laid-out reply. (This was raw
+    /// glyph/span width: a full reply line measured ~40 units against a
+    /// trained-letter distribution centred near 0.6, the z-score exploded,
+    /// and the critic pinned every reply at 0%.)
     var widthUnits: CGFloat = 0.6
     /// Strokes per letter — proxies connectedness.
     var strokesPerLetter: CGFloat = 1.2
@@ -105,7 +109,7 @@ struct HandFeatures: Codable {
             pressureCV: pMean > 1e-4 ? pStd / pMean : 0,
             speedMean: Self.mean(speeds) ?? 8,
             curvature: Self.mean(curves) ?? 0.4,
-            widthUnits: g.width,
+            widthUnits: g.width / letters,
             strokesPerLetter: CGFloat(g.strokes.count) / letters,
             pauseMean: Self.mean(pauses) ?? 0.05,
             accelerationCV: Self.mean(accelerations) ?? 0.2,
@@ -126,12 +130,14 @@ struct HandFeatures: Codable {
         var pressureTrends: [CGFloat] = []
         var wordPauses: [CGFloat] = []
         var minX = CGFloat.infinity, maxX = -CGFloat.infinity
+        var minY = CGFloat.infinity, maxY = -CGFloat.infinity
 
         for s in strokes where !s.isDot && s.points.count > 1 {
             // Flip Y so extract math matches unit-space (y grows up).
             let pts = s.points.map { CGPoint(x: $0.x / xHeight, y: -$0.y / xHeight) }
             for p in pts {
                 minX = min(minX, p.x); maxX = max(maxX, p.x)
+                minY = min(minY, p.y); maxY = max(maxY, p.y)
             }
             slants.append(Self.slant(pts))
             curves.append(Self.curvatureEnergy(pts))
@@ -161,6 +167,19 @@ struct HandFeatures: Codable {
         let pMean = Self.mean(pressures) ?? 0.12
         let pStd = Self.std(pressures) ?? 0
         let letters = max(1, CGFloat(letterCount))
+        // Per-letter width, line-aware: the x-span is the WIDEST line, but
+        // `letters` counts every line of the reply — divide by the letters
+        // on one line, estimated from the vertical extent (one text line is
+        // ~2 x-heights tall plus line gap).
+        let widthPerLetter: CGFloat
+        if maxX.isFinite, minX.isFinite {
+            let ySpan = (maxY.isFinite && minY.isFinite) ? maxY - minY : 2
+            let lineCount = max(1, ((ySpan + 0.8) / 2.6).rounded())
+            let lettersPerLine = max(1, letters / lineCount)
+            widthPerLetter = max(0.1, (maxX - minX) / lettersPerLine)
+        } else {
+            widthPerLetter = 0.6
+        }
 
         return HandFeatures(
             slantMean: Self.mean(slants) ?? 0,
@@ -169,7 +188,7 @@ struct HandFeatures: Codable {
             pressureCV: pMean > 1e-4 ? pStd / pMean : 0,
             speedMean: Self.mean(speeds) ?? 8,
             curvature: Self.mean(curves) ?? 0.4,
-            widthUnits: maxX.isFinite ? max(0.2, maxX - minX) : 0.6,
+            widthUnits: widthPerLetter,
             strokesPerLetter: CGFloat(strokes.filter { !$0.isDot }.count) / letters,
             pauseMean: Self.mean(pauses) ?? 0.05,
             accelerationCV: Self.mean(accelerations) ?? 0.2,
@@ -317,7 +336,10 @@ final class StyleRL {
     private var pickCache: [String: Int] = [:]
 
     private struct Persist: Codable {
-        var version: Int? = 3
+        // v4: widthUnits became per-letter — critic stats recorded with the
+        //     raw-width definition are on a different scale and must be
+        //     dropped (policy and bandit arms are unaffected and kept).
+        var version: Int? = 4
         var policy: StylePolicy
         var mean: [CGFloat]
         var m2: [CGFloat]
@@ -537,9 +559,13 @@ final class StyleRL {
               let decoded = try? JSONDecoder().decode(Persist.self, from: raw) else { return }
         policy = decoded.policy.clamped()
         active = policy
+        arms = decoded.arms
+        // Critic stats from before the per-letter widthUnits definition are
+        // on the wrong scale — start fresh; PersonalFontStore's rebuild path
+        // re-absorbs every stored sample with the new features.
+        guard (decoded.version ?? 0) >= 4 else { return }
         if decoded.mean.count == HandFeatures.dim { mean = decoded.mean }
         if decoded.m2.count == HandFeatures.dim { m2 = decoded.m2 }
         n = decoded.n
-        arms = decoded.arms
     }
 }

@@ -165,6 +165,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private var readingBannerTask: Task<Void, Never>?
     private var lastReplyStrokeCount = 0
     private var lastReplyBottom: CGFloat = 0
+    /// True while a brain request is IN FLIGHT (network await). The
+    /// `renderer.isWriting` guard alone left a race: pause mid-sentence →
+    /// request A departs → user writes more → idle fires again while A is
+    /// still on the network → request B departs. B's write then tramples A's
+    /// animation (orphaned first glyphs on the page) and B's placement
+    /// aligns to just the continuation strokes (reply indented mid-page).
+    private var brainBusy = false
     private var provider = HandAwareReplyProvider()
     private var typedLabels: [UILabel] = []
     /// Persisted models behind `typedLabels` (same order is not required).
@@ -1426,7 +1433,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// "reply now" request from the user.
     func replyNow(auto: Bool = false) {
         idleTimer?.invalidate()
-        guard !renderer.isWriting else { return }
+        // Busy = animating (isWriting), waiting to bake (pendingBake), or a
+        // request already on the network (brainBusy). Returning BEFORE
+        // consuming lastReplyStrokeCount means the fresh ink stays queued —
+        // the user's next pen lift re-arms the idle timer and it gets its
+        // reply then, as one message instead of a split one.
+        guard !renderer.isWriting, pendingBake == nil, !brainBusy else { return }
 
         let all = canvas.drawing.strokes
         guard all.count > lastReplyStrokeCount else { return }
@@ -1690,6 +1702,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        brainBusy = true
         Task { @MainActor in
             let store = ConversationStore.shared
             let history = store.historyForAPI()
@@ -1710,7 +1723,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 self.onWritingStateChange?(false)
                 self.renderReply(reply, placement: placement,
                                  matchStrokes: fallbackInk ?? [])
+                // Safe to clear here: renderReply sets pendingBake
+                // synchronously, so the replyNow guard stays closed until
+                // the ink is fully baked.
+                self.brainBusy = false
             } catch {
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 self.onStatus?(PenpalError.message(for: error))
@@ -2531,7 +2549,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let bottomY = sequence.bottomY
 
         let letters = text.filter { $0.isLetter || $0.isNumber }.count
-        StyleRL.shared.endEpisode(strokes: strokes,
+        // Score the PRE-stamped sequence: it still carries the captures'
+        // real per-point widths and timing. The stamped copies above have
+        // constant width, so scoring them told the critic every reply had
+        // zero pressure variation — unlike any real hand.
+        StyleRL.shared.endEpisode(strokes: sequence.strokes,
                                   xHeight: placement.xHeight,
                                   letterCount: max(1, letters))
         InkUnity.shared.endSentence()

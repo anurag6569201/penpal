@@ -2,10 +2,23 @@
 //  CalibrationView.swift
 //  penpal
 //
-//  "Teach it your hand" — train individual letters, digits, and marks.
-//  Replies are composed letter by letter from these, so sizing stays even
-//  no matter what text is generated. Each letter keeps up to 3 samples for
-//  natural variation; write the same one again to add another sample.
+//  "Teach it your hand" — train words, letters, joins, math and marks.
+//
+//  Tabs are ordered by what matters most to mimicry:
+//  - Words: the primary source. A designed list where every letter a–z
+//    appears in AT LEAST TWO words, so ScaleConsensus gets dense shared-letter
+//    cross-constraints and every letterform is captured in real writing flow
+//    (people draw a lone "m" big and careful but write it small inside words).
+//  - Letters: gap-filler for shapes still missing after Words, plus capitals.
+//  - Joins: the most frequent letter pairs — seeds for LigatureEngine and
+//    FragmentBank. Connection style matters more to "feels like me" than any
+//    single glyph. Pairs already written inside a trained word are credited
+//    automatically (cross-tab credit — never ask for the same ink twice).
+//  - Math / Marks: digits+operators, punctuation.
+//
+//  Each unit keeps up to 3 samples for natural variation; write the same one
+//  again to add another sample. An always-visible essentials bar shows WHAT
+//  KIND of data is still missing, not just how much.
 //
 
 import SwiftUI
@@ -267,18 +280,43 @@ struct CalibrationView: View {
     @Environment(\.dismiss) private var dismiss
 
     private enum TrainMode: String, CaseIterable, Identifiable {
+        case words = "Words"
         case letters = "Letters"
+        case joins = "Joins"
         case math = "Math"
+        case marks = "Marks"
         var id: String { rawValue }
     }
 
-    private static let defaultChars = Array(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?':;-()\""
+    /// Designed so every letter a–z appears in AT LEAST TWO words. Shared
+    /// letters tie the scale of every capture together ("the o in dog must
+    /// match the o in wolf"), which keeps ScaleConsensus's joint solve densely
+    /// constrained — the fix for "some letters big, some small".
+    static let essentialWords: [String] = [
+        "the", "and", "was", "her", "dog", "joy", "back",
+        "jump", "five", "wolf", "gaze", "hand", "mix", "very",
+        "keep", "next", "quiz", "quit", "size", "blow", "nice",
+    ]
+
+    /// The most frequent English letter joins, trained as tiny word units so
+    /// the entry/exit strokes are real ink. Direct seeds for LigatureEngine
+    /// and FragmentBank.
+    static let essentialJoins: [String] = [
+        "th", "he", "an", "in", "er", "re",
+        "on", "at", "nd", "ing", "ll", "oo",
+    ]
+
+    private static let letterChars = Array(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     )
 
     /// Digits + operators + common algebra vars for on-device calculator
     /// recognition (no LLM). `× ÷ √` normalize to `* / sqrt` when matching.
     static let mathChars: [Character] = Array("0123456789+-*/=^%!×÷√().,xy")
+
+    /// Punctuation lives in its own tab: marks are exempt from zone advice
+    /// and keep their drawn position exactly (GlyphAlign never snaps them).
+    static let markChars: [Character] = Array(".,!?':;-()\"")
 
     @State private var proxy = GuidedCanvasProxy()
     @State private var refresh = 0
@@ -288,39 +326,102 @@ struct CalibrationView: View {
     @State private var saveMessage = ""
     @State private var saveIsWarning = false
     @State private var showTips = false
-    @State private var trainMode: TrainMode = .letters
+    @State private var trainMode: TrainMode = .words
 
     @State private var extraChars: [Character] =
         Array(UserDefaults.standard.string(forKey: "penpal.extraChars") ?? "")
+    @State private var extraWords: [String] =
+        (UserDefaults.standard.string(forKey: "penpal.extraWords") ?? "")
+            .split(separator: " ").map(String.init)
 
-    @State private var selectedChar: Character = "a"
+    /// The unit being trained — a single character (count == 1) or a whole
+    /// word/join. One selection model for every tab.
+    @State private var selectedTarget: String = "the"
 
-    private var chars: [Character] {
-        switch trainMode {
-        case .letters: return Self.defaultChars + extraChars
-        case .math: return Self.mathChars
+    private var isWordTarget: Bool { selectedTarget.count > 1 }
+
+    private func targets(for mode: TrainMode) -> [String] {
+        switch mode {
+        case .words: return Self.essentialWords + extraWords
+        case .letters: return (Self.letterChars + extraChars).map(String.init)
+        case .joins: return Self.essentialJoins
+        case .math: return Self.mathChars.map(String.init)
+        case .marks: return Self.markChars.map(String.init)
         }
     }
 
-    private var currentLabel: String { String(selectedChar) }
+    private var targets: [String] { targets(for: trainMode) }
 
     private var currentIndex: Int {
-        chars.firstIndex(of: selectedChar) ?? 0
+        targets.firstIndex(of: selectedTarget) ?? 0
+    }
+
+    /// Whether a target has at least one sample — with CROSS-TAB CREDIT: a
+    /// join like "th" counts as trained if captured directly OR inside any
+    /// trained word ("the"), because LigatureEngine and FragmentBank already
+    /// harvested it from that word. Never ask for the same ink twice.
+    private func isTrained(_ target: String) -> Bool {
+        if target.count > 1 {
+            if PersonalFontStore.shared.variantCount(forWord: target) > 0 { return true }
+            if Self.essentialJoins.contains(target) {
+                return PersonalFontStore.shared.trainedWordList
+                    .contains { $0.contains(target) }
+            }
+            return false
+        }
+        guard let ch = target.first else { return false }
+        return PersonalFontStore.shared.variantCount(forChar: ch) > 0
     }
 
     private var samples: Int {
         _ = refresh
-        return PersonalFontStore.shared.variantCount(forChar: selectedChar)
+        if isWordTarget {
+            return PersonalFontStore.shared.variantCount(forWord: selectedTarget)
+        }
+        guard let ch = selectedTarget.first else { return 0 }
+        return PersonalFontStore.shared.variantCount(forChar: ch)
     }
 
     private var currentVariants: [PersonalGlyph] {
         _ = refresh
-        return PersonalFontStore.shared.variants(forChar: selectedChar)
+        if isWordTarget {
+            return PersonalFontStore.shared.variants(forWord: selectedTarget)
+        }
+        guard let ch = selectedTarget.first else { return [] }
+        return PersonalFontStore.shared.variants(forChar: ch)
     }
 
     private var trainedCount: Int {
         _ = refresh
-        return chars.filter { PersonalFontStore.shared.variantCount(forChar: $0) > 0 }.count
+        return targets.filter { isTrained($0) }.count
+    }
+
+    /// Essential coverage per tab — the finish line. Letters counts lowercase
+    /// a–z only (capitals are polish); Words and Joins count the designed
+    /// lists, not user extras.
+    private func essentialProgress(for mode: TrainMode) -> (done: Int, total: Int) {
+        _ = refresh
+        switch mode {
+        case .words:
+            return (Self.essentialWords.filter { isTrained($0) }.count,
+                    Self.essentialWords.count)
+        case .joins:
+            return (Self.essentialJoins.filter { isTrained($0) }.count,
+                    Self.essentialJoins.count)
+        case .letters:
+            let lower = "abcdefghijklmnopqrstuvwxyz"
+            return (lower.filter {
+                PersonalFontStore.shared.variantCount(forChar: $0) > 0
+            }.count, 26)
+        case .math:
+            return (Self.mathChars.filter {
+                PersonalFontStore.shared.variantCount(forChar: $0) > 0
+            }.count, Self.mathChars.count)
+        case .marks:
+            return (Self.markChars.filter {
+                PersonalFontStore.shared.variantCount(forChar: $0) > 0
+            }.count, Self.markChars.count)
+        }
     }
 
     var body: some View {
@@ -365,6 +466,7 @@ struct CalibrationView: View {
             Label("For the best echo of your hand", systemImage: "lightbulb")
                 .font(.caption.weight(.semibold))
             Group {
+                Text("• Train Words first — they teach your sizing and joins together")
                 Text("• Sit letters on the solid blue line")
                 Text("• Letter bodies reach the dashed teal line")
                 Text("• Keep the same size across all samples")
@@ -391,11 +493,17 @@ struct CalibrationView: View {
             }
             .pickerStyle(.segmented)
             .onChange(of: trainMode) { _, _ in
-                if let first = chars.first { selectChar(first) }
+                // Land on the first target still missing a sample.
+                let t = targets
+                if let first = t.first(where: { !isTrained($0) }) ?? t.first {
+                    selectTarget(first)
+                }
             }
 
-            if trainMode == .math {
-                Text("Train digits and math signs. Powers: train \"^\" as a caret, or write exponents raised (x²) — Penpal detects superscripts by layout. Fixing the Solve chip also trains from your ink.")
+            essentialsBar
+
+            if let caption = modeCaption {
+                Text(caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -410,11 +518,12 @@ struct CalibrationView: View {
                 .disabled(currentIndex <= 0)
 
                 VStack(spacing: 2) {
-                    Text(currentLabel)
-                        .font(.system(size: 44, weight: .semibold, design: .rounded))
+                    Text(selectedTarget)
+                        .font(.system(size: isWordTarget ? 34 : 44,
+                                      weight: .semibold, design: .rounded))
                         .lineLimit(1)
                         .minimumScaleFactor(0.4)
-                    Text("\(currentIndex + 1) of \(chars.count) · \(trainedCount) trained")
+                    Text("\(currentIndex + 1) of \(targets.count) · \(trainedCount) trained")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -424,16 +533,16 @@ struct CalibrationView: View {
                     Image(systemName: "chevron.right.circle.fill")
                         .font(.title2)
                 }
-                .disabled(currentIndex >= chars.count - 1)
+                .disabled(currentIndex >= targets.count - 1)
             }
 
-                Text("The bright lines are the ones this letter should touch — write naturally between them.")
+                Text("The bright lines are the ones this \(isWordTarget ? "word" : "letter") should touch — write naturally between them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
             GuidedCanvas(proxy: proxy,
-                         targetText: String(selectedChar))
+                         targetText: selectedTarget)
                 .frame(height: GuidedCanvasView.cellHeight)
                 .overlay(alignment: .topTrailing) {
                     if justSavedFlash {
@@ -468,7 +577,7 @@ struct CalibrationView: View {
                         Label("Next", systemImage: "arrow.right")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(currentIndex >= chars.count - 1)
+                    .disabled(currentIndex >= targets.count - 1)
                 }
 
                 Spacer(minLength: 0)
@@ -478,9 +587,12 @@ struct CalibrationView: View {
                     .foregroundStyle(samples > 0 ? Color.green : Color.secondary)
             }
 
-            if trainMode == .letters {
+            if trainMode == .letters || trainMode == .words {
                 HStack(spacing: 8) {
-                    TextField("Add letters…", text: $customInput)
+                    TextField(trainMode == .words
+                              ? "Add words — your name, words you write a lot…"
+                              : "Add letters…",
+                              text: $customInput)
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                     Button("Add") { addCustom() }
@@ -490,16 +602,56 @@ struct CalibrationView: View {
             }
 
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 36), spacing: 5)], spacing: 5) {
-                    ForEach(Array(chars.enumerated()), id: \.offset) { _, ch in
-                        chip(String(ch),
-                             selected: selectedChar == ch,
-                             trained: PersonalFontStore.shared.variantCount(forChar: ch) > 0) {
-                            selectChar(ch)
+                LazyVGrid(columns: [GridItem(.adaptive(
+                    minimum: (trainMode == .words || trainMode == .joins) ? 58 : 36),
+                    spacing: 5)], spacing: 5) {
+                    ForEach(Array(targets.enumerated()), id: \.offset) { _, t in
+                        chip(t,
+                             selected: selectedTarget == t,
+                             trained: isTrained(t)) {
+                            selectTarget(t)
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// Always-visible finish line: WHAT KIND of data is still missing, not
+    /// just how much. Words + Joins + Letters are the essentials that make
+    /// replies feel like the user; Math and Marks are per-use-case extras.
+    private var essentialsBar: some View {
+        HStack(spacing: 12) {
+            ForEach([TrainMode.words, .joins, .letters], id: \.self) { mode in
+                let p = essentialProgress(for: mode)
+                let complete = p.done >= p.total
+                Button { trainMode = mode } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: complete ? "checkmark.circle.fill" : "circle.dashed")
+                            .font(.caption2)
+                        Text("\(mode.rawValue) \(p.done)/\(p.total)")
+                            .font(.caption2.monospacedDigit())
+                    }
+                    .foregroundStyle(complete ? Color.green : Color.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var modeCaption: String? {
+        switch trainMode {
+        case .words:
+            return "The heart of your hand — whole words as real connected ink. Every letter a–z appears in at least two of these, so sizing is learned from how you actually write in flow."
+        case .letters:
+            return "Gap-filler for letters still missing after Words, plus capitals. Words teach flow; these teach shape."
+        case .joins:
+            return "Letter pairs the way you join them. Connections matter more to \u{201C}feels like me\u{201D} than any single letter. Pairs already inside a trained word are credited automatically."
+        case .math:
+            return "Train digits and math signs. Powers: train \"^\" as a caret, or write exponents raised (x²) — Penpal detects superscripts by layout. Fixing the Solve chip also trains from your ink."
+        case .marks:
+            return "Punctuation, written where it naturally sits — a comma hangs low, an apostrophe floats high. Position is kept exactly as you draw it."
         }
     }
 
@@ -521,7 +673,7 @@ struct CalibrationView: View {
                 HStack(spacing: 10) {
                     ForEach(Array(currentVariants.enumerated()), id: \.offset) { idx, glyph in
                         GlyphPreview(glyph: glyph,
-                                     char: selectedChar,
+                                     char: isWordTarget ? nil : selectedTarget.first,
                                      selected: idx == currentVariants.count - 1) {
                             deleteVariant(at: idx)
                         }
@@ -554,28 +706,27 @@ struct CalibrationView: View {
 
     // MARK: - Actions
 
-    private func selectChar(_ ch: Character) {
-        selectedChar = ch
+    private func selectTarget(_ t: String) {
+        selectedTarget = t
         proxy.clear()
         justSavedFlash = false
     }
 
     private func step(_ delta: Int) {
-        let i = (chars.firstIndex(of: selectedChar) ?? 0) + delta
-        guard chars.indices.contains(i) else { return }
-        selectChar(chars[i])
+        let i = (targets.firstIndex(of: selectedTarget) ?? 0) + delta
+        guard targets.indices.contains(i) else { return }
+        selectTarget(targets[i])
     }
 
-    /// Jump to the next letter that still needs a sample (wraps around).
+    /// Jump to the next target that still needs a sample (wraps around).
     private func advanceAfterSave() {
         guard autoAdvance else { return }
-        let start = (chars.firstIndex(of: selectedChar) ?? 0) + 1
-        let rotated = Array(chars[start...]) + Array(chars[..<start])
-        // Prefer something with zero samples; else just the next character.
-        if let next = rotated.first(where: {
-            PersonalFontStore.shared.variantCount(forChar: $0) == 0
-        }) ?? rotated.first, next != selectedChar {
-            selectChar(next)
+        let start = (targets.firstIndex(of: selectedTarget) ?? 0) + 1
+        let rotated = Array(targets[start...]) + Array(targets[..<start])
+        // Prefer something with zero samples; else just the next target.
+        if let next = rotated.first(where: { !isTrained($0) }) ?? rotated.first,
+           next != selectedTarget {
+            selectTarget(next)
         }
     }
 
@@ -621,12 +772,12 @@ struct CalibrationView: View {
     }
 
     /// Warn (but still save) when a sample fights its zones. First sample of
-    /// a letter checks canonical vertical metrics with generous tolerance;
+    /// a letter checks vertical metrics with generous tolerance — against the
+    /// user's own learned HandMetrics once words have personalized them;
     /// after that, only SELF-consistency is checked — never conformity.
-    private func captureAdvice(for strokes: [PKStroke]) -> String? {
+    private func charAdvice(for strokes: [PKStroke], ch: Character) -> String? {
         guard let (top, bottom) = unitExtent(of: strokes) else { return nil }
 
-        let ch = selectedChar
         let zone = GlyphZoneClass.of(ch)
         guard zone != .mark else { return nil }
 
@@ -641,7 +792,11 @@ struct CalibrationView: View {
             return nil
         }
 
-        // First sample: canonical zone check, warn-only, ±generous.
+        // First sample: zone check, warn-only, ±generous. Thresholds follow
+        // the user's LEARNED line ratios (HandMetrics starts at classic
+        // proportions and personalizes as words are trained), so this
+        // enforces THEIR hand — not a font's.
+        let m = HandMetrics.active
         if bottom > 0.45 {
             return "Saved · floating — sit it on the blue line"
         }
@@ -650,12 +805,42 @@ struct CalibrationView: View {
             if top < 0.55 { return "Saved · small — body up to the dashed teal line" }
             if top > 1.35 { return "Saved · tall — “\(ch)” usually stays at the dashed line" }
         case .ascender, .cap:
-            if top < 1.1 { return "Saved · “\(ch)” should reach up near the top line" }
+            if top < max(1.05, m.ascender * 0.66) {
+                return "Saved · “\(ch)” should reach up near the top line"
+            }
         case .descender:
-            if bottom > -0.15 { return "Saved · “\(ch)”'s tail should drop below the blue line" }
+            if bottom > min(-0.15, m.descender * 0.3) {
+                return "Saved · “\(ch)”'s tail should drop below the blue line"
+            }
             if top < 0.5 { return "Saved · small — body up to the dashed line" }
         case .mark:
             break
+        }
+        return nil
+    }
+
+    /// Word-aware zone check. Expectations come from which zones the word's
+    /// letters actually use, targets from the user's own learned HandMetrics.
+    /// Warn-only — the capture is already saved and can be ✕'d in the strip.
+    private func wordAdvice(for strokes: [PKStroke], word: String) -> String? {
+        guard let (top, bottom) = unitExtent(of: strokes) else { return nil }
+        let m = HandMetrics.active
+        let zones = Set(word.map { GlyphZoneClass.of($0) })
+
+        if bottom > 0.45 {
+            return "Saved · floating — sit the word on the blue line"
+        }
+        if zones.contains(.ascender) || zones.contains(.cap) {
+            if top < m.ascender * 0.72 {
+                return "Saved · tall letters should reach near the top line"
+            }
+        } else if top > 1.45 {
+            return "Saved · big — letter bodies stop at the dashed teal line"
+        } else if top < 0.5 {
+            return "Saved · small — letter bodies up to the dashed teal line"
+        }
+        if zones.contains(.descender), bottom > m.descender * 0.3 {
+            return "Saved · tails (g j p q y) should drop below the blue line"
         }
         return nil
     }
@@ -668,17 +853,34 @@ struct CalibrationView: View {
             withAnimation { justSavedFlash = true }
             return
         }
-        let saved = PersonalFontStore.shared.addGlyph(from: strokes, for: selectedChar,
-                                                      baselineY: GuidedCanvasView.baselineY,
-                                                      xHeight: GuidedCanvasView.xHeight)
-        // Punctuation marks are legitimately small/low — no advice for those.
-        let isMark = !(selectedChar.isLetter || selectedChar.isNumber)
-        let advice = (saved && !isMark) ? captureAdvice(for: strokes) : nil
-        // Record raw proportions AFTER advice so the first sample is judged
-        // against the canon and later ones against the user's own average.
-        if saved, !isMark,
-           let (top, bottom) = unitExtent(of: strokes) {
-            storeProportion(char: selectedChar, top: top, bottom: bottom)
+        let saved: Bool
+        var advice: String?
+        if isWordTarget {
+            // Words and joins are stored as whole units — addWord also feeds
+            // the profile, LigatureEngine, FragmentBank and StrokeVAE.
+            saved = PersonalFontStore.shared.addWord(
+                from: strokes, for: selectedTarget,
+                baselineY: GuidedCanvasView.baselineY,
+                xHeight: GuidedCanvasView.xHeight)
+            if saved { advice = wordAdvice(for: strokes, word: selectedTarget) }
+        } else if let ch = selectedTarget.first {
+            saved = PersonalFontStore.shared.addGlyph(
+                from: strokes, for: ch,
+                baselineY: GuidedCanvasView.baselineY,
+                xHeight: GuidedCanvasView.xHeight)
+            // Punctuation marks are legitimately small/low — no advice.
+            let isMark = !(ch.isLetter || ch.isNumber)
+            if saved, !isMark {
+                advice = charAdvice(for: strokes, ch: ch)
+                // Record raw proportions AFTER advice so the first sample is
+                // judged against the canon and later ones against the user's
+                // own average.
+                if let (top, bottom) = unitExtent(of: strokes) {
+                    storeProportion(char: ch, top: top, bottom: bottom)
+                }
+            }
+        } else {
+            saved = false
         }
         saveMessage = saved ? (advice ?? "Saved") : "Too small or duplicate"
         saveIsWarning = !saved || advice != nil
@@ -695,18 +897,36 @@ struct CalibrationView: View {
     }
 
     private func deleteVariant(at index: Int) {
-        PersonalFontStore.shared.removeVariant(forChar: selectedChar, at: index)
+        if isWordTarget {
+            PersonalFontStore.shared.removeVariant(forWord: selectedTarget, at: index)
+        } else if let ch = selectedTarget.first {
+            PersonalFontStore.shared.removeVariant(forChar: ch, at: index)
+        }
         refresh += 1
     }
 
     private func addCustom() {
         let input = customInput.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return }
-        for ch in input where !chars.contains(ch) && ch != " " {
-            extraChars.append(ch)
+        switch trainMode {
+        case .words:
+            let existing = Set(targets)
+            let added = input.lowercased()
+                .split(whereSeparator: { !$0.isLetter })
+                .map(String.init)
+                .filter { $0.count > 1 && !existing.contains($0) }
+            guard !added.isEmpty else { customInput = ""; return }
+            extraWords.append(contentsOf: added)
+            UserDefaults.standard.set(extraWords.joined(separator: " "),
+                                      forKey: "penpal.extraWords")
+            if let last = added.last { selectTarget(last) }
+        default:
+            for ch in input where !targets.contains(String(ch)) && ch != " " {
+                extraChars.append(ch)
+            }
+            UserDefaults.standard.set(String(extraChars), forKey: "penpal.extraChars")
+            if let last = input.last(where: { $0 != " " }) { selectTarget(String(last)) }
         }
-        UserDefaults.standard.set(String(extraChars), forKey: "penpal.extraChars")
-        if let last = input.last(where: { $0 != " " }) { selectChar(last) }
         customInput = ""
     }
 }
