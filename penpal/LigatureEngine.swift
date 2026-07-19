@@ -61,8 +61,7 @@ final class LigatureEngine {
     private var data = Persist()
 
     private var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ligature_stats.json")
+        HandProfiles.fileURL("ligature_stats.json")   // PEN-20
     }
 
     init() { load() }

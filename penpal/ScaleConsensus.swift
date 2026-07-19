@@ -272,13 +272,7 @@ enum ScaleConsensus {
                 g.strokes[si][pi].y *= s
             }
         }
-        if g.widths != nil {
-            for si in 0..<g.widths!.count {
-                for pi in 0..<g.widths![si].count {
-                    g.widths![si][pi] *= s
-                }
-            }
-        }
+        g.widths = g.widths?.map { row in row.map { $0 * s } }   // PEN-31
         g.width *= s
         return g
     }

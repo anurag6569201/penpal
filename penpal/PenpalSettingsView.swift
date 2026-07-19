@@ -11,6 +11,11 @@ struct PenpalSettingsView: View {
     @ObservedObject var settings: HandwritingSettings
     @Environment(\.dismiss) private var dismiss
     @State private var tab: Tab = .capability
+    @State private var health: PenpalAPI.VerificationHealth?
+    @State private var accessToken = PenpalAPI.accessToken
+    @StateObject private var hands = HandProfiles.shared
+    @State private var newHandName = ""
+    @State private var showInsights = false
     var onStatus: (String) -> Void
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -194,6 +199,74 @@ struct PenpalSettingsView: View {
     }
 
     @ViewBuilder private var styleSettings: some View {
+        // PEN-20 — a shared iPad is the normal case. Without this, the second
+        // person to train writes over the first person's hand.
+        Section {
+            ForEach(hands.profiles) { profile in
+                Button {
+                    hands.activate(profile.id)
+                } label: {
+                    HStack {
+                        Label(profile.name, systemImage: "hand.draw")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        if hands.active?.id == profile.id {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.tint)
+                                .fontWeight(.semibold)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            HStack {
+                TextField("New hand's name", text: $newHandName)
+                    .textInputAutocapitalization(.words)
+                Button("Add") {
+                    let created = hands.addProfile(named: newHandName)
+                    hands.activate(created.id)
+                    newHandName = ""
+                    onStatus("Switched to a fresh hand — train it from Teach it your hand.")
+                }
+                .disabled(newHandName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        } header: {
+            Label("Whose handwriting", systemImage: "person.2")
+        } footer: {
+            Text("Each hand keeps its own training. Notes are shared — the hand is who's writing, not whose notebook this is.")
+        }
+
+        // PEN-24 — observation, not correction. Opt-in behind a disclosure so
+        // it is never pushed at anyone; an app that critiques your handwriting
+        // unprompted is unpleasant.
+        Section {
+            DisclosureGroup("About your handwriting", isExpanded: $showInsights) {
+                if HandwritingInsights.hasEnoughData {
+                    ForEach(HandwritingInsights.current()) { insight in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: insight.systemImage)
+                                .foregroundStyle(.tint)
+                                .frame(width: 22)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(insight.title)
+                                    .font(.subheadline.weight(.medium))
+                                Text(insight.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                } else {
+                    Text(HandwritingInsights.notEnoughDataMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } footer: {
+            Text("What Penpal has learned from your training. It's a description, not a score — every hand is different and that's the point.")
+        }
+
         Section {
             fontRow(tag: "hand", title: "My handwriting", preview: nil)
             ForEach(Self.replyFonts, id: \.name) { font in
@@ -445,12 +518,48 @@ struct PenpalSettingsView: View {
     }
 
     @ViewBuilder private var behaviorSettings: some View {
+        // PEN-04 — verification health, stated plainly. If answers are going
+        // out unchecked the user should hear it from us, not discover it.
+        Section {
+            HStack(spacing: 10) {
+                Image(systemName: health.map { $0.isHealthy ? "checkmark.seal.fill"
+                                                            : "exclamationmark.triangle.fill" }
+                      ?? "questionmark.circle")
+                    .foregroundStyle(health.map { $0.isHealthy ? Color.green : Color.orange }
+                                     ?? .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(health?.summary ?? "Checking…")
+                        .font(.subheadline)
+                    if let health, health.solves > 0 {
+                        Text("\(health.solves) solved · \(health.cas_hits) computed exactly"
+                             + (health.corrections_applied > 0
+                                ? " · \(health.corrections_applied) rewritten" : ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.vertical, 2)
+        } header: {
+            Label("Answer checking", systemImage: "checkmark.shield")
+        } footer: {
+            Text("Every solution is re-derived by a second, independent pass before it's written. Exact results come from a computer-algebra engine where possible.")
+        }
+        .task { health = await PenpalAPI.verificationHealth(baseURL: settings.apiBaseURL) }
+
         Section {
             Toggle("Gemini brain", isOn: $settings.useBrain)
             TextField("API base URL", text: $settings.apiBaseURL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
+            SecureField("Access token (optional)", text: $accessToken)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .onChange(of: accessToken) { _, value in
+                    PenpalAPI.accessToken = value
+                }
             Button("Reset conversation") {
                 ConversationStore.shared.reset()
                 onStatus("Conversation cleared.")
@@ -458,7 +567,7 @@ struct PenpalSettingsView: View {
         } header: {
             Label("Brain", systemImage: "brain.head.profile")
         } footer: {
-            Text("Penpal pen reads handwriting on-device, then sends text to Django → Gemini.")
+            Text("Penpal pen reads handwriting on-device, then sends text to Django → Gemini.\n\nLeave the token blank when running the brain locally. A deployed brain requires one (it matches PENPAL_TOKENS on the server).")
         }
 
         Section {
@@ -471,8 +580,14 @@ struct PenpalSettingsView: View {
 
         Section {
             Toggle("Diagnostics", isOn: $settings.diagnostics)
+            Button("Show gesture tips again") {
+                GestureOnboarding.shared.reset()
+                onStatus("Gesture tips will show next time you turn Penpal on.")
+            }
         } header: {
             Label("Debug", systemImage: "waveform.path.ecg")
+        } footer: {
+            Text("Gestures: box a problem to solve it · double-underline your working to have it checked · strike through ink to delete it.")
         }
     }
 }

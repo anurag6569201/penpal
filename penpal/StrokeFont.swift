@@ -319,7 +319,8 @@ enum StrokeFont {
                                maxY: CGFloat,
                                messiness: CGFloat,
                                useUserHand: Bool = false,
-                               settings: HandwritingSettings) -> WritingSequence {
+                               settings: HandwritingSettings,
+                               allowSynthesis: Bool = true) -> WritingSequence {
 
         let store = PersonalFontStore.shared
         let style = StyleRL.shared.active
@@ -511,7 +512,8 @@ enum StrokeFont {
             if useUserHand {
                 if let (s, adv) = store.inkStrokes(forWord: String(token), originX: penX,
                                                    baselineY: y, size: wordSize,
-                                                   messiness: effectiveMess) {
+                                                   messiness: effectiveMess,
+                                                   allowSynthesis: allowSynthesis) {
                     var tagged = s
                     for i in tagged.indices {
                         tagged[i].wordIndex = wordIndex
@@ -526,7 +528,8 @@ enum StrokeFont {
                     if trailing > 0,
                        let (s, adv) = store.inkStrokes(forWord: String(core), originX: penX,
                                                        baselineY: y, size: wordSize,
-                                                       messiness: effectiveMess) {
+                                                       messiness: effectiveMess,
+                                                       allowSynthesis: allowSynthesis) {
                         var tagged = s
                         for i in tagged.indices {
                             tagged[i].wordIndex = wordIndex

@@ -194,6 +194,10 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     var createdAt: Date
     var modifiedAt: Date
     var deletedAt: Date?
+    /// PEN-18 — text of Penpal's written replies, kept for search.
+    /// The reply is known as text before it is drawn, so indexing it is free.
+    /// Optional for backward compatibility with notes saved before this.
+    var replyTranscript: [String]?
 
     init(id: UUID = UUID(),
          folderID: UUID,
@@ -226,6 +230,16 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     var isDeleted: Bool { deletedAt != nil }
 
     var isCoded: Bool { kind == .coded }
+
+    /// PEN-18 — everything on this page that is already text: typed notes and
+    /// Penpal's replies. Used for search alongside title and body.
+    var searchableText: String {
+        var parts: [String] = []
+        if let typed = typedTexts { parts += typed.map(\.text) }
+        if let transcript = replyTranscript { parts += transcript }
+        if let html = htmlContent, !html.isEmpty { parts.append(html) }
+        return parts.joined(separator: "\n")
+    }
 
     var displayTitle: String {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -380,12 +394,28 @@ final class NotesStore: ObservableObject {
         return systems + customs
     }
 
+    /// PEN-18 — search across what's actually ON the page, not just the
+    /// title and the sticky note.
+    ///
+    /// A note whose entire content is handwriting was previously unfindable:
+    /// title and body are often empty for exactly the pages that matter most
+    /// (a worked-out problem, a solved worksheet). Two of the three kinds of
+    /// page content are already text and cost nothing to index:
+    ///
+    ///   * typed notes placed on the page
+    ///   * **Penpal's replies** — the same insight as the VoiceOver work: the
+    ///     answer arrives as text before it is ever drawn as ink
+    ///
+    /// The user's own handwriting still needs OCR to be searchable, which is
+    /// expensive and deliberately left out; indexing it lazily on save is the
+    /// obvious next step and is tracked separately.
     private func filterSearch(_ notes: [Note]) -> [Note] {
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return notes }
-        return notes.filter {
-            $0.displayTitle.localizedCaseInsensitiveContains(q)
-                || $0.body.localizedCaseInsensitiveContains(q)
+        return notes.filter { note in
+            note.displayTitle.localizedCaseInsensitiveContains(q)
+                || note.body.localizedCaseInsensitiveContains(q)
+                || note.searchableText.localizedCaseInsensitiveContains(q)
         }
     }
 
@@ -505,6 +535,22 @@ final class NotesStore: ObservableObject {
     }
 
     /// AI hand-written replies for the selected note (persisted with it).
+    /// PEN-18 — records a written reply's text so the page can be found later.
+    /// Called as the reply is rendered, where the text is still known.
+    func recordReplyText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let id = selectedNoteID,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        var transcript = notes[idx].replyTranscript ?? []
+        guard transcript.last != trimmed else { return }   // avoid re-renders
+        transcript.append(trimmed)
+        // Bounded: a long session shouldn't grow the note file without limit.
+        if transcript.count > 100 { transcript.removeFirst(transcript.count - 100) }
+        notes[idx].replyTranscript = transcript
+        scheduleSave()
+    }
+
     func updateSelectedReplyInks(_ inks: [ReplyInk]) {
         guard let id = selectedNoteID,
               let idx = notes.firstIndex(where: { $0.id == id }) else { return }

@@ -19,6 +19,8 @@ import concurrent.futures
 import logging
 import re
 
+from . import telemetry
+
 logger = logging.getLogger(__name__)
 
 try:  # sympy is optional — the pipeline degrades gracefully without it.
@@ -134,12 +136,143 @@ def _fmt(expr) -> str:
         return sympy.sstr(expr)
 
 
+# --- Calculus / linear algebra intent -------------------------------------
+#
+# PEN-03. Handwritten calculus arrives as words as often as symbols
+# ("integral of x^2 dx", "d/dx x^2", "lim as x->0 of sin(x)/x"). These
+# patterns pull the operation and its operand out so SymPy can answer
+# EXACTLY, instead of the input being dismissed as prose.
+
+_DERIV_RE = re.compile(
+    r"^(?:d/d([a-z])\s*|derivative\s+of\s+|differentiate\s+)(.+?)"
+    r"(?:\s+(?:with\s+respect\s+to|wrt|in)\s+([a-z]))?$",
+    re.I,
+)
+_INTEGRAL_RE = re.compile(
+    r"^(?:integral\s+of\s+|integrate\s+|antiderivative\s+of\s+)(.+?)"
+    r"(?:\s*d([a-z]))?(?:\s+from\s+(.+?)\s+to\s+(.+?))?$",
+    re.I,
+)
+_LIMIT_RE = re.compile(
+    r"^lim(?:it)?\s*(?:as\s+)?([a-z])\s*(?:->|→|tends?\s+to|approaches)\s*"
+    r"([^\s]+)\s*(?:of\s+)?(.+)$",
+    re.I,
+)
+
+
+def _pick_var(expr, hint: str | None):
+    """The variable to operate on: an explicit hint, else the only symbol."""
+    _setup()
+    if hint:
+        return _LOCALS.get(hint.lower()) or Symbol(hint.lower())
+    free = sorted(expr.free_symbols, key=lambda s_: s_.name)
+    if len(free) == 1:
+        return free[0]
+    for name in ("x", "t", "y"):
+        for s_ in free:
+            if s_.name == name:
+                return s_
+    return free[0] if free else None
+
+
+def _calculus_attempt(raw: str) -> list[str]:
+    """Derivatives, integrals and limits — verified where cheap."""
+    lines: list[str] = []
+
+    m = _LIMIT_RE.match(raw)
+    if m:
+        var_name, point_s, body_s = m.group(1), m.group(2), m.group(3)
+        body = _parse(body_s)
+        var = _pick_var(body, var_name)
+        point = oo if point_s.lower() in ("oo", "inf", "infinity") else _parse(point_s)
+        value = limit(body, var, point)
+        lines.append(f"limit: {_fmt(value)}")
+        return lines
+
+    m = _INTEGRAL_RE.match(raw)
+    if m:
+        body_s, var_name, lo_s, hi_s = m.groups()
+        body = _parse(body_s)
+        var = _pick_var(body, var_name)
+        if var is None:
+            return lines
+        if lo_s and hi_s:
+            value = integrate(body, (var, _parse(lo_s), _parse(hi_s)))
+            lines.append(f"definite integral: {_fmt(value)}")
+        else:
+            anti = integrate(body, var)
+            # VERIFY: differentiating the antiderivative must return the
+            # integrand. SymPy can return an unevaluated Integral for hard
+            # cases, and a wrong "trusted" hint is worse than none at all.
+            if simplify(diff(anti, var) - body) == 0:
+                lines.append(f"integral: {_fmt(anti)} + C")
+        return lines
+
+    m = _DERIV_RE.match(raw)
+    if m:
+        lead_var, body_s, trail_var = m.groups()
+        body = _parse(body_s)
+        var = _pick_var(body, lead_var or trail_var)
+        if var is not None:
+            lines.append(f"d/d{var}: {_fmt(simplify(diff(body, var)))}")
+        return lines
+
+    return lines
+
+
+def _fmt_matrix(mat) -> str:
+    """
+    One-line matrix: "[1 2; 3 4]". SymPy's printer emits embedded newlines,
+    which would corrupt the line-based [CAS] block the solver reads.
+    """
+    rows = ["  ".join(sympy.sstr(v) for v in mat.row(r)) for r in range(mat.rows)]
+    return "[" + "; ".join(rows) + "]"
+
+
+def _matrix_attempt(raw: str) -> list[str]:
+    """Determinant, inverse, eigenvalues, rank of a written matrix."""
+    m = re.match(
+        r"^(det|determinant|inverse|inv|eigenvalues|eigenvals|rank|transpose)"
+        r"\s*(?:of\s*)?(\[.+\])$",
+        raw, re.I,
+    )
+    if not m:
+        return []
+    op, body = m.group(1).lower(), m.group(2)
+    mat = sympy.Matrix(_parse(body))
+    if op in ("det", "determinant"):
+        return [f"determinant: {_fmt(mat.det())}"]
+    if op in ("inverse", "inv"):
+        if mat.det() == 0:
+            return ["inverse: none (determinant is 0)"]
+        return [f"inverse: {_fmt_matrix(mat.inv())}"]
+    if op in ("eigenvalues", "eigenvals"):
+        vals = ", ".join(f"{_fmt(k)} (x{v})" for k, v in mat.eigenvals().items())
+        return [f"eigenvalues: {vals}"]
+    if op == "rank":
+        return [f"rank: {mat.rank()}"]
+    if op == "transpose":
+        return [f"transpose: {_fmt_matrix(mat.T)}"]
+    return []
+
+
 def _attempt(message: str) -> str:
     """Return a compact trusted-results block, or '' if nothing parseable."""
     raw = normalize(message)
     raw = _strip_trailing_eq(raw)
     if not raw or len(raw) > 300:
         return ""
+
+    # Calculus and linear algebra are word-led, so they run BEFORE the
+    # prose filter below — which would otherwise throw them away.
+    for handler in (_calculus_attempt, _matrix_attempt):
+        try:
+            found = handler(raw)
+        except Exception:
+            found = []
+        if found:
+            return "\n".join(found)
+
     # Reject inputs that are mostly words — CAS is for symbolic input.
     _setup()
     words = re.findall(r"[A-Za-z]{3,}", raw)
@@ -214,10 +347,15 @@ def cas_hint(message: str) -> str:
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(_attempt, message)
-            return fut.result(timeout=CAS_TIMEOUT) or ""
+            result = fut.result(timeout=CAS_TIMEOUT) or ""
+        telemetry.record(telemetry.CAS_HIT if result else telemetry.CAS_MISS)
+        return result
     except concurrent.futures.TimeoutError:
+        # PEN-04: a timeout means we silently dropped to "probably right".
+        telemetry.record(telemetry.CAS_TIMEOUT, message[:80])
         logger.info("CAS hint timed out for %r", message[:80])
         return ""
     except Exception:
+        telemetry.record(telemetry.CAS_MISS)
         logger.exception("CAS hint failed")
         return ""

@@ -56,6 +56,12 @@ struct MagicPaper: UIViewRepresentable {
 struct ContentView: View {
     @StateObject private var store = NotesStore.shared
     @StateObject private var settings = HandwritingSettings.shared
+    @StateObject private var outbox = Outbox.shared
+    @StateObject private var onboarding = GestureOnboarding.shared
+    @StateObject private var voice = VoiceInput.shared
+    @StateObject private var planner = StudyPlanner.shared
+    /// The practice item awaiting a verdict, if one is on the page.
+    @State private var practiceInProgress: (id: UUID, item: PenpalAPI.PracticeProblem)?
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var proxy = PaperProxy()
@@ -89,7 +95,10 @@ struct ContentView: View {
     @FocusState private var titleFocused: Bool
     @FocusState private var bodyFocused: Bool
 
-    private let accentYellow = Color(red: 0.98, green: 0.76, blue: 0.11)
+    // Warm Paper: one accent for the whole app. The previous Notes-yellow
+    // chrome made Penpal's indigo presence read as a third-party add-on
+    // inside someone else's app; now the shell and the pen are one hand.
+    private let accent = Pen.inkAccent
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -106,7 +115,7 @@ struct ContentView: View {
             editorDetail
         }
         .navigationSplitViewStyle(.balanced)
-        .tint(accentYellow)
+        .tint(accent)
         .animation(.easeOut(duration: 0.25), value: showPrefer)
         .onAppear {
             syncEditorFromStore(force: true)
@@ -123,8 +132,18 @@ struct ContentView: View {
             }
         }
         .onChange(of: penpalOn) { _, on in
-            if on { proxy.view?.syncReplyBaselineToCurrentInk() }
-            else { showMathChips = false }
+            if on {
+                proxy.view?.syncReplyBaselineToCurrentInk()
+                // PEN-33: offer the box hint only on an empty page, so it can
+                // never talk over work the user is already doing.
+                onboarding.offerIfAppropriate(
+                    penpalOn: true,
+                    isMathematician: isMathematician,
+                    hasInk: !(store.selectedNote?.drawing.strokes.isEmpty ?? true))
+            } else {
+                showMathChips = false
+                onboarding.dismiss()
+            }
         }
         .onChange(of: settings.capability) { _, _ in
             showMathChips = false
@@ -195,6 +214,14 @@ struct ContentView: View {
                         mathFollowUpBar
                             .padding(.bottom, 76)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
+                    // PEN-33 — taught on the page, once, and only when there
+                    // is nothing to interrupt.
+                    if onboarding.isShowing {
+                        BoxGestureHint { onboarding.dismiss() }
+                            .padding(.bottom, 120)
+                            .transition(.scale(scale: 0.94).combined(with: .opacity))
                     }
 
                     if showPrefer, settings.replyStyle == "hand", !isWriting, !isThinking {
@@ -292,7 +319,7 @@ struct ContentView: View {
                 }
             } label: {
                 Image(systemName: "signature")
-                    .foregroundStyle(penpalOn ? Color.indigo : Color.primary)
+                    .foregroundStyle(penpalOn ? Pen.inkAccent : Color.primary)
             }
             .disabled(store.selectedNote == nil || selectedIsCoded)
 
@@ -352,7 +379,7 @@ struct ContentView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.indigo.opacity(0.2), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.2), lineWidth: 1))
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
     }
 
@@ -363,17 +390,35 @@ struct ContentView: View {
         } label: {
             Label(title, systemImage: icon)
                 .font(.footnote.weight(.medium))
+                // PEN-32: cap growth rather than fixing the size. The chips
+                // must scale for low vision, but unbounded growth breaks the
+                // capsule row on a phone — accessibility sizes get the
+                // ⋯ menu, which reflows properly.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.capsule)
         .controlSize(.small)
-        .tint(.indigo)
+        .tint(Pen.inkAccent)
+        .accessibilityLabel(title)
+        .accessibilityHint("Asks Penpal to \(title.lowercased()) the last answer")
     }
 
     private var penpalBannerText: String {
+        if voice.isListening {
+            return voice.transcript.isEmpty ? "Listening…" : voice.transcript
+        }
         if isReading { return "Reading expression…" }
         if isThinking { return isMathematician ? "Solving & verifying…" : "Penpal is thinking…" }
         if isWriting { return "Penpal is writing…" }
+        // PEN-12 — say plainly that work is waiting, so "I'll answer as soon
+        // as we're back" is visible state rather than a promise made once.
+        if outbox.hasPending {
+            let n = outbox.pending.count
+            return outbox.isOnline
+                ? "Sending \(n) saved \(n == 1 ? "note" : "notes")…"
+                : "Offline — \(n) \(n == 1 ? "note" : "notes") saved for later"
+        }
         return isMathematician
             ? "Mathematician — write a problem, end with ="
             : "Companion — write and it replies"
@@ -382,7 +427,10 @@ struct ContentView: View {
     private var penpalBanner: some View {
         HStack(spacing: 8) {
             if isWriting || isThinking || isReading {
-                ProgressView().controlSize(.small)
+                // Ink-native progress, not a UIKit spinner. A spinner announces
+                // "software is working"; this reads as a pen at work on paper.
+                InkThinkingIndicator(phase: isWriting ? .writing
+                                            : (isReading ? .reading : .thinking))
             } else {
                 // Quick capability switcher — one tap, no settings trip.
                 Menu {
@@ -415,12 +463,13 @@ struct ContentView: View {
                     }
                 } label: {
                     Image(systemName: isMathematician ? "x.squareroot" : "signature")
-                        .foregroundStyle(.indigo)
+                        .foregroundStyle(Pen.inkAccent)
                 }
             }
             Text(penpalBannerText)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             Button {
                 penpalOn = false
             } label: {
@@ -428,12 +477,19 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Turn off Penpal mode")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        // Warm Paper: material surface, accent border, paper shadow.
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.indigo.opacity(0.25), lineWidth: 1))
-        .shadow(color: .black.opacity(0.1), radius: 10, y: 4)
+        .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.25), lineWidth: 1))
+        .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
+        // One element: VoiceOver reads the state as a sentence instead of
+        // walking a menu button, a label and a close button separately.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Penpal status")
+        .accessibilityValue(penpalBannerText)
     }
 
     private var noteSurface: some View {
@@ -569,6 +625,44 @@ struct ContentView: View {
 
     // MARK: - Actions
 
+    /// PEN-19 — writes the next due practice problem onto a fresh page.
+    ///
+    /// Deliberately lands on real paper rather than in a quiz UI: practice
+    /// should be the same act as homework, in the same place, with the same
+    /// pen. A separate quiz screen would make it feel like a different app.
+    private func startPractice() {
+        guard let weakness = planner.due.first else { return }
+        Task { @MainActor in
+            do {
+                let item = try await planner.practiceProblem(
+                    for: weakness, baseURL: settings.apiBaseURL)
+                createNote()
+                titleText = "Practice — \(item.skill)"
+                store.updateSelectedTitle(titleText)
+                // The problem is written in the user's own hand, like anything
+                // else Penpal writes.
+                proxy.view?.writeReplyText(item.problem)
+                practiceInProgress = (weakness.id, item)
+                // Closing the loop: when this page gets marked, the verdict
+                // updates the schedule instead of logging a fresh weakness.
+                proxy.view?.onWorkMarked = { wasCorrect in
+                    planner.recordPractice(weakness.id, wasCorrect: wasCorrect)
+                    proxy.view?.onWorkMarked = nil
+                    practiceInProgress = nil
+                    statusMessage = wasCorrect
+                        ? "Got it. I'll bring this back in a while to make sure it stuck."
+                        : "No problem — I'll show you this one again tomorrow."
+                    showStatus = true
+                }
+                statusMessage = "Work it through, then use Check My Working."
+                showStatus = true
+            } catch {
+                statusMessage = PenpalError.message(for: error)
+                showStatus = true
+            }
+        }
+    }
+
     private func createNote() {
         flushEditor()
         _ = store.createNote(in: store.selectedFolderID)
@@ -666,11 +760,25 @@ struct ContentView: View {
         if note.isCoded, let html = note.htmlContent, !html.isEmpty {
             items.append(html)
         }
+        // PEN-21 — export on real paper, in a forced light trait.
+        //
+        // The previous `drawing.image(from:scale:)` rendered onto a
+        // transparent background in the CURRENT appearance, so a note shared
+        // from dark mode was near-white ink on nothing: effectively a blank
+        // page, and the sender had no way to notice before sending it.
         let drawing = note.drawing
         if !drawing.strokes.isEmpty {
-            let bounds = drawing.bounds.insetBy(dx: -40, dy: -40)
-            let image = drawing.image(from: bounds, scale: 2)
-            items.append(image)
+            // PDF first — vector, printable, and what "hand this in" expects.
+            if let pdf = NoteExporter.pdf(for: drawing,
+                                          title: note.displayTitle,
+                                          paperStyle: settings.paperStyle) {
+                items.append(pdf)
+            }
+            // Plus an image, for apps that won't take a PDF.
+            if let image = NoteExporter.image(for: drawing,
+                                              paperStyle: settings.paperStyle) {
+                items.append(image)
+            }
         }
         for att in note.attachments {
             if let img = UIImage(contentsOfFile: store.attachmentURL(att).path) {
@@ -724,6 +832,31 @@ struct ContentView: View {
     private var moreActions: some View {
         Button("Find in Note", systemImage: "magnifyingglass") { showFind = true }
         Button("Move Note", systemImage: "folder") { showMoveNote = true }
+        Button("Solve Whole Page", systemImage: "list.number") {
+            proxy.view?.solveWholePageAsWorksheet()
+        }
+        // PEN-19 — only offered when there's actually something due, so it
+        // never nags. The reward is the list getting shorter, not a streak.
+        if planner.hasWorkDue {
+            Button("Practice (\(planner.due.count) due)", systemImage: "repeat") {
+                startPractice()
+            }
+        }
+        Button("Check My Working", systemImage: "checkmark.circle.badge.questionmark") {
+            proxy.view?.checkMyWorking()
+        }
+        // PEN-23 — accessibility first: Penpal otherwise requires a stylus
+        // and fine motor control, which excludes people outright.
+        Button(voice.isListening ? "Stop Listening" : "Speak a Problem",
+               systemImage: voice.isListening ? "stop.circle" : "mic") {
+            if voice.isListening {
+                voice.stop()
+            } else {
+                voice.start { spoken in
+                    proxy.view?.sendTextMessage(spoken)
+                }
+            }
+        }
         Button("Add Page", systemImage: "plus.rectangle.portrait") { proxy.view?.addPage() }
         Button("Erase Penpal Replies", systemImage: "eraser") { proxy.view?.clearPenpalContent() }
         Divider()

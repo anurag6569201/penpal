@@ -112,6 +112,9 @@ final class HandwritingRenderer: UIView {
 
     var ponderLayers: [CALayer] = []
     var ponderGeneration = 0
+    /// Tutor marks under the student's own working (PEN-16). Kept separate
+    /// from ponderLayers so endAnalyzing() doesn't wipe the mark away.
+    var markLayers: [CALayer] = []
     var celebrateLayers: [CALayer] = []
     var celebrateGeneration = 0
 
@@ -139,15 +142,7 @@ final class HandwritingRenderer: UIView {
         layer.insertSublayer(wash, below: penDot)
         ponderLayers.append(wash)
 
-        let washPulse = CABasicAnimation(keyPath: "opacity")
-        washPulse.fromValue = 0.35
-        washPulse.toValue = 0.9
-        washPulse.duration = 0.85
-        washPulse.autoreverses = true
-        washPulse.repeatCount = .infinity
-        washPulse.beginTime = start
-        washPulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        wash.add(washPulse, forKey: "pulse")
+        pulse(wash, from: 0.35, to: 0.9, duration: 0.85, begin: start)
 
         let y = bounds.maxY + max(3, bounds.height * 0.1)
         let underline = CAShapeLayer()
@@ -163,15 +158,7 @@ final class HandwritingRenderer: UIView {
         layer.insertSublayer(underline, below: penDot)
         ponderLayers.append(underline)
 
-        let linePulse = CABasicAnimation(keyPath: "opacity")
-        linePulse.fromValue = 0.35
-        linePulse.toValue = 1.0
-        linePulse.duration = 0.7
-        linePulse.autoreverses = true
-        linePulse.repeatCount = .infinity
-        linePulse.beginTime = start + 0.08
-        linePulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        underline.add(linePulse, forKey: "pulse")
+        pulse(underline, from: 0.35, to: 1.0, duration: 0.7, begin: start + 0.08)
 
         // Living equals + structure filaments (silent magic).
         attachMathMagic(whileAnalyzing: strokes, at: start)
@@ -179,6 +166,184 @@ final class HandwritingRenderer: UIView {
 
     func endAnalyzing() {
         cancelPondering()
+    }
+
+    // MARK: - Reply guide (PEN-22)
+
+    private var replyGuideLayer: CAShapeLayer?
+
+    /// A faint line showing where a reply would be written. Shown on Pencil
+    /// hover, so the user knows where ink will land before committing.
+    ///
+    /// Idempotent on purpose: hover fires continuously as the pen moves, so
+    /// this updates an existing layer rather than rebuilding one per event —
+    /// otherwise it would thrash CoreAnimation at pointer-move frequency.
+    func showReplyGuide(at baseline: CGFloat, from startX: CGFloat, to endX: CGFloat) {
+        guard endX > startX + 8 else { return }
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: startX, y: baseline))
+        path.addLine(to: CGPoint(x: endX, y: baseline))
+
+        if let existing = replyGuideLayer {
+            existing.path = path.cgPath
+            return
+        }
+        let guide = CAShapeLayer()
+        guide.name = "replyGuide"
+        guide.path = path.cgPath
+        guide.fillColor = nil
+        guide.strokeColor = inkColor.withAlphaComponent(0.28).cgColor
+        guide.lineWidth = 1.5
+        guide.lineCap = .round
+        guide.lineDashPattern = [4, 6]
+        layer.insertSublayer(guide, below: penDot)
+        replyGuideLayer = guide
+
+        guard !reduceMotion else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        fade.duration = 0.15
+        guide.add(fade, forKey: "in")
+    }
+
+    func clearReplyGuide() {
+        replyGuideLayer?.removeFromSuperlayer()
+        replyGuideLayer = nil
+    }
+
+    // MARK: - Live answer preview (PEN-11)
+
+    var ghostAnswerLayers: [CALayer] = []
+
+    /// Shows the computed answer faintly, just past the user's "=", before
+    /// they have committed to anything.
+    ///
+    /// Deliberately drawn in the user's own stroke font rather than a label:
+    /// the preview is a suggestion of ink, so it must look like ink. It sits
+    /// at low opacity — present enough to read, faint enough that it clearly
+    /// hasn't been written yet.
+    ///
+    /// Strictly on-device (`MathEvaluator`). A network round-trip here would
+    /// make the page feel laggy while the pen is still down, which is fatal
+    /// on a writing surface — better no preview than a late one.
+    func showAnswerGhost(_ strokes: [InkStroke], baseWidth: CGFloat) {
+        clearAnswerGhost()
+        guard !strokes.isEmpty else { return }
+
+        for stroke in strokes {
+            guard stroke.points.count > 1 else { continue }
+            let path = UIBezierPath()
+            path.move(to: stroke.points[0])
+            for p in stroke.points.dropFirst() { path.addLine(to: p) }
+
+            let layer = CAShapeLayer()
+            layer.name = "answerGhost"
+            layer.path = path.cgPath
+            layer.fillColor = nil
+            layer.strokeColor = inkColor.withAlphaComponent(0.42).cgColor
+            layer.lineWidth = baseWidth
+            layer.lineCap = .round
+            layer.lineJoin = .round
+            self.layer.insertSublayer(layer, below: penDot)
+            ghostAnswerLayers.append(layer)
+
+            guard !reduceMotion else { continue }
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = 0.18
+            layer.add(fade, forKey: "in")
+        }
+    }
+
+    func clearAnswerGhost() {
+        ghostAnswerLayers.forEach { $0.removeFromSuperlayer() }
+        ghostAnswerLayers.removeAll()
+    }
+
+    var isShowingAnswerGhost: Bool { !ghostAnswerLayers.isEmpty }
+
+    // MARK: - Accessibility (PEN-32)
+
+    /// PEN-32 — Reduce Motion is a correctness requirement here, not polish.
+    ///
+    /// This renderer's cues are mostly INFINITE pulses: the analyzing wash,
+    /// the breathing underline, the box trace. Continuous looping motion in
+    /// the user's peripheral vision is exactly what triggers vestibular
+    /// discomfort, and unlike a one-shot transition it never stops.
+    ///
+    /// The rule applied throughout: keep the *meaning*, drop the *movement*.
+    /// A cue that pulsed now sits at a steady, clearly-visible opacity — the
+    /// user still sees what Penpal is looking at; it just holds still.
+    var reduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
+
+    /// Adds a repeating pulse, or a steady state when Reduce Motion is on.
+    private func pulse(_ layer: CALayer, from: Double, to: Double,
+                       duration: Double, begin: CFTimeInterval) {
+        guard !reduceMotion else {
+            layer.opacity = Float(max(from, to))
+            return
+        }
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = duration
+        animation.autoreverses = true
+        animation.repeatCount = .infinity
+        animation.beginTime = begin
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(animation, forKey: "pulse")
+    }
+
+    /// Adds a draw-on stroke animation, or shows the finished line at once.
+    private func drawOn(_ layer: CAShapeLayer, duration: Double) {
+        guard !reduceMotion else { return }
+        let animation = CABasicAnimation(keyPath: "strokeEnd")
+        animation.fromValue = 0
+        animation.toValue = 1
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(animation, forKey: "draw")
+    }
+
+    // MARK: - Marking a line (PEN-16)
+
+    /// Draws a soft underline beneath a line of the student's own working,
+    /// the way a tutor would run a pencil under it.
+    ///
+    /// Deliberately NOT a red box or a cross. This marks a *place to look*,
+    /// not a failure — a student who feels caught out stops showing their
+    /// working, which defeats the feature. The line draws on rather than
+    /// appearing, so it reads as someone marking the page beside you.
+    func markLine(_ rect: CGRect) {
+        guard !rect.isNull, rect.width > 2 else { return }
+        cancelMarking()
+
+        let y = rect.maxY + max(2, rect.height * 0.12)
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: rect.minX, y: y))
+        // A slight rise to the right — a hand-drawn line is never level.
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: y - rect.height * 0.06),
+            controlPoint: CGPoint(x: rect.midX, y: y + rect.height * 0.05))
+
+        let mark = CAShapeLayer()
+        mark.name = "workMark"
+        mark.path = path.cgPath
+        mark.fillColor = nil
+        mark.strokeColor = inkColor.withAlphaComponent(0.55).cgColor
+        mark.lineWidth = max(1.6, rect.height * 0.07)
+        mark.lineCap = .round
+        layer.insertSublayer(mark, below: penDot)
+        markLayers.append(mark)
+
+        drawOn(mark, duration: 0.4)
+    }
+
+    func cancelMarking() {
+        markLayers.forEach { $0.removeFromSuperlayer() }
+        markLayers.removeAll()
     }
 
     // MARK: - Box gesture feedback (boxed problems)
@@ -199,22 +364,9 @@ final class HandwritingRenderer: UIView {
         layer.insertSublayer(trace, below: penDot)
         ponderLayers.append(trace)
 
-        let draw = CABasicAnimation(keyPath: "strokeEnd")
-        draw.fromValue = 0
-        draw.toValue = 1
-        draw.duration = 0.35
-        draw.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        trace.add(draw, forKey: "draw")
-
-        let pulse = CABasicAnimation(keyPath: "opacity")
-        pulse.fromValue = 0.35
-        pulse.toValue = 0.9
-        pulse.duration = 0.85
-        pulse.autoreverses = true
-        pulse.repeatCount = .infinity
-        pulse.beginTime = CACurrentMediaTime() + 0.4
-        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        trace.add(pulse, forKey: "pulse")
+        drawOn(trace, duration: 0.35)
+        pulse(trace, from: 0.35, to: 0.9, duration: 0.85,
+              begin: CACurrentMediaTime() + 0.4)
     }
 
     /// The box did its job — a ghost of the stroke fades away while the real

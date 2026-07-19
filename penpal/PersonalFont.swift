@@ -96,12 +96,34 @@ final class PersonalFontStore {
         word.lowercased().trimmingCharacters(in: .whitespaces)
     }
 
-    private var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("personal_font.json")
+    /// PEN-20 — resolved per hand, looked up fresh each time so switching
+    /// profiles needs no state here.
+    private var fileURL: URL { HandProfiles.fileURL("personal_font.json") }
+
+    init() {
+        load()
+        // PEN-20 — switching hands must swap the whole bank, not just the
+        // glyph file: fragments, VAE, ligatures and the style critic are all
+        // derived from it, and a mismatched set renders one person's letters
+        // with another person's joins.
+        NotificationCenter.default.addObserver(
+            forName: .handProfileDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadForActiveHand() }
+        }
     }
 
-    init() { load() }
+    /// Drops every in-memory cache and reloads from the active hand's files.
+    func reloadForActiveHand() {
+        data = PersonalFontData()
+        vaeCache.removeAll()
+        cachedMeans = nil
+        cachedIsolatedGain = nil
+        OpticalKern.invalidateAll()
+        GlyphPDM.shared.invalidateAll()
+        load()
+        rebuildDerivedModels()
+    }
 
     // MARK: - Capture
 
@@ -607,10 +629,18 @@ final class PersonalFontStore {
 
     /// Resolve a word: exact → fragment stitch → VAE → nil.
     /// Everything then gets sentence-unity morph so the line shares one hand.
+    ///
+    /// `allowSynthesis: false` restricts the result to REAL captured ink
+    /// (exact word or fragment stitch), never a generated shape. Math replies
+    /// use this: a synthesized glyph is a plausible-looking invention, which
+    /// is charming in prose and unacceptable in an equation.
     func inkStrokes(forWord word: String,
                     originX: CGFloat, baselineY: CGFloat,
-                    size: CGFloat, messiness: CGFloat) -> (strokes: [InkStroke], advance: CGFloat)? {
-        guard let (g, source) = resolveWordGlyph(word) else { return nil }
+                    size: CGFloat, messiness: CGFloat,
+                    allowSynthesis: Bool = true) -> (strokes: [InkStroke], advance: CGFloat)? {
+        guard let (g, source) = resolveWordGlyph(word, allowSynthesis: allowSynthesis) else {
+            return nil
+        }
         return compose(g, originX: originX, baselineY: baselineY, size: size,
                        messiness: messiness, source: source)
     }
@@ -623,7 +653,10 @@ final class PersonalFontStore {
         // LINE TRUST: render the letter at the size it was trained relative to
         // the guide lines — no isolatedGain rescale, no ZoneFit zone stretch.
         // Statistical resizing/stretching distorted trained letterforms.
-        let unified = GlyphAlign.reseat(InkUnity.shared.unify(g, source: .letters))
+        // Character-aware reseat: baseline-snapping a math symbol here would
+        // undo its anchor and drop "=" onto the line.
+        let unified = GlyphAlign.reseat(InkUnity.shared.unify(g, source: .letters),
+                                        forChar: ch)
         return compose(unified, originX: originX, baselineY: baselineY, size: size,
                        messiness: messiness, source: .letters)
     }
@@ -647,9 +680,14 @@ final class PersonalFontStore {
 
     private var vaeCache: [String: (PersonalGlyph, WordInkSource)] = [:]
 
-    private func resolveWordGlyph(_ word: String) -> (glyph: PersonalGlyph, source: WordInkSource)? {
+    private func resolveWordGlyph(_ word: String,
+                                  allowSynthesis: Bool = true)
+        -> (glyph: PersonalGlyph, source: WordInkSource)? {
         let key = normalize(word)
-        if let cached = vaeCache[key] { return cached }
+        if let cached = vaeCache[key] {
+            // A cached VAE shape must not leak into a no-synthesis caller.
+            if allowSynthesis || cached.1 != .vae { return cached }
+        }
 
         var resolved: (PersonalGlyph, WordInkSource)?
 
@@ -658,7 +696,7 @@ final class PersonalFontStore {
         } else if key.count >= 2, key.allSatisfy(\.isLetter),
                   let g = FragmentBank.shared.stitch(key, connectedness: profile.connectedness) {
             resolved = (g, .fragments)
-        } else if let g = synthesizeWithVAE(key) {
+        } else if allowSynthesis, let g = synthesizeWithVAE(key) {
             resolved = (g, .vae)
         }
 
@@ -809,8 +847,13 @@ final class PersonalFontStore {
     /// trust. Words are deliberately NOT re-run through the quantile fit —
     /// it would re-squash ascender-heavy words; their scale is owned by
     /// ScaleConsensus.
+    /// v7 introduces math-symbol and digit ANCHORING: symbols are placed at a
+    /// canonical center/height instead of keeping whatever offset and scale
+    /// their capture happened to have. Re-running is lossless (a glyph already
+    /// at its anchor is left untouched), so this repairs banks trained before
+    /// the rule existed — no retraining needed.
     private func realignStoredGlyphsIfNeeded() {
-        let flag = "penpal.glyphsAligned.v6"
+        let flag = "penpal.glyphsAligned.v7"
         guard !UserDefaults.standard.bool(forKey: flag) else { return }
         let firstRun = !UserDefaults.standard.bool(forKey: "penpal.glyphsAligned.v3")
         for (key, list) in data.glyphs {

@@ -102,8 +102,10 @@ enum SigmaLognormal {
                 rebuilt.append(t)
             }
             newTimes.append(rebuilt)
-            if newDurations != nil, si < newDurations!.count {
-                newDurations![si] = t
+            // PEN-31: bind once instead of test-then-force-unwrap.
+            if var durations = newDurations, si < durations.count {
+                durations[si] = t
+                newDurations = durations
             }
             changed = true
         }

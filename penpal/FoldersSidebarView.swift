@@ -16,7 +16,8 @@ struct FoldersSidebarView: View {
     @State private var renameTarget: NoteFolder?
     @State private var renameText = ""
 
-    private let accentYellow = Color(red: 0.98, green: 0.76, blue: 0.11)
+    // Warm Paper: the sidebar wears the same accent as the rest of the app.
+    private let accent = Pen.inkAccent
 
     private var selection: Binding<UUID?> {
         Binding(
@@ -28,8 +29,8 @@ struct FoldersSidebarView: View {
     var body: some View {
         List(selection: selection) {
             Section("On My iPad") {
-                row(kind: .allNotes, icon: "tray.full", tint: accentYellow)
-                row(kind: .notes, icon: "folder", tint: accentYellow)
+                row(kind: .allNotes, icon: "tray.full", tint: accent)
+                row(kind: .notes, icon: "folder", tint: accent)
 
                 ForEach(store.rootCustomFolders()) { folder in
                     folderNode(folder)
@@ -37,11 +38,11 @@ struct FoldersSidebarView: View {
             }
 
             Section {
-                row(kind: .recentlyDeleted, icon: "trash", tint: accentYellow)
+                row(kind: .recentlyDeleted, icon: "trash", tint: accent)
             }
         }
         .listStyle(.sidebar)
-        .tint(accentYellow)
+        .tint(accent)
         .navigationTitle("Folders")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
@@ -125,7 +126,7 @@ struct FoldersSidebarView: View {
         Label {
             Text(folder.name)
         } icon: {
-            Image(systemName: "folder").foregroundStyle(accentYellow)
+            Image(systemName: "folder").foregroundStyle(accent)
         }
         .badge(store.noteCount(for: folder))
         .tag(folder.id)

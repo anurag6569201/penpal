@@ -157,6 +157,13 @@ enum InkAnalyzer {
         return (m.baseline, m.xHeight, m.trailX)
     }
 
+    /// PEN-10 — how wide the reply will actually be, in points. Supplying it
+    /// lets the placer reserve only the space the answer needs.
+    ///
+    /// Without it the placer assumed every reply ran to the right page edge,
+    /// so a two-character answer ("= 4") was treated as needing a full line
+    /// and got pushed below anything in its way — often several lines further
+    /// down the page than a person would ever have written it.
     static func placement(newStrokes: [PKStroke],
                           previousBottom: CGFloat,
                           pageBounds: CGRect,
@@ -164,7 +171,8 @@ enum InkAnalyzer {
                           lineGap: CGFloat,
                           rulesTopInset: CGFloat,
                           occupiedStrokes: [PKStroke] = [],
-                          preferredXHeight: CGFloat? = nil) -> ReplyPlacement? {
+                          preferredXHeight: CGFloat? = nil,
+                          estimatedWidth: CGFloat? = nil) -> ReplyPlacement? {
         guard !newStrokes.isEmpty else { return nil }
 
         let bounds = newStrokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
@@ -184,9 +192,42 @@ enum InkAnalyzer {
         let maxY = safe.maxY - lineGap * 0.25
         let occupied = occupiedStrokes.map { $0.renderBounds.insetBy(dx: -5, dy: -5) }
         let bandHeight = max(lineGap * 0.8, xHeight * 2.1)
+
+        // Reserve only what the answer needs, not the rest of the page.
+        func needed(from originX: CGFloat) -> CGFloat {
+            guard let estimatedWidth else { return max(1, safe.maxX - originX) }
+            return max(xHeight * 2, min(estimatedWidth, safe.maxX - originX))
+        }
+
+        // 1) A SHORT answer beside the user's own ink, the way a person
+        //    answers in the margin instead of starting a new line.
+        if let estimatedWidth, !bounds.isNull {
+            let inlineX = bounds.maxX + xHeight * 0.9
+            let inlineBaseline = rulesTopInset
+                + lineGap * round((bounds.maxY - rulesTopInset) / lineGap)
+            let fitsOnTheLine = inlineX + estimatedWidth <= safe.maxX
+            let isShort = estimatedWidth <= (safe.maxX - safe.minX) * 0.4
+            if fitsOnTheLine, isShort, inlineBaseline <= maxY,
+               inlineBaseline >= previousBottom - lineGap * 0.5 {
+                let candidate = CGRect(x: inlineX,
+                                       y: inlineBaseline - xHeight * 1.65,
+                                       width: estimatedWidth, height: bandHeight)
+                if !occupied.contains(where: { $0.intersects(candidate) }) {
+                    return ReplyPlacement(origin: CGPoint(x: inlineX, y: inlineBaseline),
+                                          xHeight: xHeight,
+                                          maxX: safe.maxX,
+                                          maxY: maxY,
+                                          newInkBounds: bounds,
+                                          detectedLines: lines,
+                                          needsNewPage: false)
+                }
+            }
+        }
+
+        // 2) Otherwise flow down, skipping only lines genuinely in the way.
         while baseline <= maxY {
             let candidate = CGRect(x: x, y: baseline - xHeight * 1.65,
-                                   width: max(1, safe.maxX - x), height: bandHeight)
+                                   width: needed(from: x), height: bandHeight)
             if !occupied.contains(where: { $0.intersects(candidate) }) { break }
             baseline += lineGap
         }
@@ -206,6 +247,106 @@ enum InkAnalyzer {
                               needsNewPage: newPage)
     }
 
+    // MARK: - Gesture vocabulary (PEN-07)
+    //
+    // The box gesture works because it is DRAWN INTENT: you draw a thing, the
+    // thing happens, the gesture dissolves. These extend the same grammar, and
+    // every one is a convention people already use on real paper — nothing
+    // here has to be taught as an app feature.
+    //
+    // Detection is deliberately conservative. A false positive rewrites the
+    // user's page uninvited, which is far worse than a gesture that needs a
+    // second try, so each detector demands clear geometry and each action is
+    // reversible with a single undo.
+
+    enum Gesture {
+        /// Two roughly parallel lines under a block: "check my working".
+        case checkWork(region: CGRect, strokeIndices: [Int])
+        /// A line drawn through existing ink: "delete this".
+        case strikeThrough(targetIndices: [Int], strokeIndex: Int)
+    }
+
+    /// Looks for a gesture among the newest strokes. Runs BEFORE box
+    /// detection, because a double underline is also two long thin strokes
+    /// and would otherwise be mistaken for something else.
+    static func detectGesture(all: [PKStroke], newStart: Int) -> Gesture? {
+        guard newStart < all.count, all.count >= 2 else { return nil }
+        if let g = detectDoubleUnderline(all: all, newStart: newStart) { return g }
+        if let g = detectStrikeThrough(all: all, newStart: newStart) { return g }
+        return nil
+    }
+
+    /// A horizontal-ish stroke: long, thin, and not very wavy.
+    private static func isRule(_ stroke: PKStroke) -> Bool {
+        let b = stroke.renderBounds
+        guard b.width > 60, b.height < max(14, b.width * 0.14) else { return false }
+        let pts = stroke.path.interpolatedPoints(by: .distance(4)).map(\.location)
+        guard pts.count >= 3 else { return false }
+        // Mostly one direction — rules out a squiggle of the same extent.
+        let dx = abs((pts.last?.x ?? 0) - (pts.first?.x ?? 0))
+        return dx > b.width * 0.8
+    }
+
+    /// Two stacked rules beneath a block of ink — the classic "check this"
+    /// mark. The block above them is what gets checked.
+    private static func detectDoubleUnderline(all: [PKStroke],
+                                              newStart: Int) -> Gesture? {
+        let recent = Array(max(0, all.count - 3)..<all.count).filter { $0 >= newStart - 1 }
+        let rules = recent.filter { isRule(all[$0]) }
+        guard rules.count >= 2 else { return nil }
+
+        let a = all[rules[rules.count - 2]].renderBounds
+        let b = all[rules[rules.count - 1]].renderBounds
+        // Stacked, close together, and similar length.
+        let gap = abs(b.midY - a.midY)
+        guard gap > 2, gap < max(26, min(a.height, b.height) + 22) else { return nil }
+        guard abs(a.midX - b.midX) < max(a.width, b.width) * 0.45 else { return nil }
+        let lengthRatio = min(a.width, b.width) / max(a.width, b.width)
+        guard lengthRatio > 0.55 else { return nil }
+
+        // The working being checked is everything above the rules, within a
+        // band about as tall as a paragraph.
+        let lines = a.union(b)
+        let indices = Set(rules.suffix(2))
+        let band = CGRect(x: 0, y: max(0, lines.minY - 420),
+                          width: .greatestFiniteMagnitude,
+                          height: lines.minY - max(0, lines.minY - 420))
+        let above = all.indices.filter { i in
+            !indices.contains(i) && band.intersects(all[i].renderBounds)
+        }
+        guard !above.isEmpty else { return nil }
+        let region = above.reduce(CGRect.null) { $0.union(all[$1].renderBounds) }
+        guard !region.isNull else { return nil }
+        return .checkWork(region: region, strokeIndices: Array(indices))
+    }
+
+    /// A single line drawn THROUGH existing ink — struck out, so delete it.
+    /// Distinguished from an underline by actually crossing the ink it
+    /// targets rather than passing beneath it.
+    private static func detectStrikeThrough(all: [PKStroke],
+                                            newStart: Int) -> Gesture? {
+        let idx = all.count - 1
+        guard idx >= newStart, isRule(all[idx]) else { return nil }
+        let line = all[idx].renderBounds
+
+        // Strokes this line passes through the MIDDLE of.
+        var hit: [Int] = []
+        for i in all.indices where i != idx {
+            let b = all[i].renderBounds
+            guard b.intersects(line), b.height > 6 else { continue }
+            let crossesBody = line.midY > b.minY + b.height * 0.25
+                && line.midY < b.maxY - b.height * 0.2
+            let overlap = min(b.maxX, line.maxX) - max(b.minX, line.minX)
+            if crossesBody, overlap > b.width * 0.55 { hit.append(i) }
+        }
+        // Needs to cross real content, and the line must be mostly spent on
+        // it — a long line clipping one letter is not a strike-through.
+        guard !hit.isEmpty else { return nil }
+        let covered = hit.reduce(CGRect.null) { $0.union(all[$1].renderBounds) }
+        guard covered.width > line.width * 0.5 else { return nil }
+        return .strikeThrough(targetIndices: hit, strokeIndex: idx)
+    }
+
     // MARK: - Problem box (draw a box/circle around a problem → ask the AI)
 
     /// A loop the user drew around some of their ink. The rect gives the AI
@@ -223,11 +364,25 @@ enum InkAnalyzer {
     /// for a box/circle/loop enclosing OTHER ink. Newest first — the
     /// enclosure is usually the last thing drawn. Falls back to combining
     /// the last 2–4 strokes, for boxes drawn edge by edge.
+    /// The newest strokes are the only plausible enclosure. Scanning further
+    /// back is wasted work AND wrong: a box drawn ten minutes ago is not a
+    /// fresh instruction.
+    ///
+    /// PEN-34 — this bound is a real fix, not a micro-optimisation. The outer
+    /// scan is `count - newStart` candidates and each one examines every
+    /// stroke on the page, so the cost is quadratic in the gap. `newStart`
+    /// resets to 0 when a note loads and is clamped down by undo/erase, so a
+    /// user who fills a page without triggering a reply — exactly what
+    /// worksheet mode encourages — reached ~230k operations on EVERY idle
+    /// pause, i.e. every time they stopped to think.
+    private static let maxEnclosureCandidates = 12
+
     static func detectProblemBox(all: [PKStroke], newStart: Int) -> ProblemBox? {
         guard newStart < all.count, all.count >= 2 else { return nil }
+        let scanFloor = max(newStart, all.count - maxEnclosureCandidates)
 
         // 1) Single-stroke loop (rectangle, circle, rounded box, sloppy oval).
-        for idx in stride(from: all.count - 1, through: newStart, by: -1) {
+        for idx in stride(from: all.count - 1, through: scanFloor, by: -1) {
             let pts = all[idx].path.interpolatedPoints(by: .distance(4)).map(\.location)
             guard let rect = enclosureRect(pointGroups: [pts]) else { continue }
             if let box = problemBox(rect: rect, boxIdxs: [idx], all: all) {

@@ -17,6 +17,12 @@ extension HandwritingRenderer {
     /// Living "=" bars that breathe apart/together, plus constellation filaments
     /// between related symbols (base↔superscript, num↔den).
     func attachMathMagic(whileAnalyzing strokes: [PKStroke], at start: CFTimeInterval) {
+        // PEN-32 — this layer is pure decoration: breathing "=" bars, tilting
+        // glyphs, drifting filaments, shimmer. All of it loops forever while
+        // Penpal reads, which is the most vestibular-triggering thing in the
+        // app. It carries no information the analyzing wash doesn't already
+        // convey, so under Reduce Motion it is simply not attached.
+        guard !reduceMotion else { return }
         if let bars = MathInkParser.equalsBarRects(in: strokes) {
             addLivingEquals(top: bars.top, bottom: bars.bottom, at: start)
         }
@@ -206,6 +212,10 @@ extension HandwritingRenderer {
                         hold: TimeInterval = 0.42,
                         completion: @escaping () -> Void) {
         guard !stepStrokes.isEmpty else { completion(); return }
+        // PEN-32 — ghost steps are a "working it out" flourish that delays the
+        // real answer by ~1.5s of motion. Under Reduce Motion, skip straight
+        // to the answer: the user loses a nicety, not information.
+        guard !reduceMotion else { completion(); return }
         // Drop any leftover morph dust so ghost ink is the only overlay.
         celebrateLayers.forEach { $0.removeFromSuperlayer() }
         celebrateLayers.removeAll()

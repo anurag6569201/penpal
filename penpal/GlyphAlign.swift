@@ -21,31 +21,231 @@ enum GlyphAlign {
     /// Small marks keep their drawn position and size — snapping a comma to
     /// the baseline or scaling an apostrophe to x-height mangles them.
     private static let smallMarks: Set<Character> = [".", ",", "'", "\"", ":", ";", "-"]
-    /// Math operators — keep drawn size; don't snap like letters.
-    private static let mathMarks: Set<Character> = [
-        "+", "*", "/", "=", "^", "%", "!", "×", "÷", "√", "(", ")"
+    /// Canonical vertical anchors for math symbols, in unit space
+    /// (baseline 0, x-height 1). `center` is where the symbol's vertical
+    /// midpoint belongs — the math axis for operators — and `height` its
+    /// canonical ink height (nil = thin mark, anchor the center only).
+    /// Mirrors StrokeFont's fallback glyphs so trained and synthetic symbols
+    /// sit identically. THIS is the ruleset: operators are anchored by
+    /// CENTER, never snapped to the baseline like letters — a trained "="
+    /// or "-" must float at the axis, not lie on the line.
+    static let mathAnchors: [Character: (center: CGFloat, height: CGFloat?)] = [
+        "=": (0.55, 0.30), "+": (0.55, 0.50), "-": (0.52, nil),
+        "*": (0.65, 0.40), "×": (0.55, 0.60), "÷": (0.55, 0.66),
+        "/": (0.68, 1.33), "^": (1.27, 0.35), "<": (0.55, 0.70),
+        ">": (0.55, 0.70), "%": (0.66, 1.28), "(": (0.65, 1.75),
+        ")": (0.65, 1.75), "√": (0.75, 1.45), "≤": (0.56, 0.90),
+        "≥": (0.56, 0.90), "≠": (0.55, 0.80), "±": (0.50, 0.76),
+        "≈": (0.52, 0.50), "π": (0.52, 1.00), "θ": (0.78, 1.55),
+        "°": (1.33, 0.26), "∫": (0.75, 1.60), "∞": (0.55, 0.50),
+        "Δ": (0.75, 1.50), "·": (0.55, nil),
     ]
 
-    /// LINE TRUST: the user writes against visible guide lines in the trainer,
-    /// so the captured geometry (already normalized by those lines) IS the
-    /// letterform — the size they wrote is the size that renders. We never
-    /// rescale from ink statistics; statistical "fitting" was resizing good
-    /// captures and ruining letters. The only correction is a SHIFT back onto
-    /// the baseline when a capture clearly floated off it — shifts move ink,
-    /// they never distort it.
-    static func normalize(_ glyph: PersonalGlyph, forChar ch: Character? = nil) -> PersonalGlyph {
-        if let ch, smallMarks.contains(ch) || mathMarks.contains(ch) {
-            return rebaseWidth(glyph)
+    // MARK: - Ownership model (PEN-06)
+    //
+    // ONE classifier, ONE owner of vertical placement and scale.
+    //
+    // BB-01 happened because `normalize` (capture time) and `reseat` (render
+    // time) each decided for themselves what a character was, using separate
+    // copies of the same if-chain. They disagreed: normalize left math symbols
+    // alone, reseat baseline-snapped them. The glyph was placed correctly and
+    // then moved somewhere else a few milliseconds before it was drawn, and
+    // nothing in the codebase said which one was supposed to win.
+    //
+    // The fix is not a better if-chain — it is having only one. `GlyphRole`
+    // is the single classifier; `place(_:as:)` is the single function allowed
+    // to decide where a glyph sits and how big it is. Both entry points route
+    // through it, so they cannot drift apart again.
+    //
+    // Anything else that moves ink (StrokeVAE morphs, FragmentBank stitching,
+    // ScaleConsensus rescales) must hand the result back to `place` afterwards
+    // rather than reasoning about placement itself.
+
+    /// What kind of thing this glyph is, for placement purposes. This is the
+    /// ONLY place a character is classified.
+    enum GlyphRole {
+        /// Operators and symbols: anchored by vertical CENTRE (the math axis),
+        /// never seated on the baseline. An "=" floats; it does not sit.
+        case mathSymbol(center: CGFloat, height: CGFloat?)
+        /// Digits: baseline at 0, top at cap height. Canonical proportions.
+        case digit
+        /// Letters: LINE TRUST — the size the user trained is the size that
+        /// renders. Seated onto the baseline, never rescaled, because relative
+        /// size is personal style and "statistical fitting" ruined letterforms.
+        case letter(Character?)
+        /// Commas, apostrophes, quotes: left exactly as drawn. Snapping a
+        /// comma to the baseline or scaling an apostrophe to x-height mangles it.
+        case smallMark
+    }
+
+    /// The single classifier. `nil` (whole words, morph output) is a letter.
+    static func role(for ch: Character?) -> GlyphRole {
+        guard let ch else { return .letter(nil) }
+        if let anchor = mathAnchors[ch] {
+            return .mathSymbol(center: anchor.center, height: anchor.height)
         }
+        if ch.isNumber { return .digit }
+        if smallMarks.contains(ch) { return .smallMark }
+        return .letter(ch)
+    }
+
+    /// The single owner of vertical placement and scale. Every path that wants
+    /// a glyph positioned goes through here; nothing else may decide.
+    ///
+    /// `settled` marks a glyph that has already been through the full capture
+    /// pipeline and is only being re-seated after a morph — letters then get
+    /// the gentler treatment rather than a fresh aggressive snap.
+    static func place(_ glyph: PersonalGlyph, as role: GlyphRole,
+                      settled: Bool = false) -> PersonalGlyph {
+        switch role {
+        case .mathSymbol(let center, let height):
+            return anchorMathGlyph(glyph, center: center, height: height)
+        case .digit:
+            return anchorDigit(glyph)
+        case .smallMark:
+            return rebaseWidth(glyph)
+        case .letter(let ch):
+            return rebaseWidth(
+                snapBaseline(glyph, char: ch, soft: settled,
+                             deadBand: settled ? 0.02 : 0.15))
+        }
+    }
+
+    /// Capture-time placement. See the ownership note above.
+    static func normalize(_ glyph: PersonalGlyph, forChar ch: Character? = nil) -> PersonalGlyph {
+        place(glyph, as: role(for: ch))
+    }
+
+    // MARK: Math anchoring
+
+    /// Vertical extent of real ink (dots included — a symbol's dot is part of
+    /// the symbol, unlike an i-tittle which is a diacritic).
+    private static func inkExtent(_ glyph: PersonalGlyph) -> (lo: CGFloat, hi: CGFloat)? {
+        let pts = glyph.strokes.flatMap { $0 }
+        guard let lo = pts.map(\.y).min(), let hi = pts.map(\.y).max() else { return nil }
+        return (lo, hi)
+    }
+
+    /// Places a math symbol at its canonical center and (when defined) scales
+    /// it to its canonical ink height. Scale is clamped so a well-trained
+    /// symbol is nudged, never redrawn; the shift is unclamped because a
+    /// symbol at the wrong height is always wrong.
+    static func anchorMathGlyph(_ glyph: PersonalGlyph,
+                                center: CGFloat, height: CGFloat?) -> PersonalGlyph {
+        guard let ext = inkExtent(glyph) else { return rebaseWidth(glyph) }
         var g = glyph
-        g = snapBaseline(g, char: ch, deadBand: 0.15)
-        g = rebaseWidth(g)
+        let drawnHeight = ext.hi - ext.lo
+
+        // 1. Scale to the canonical ink height, if this symbol defines one.
+        // The clamp is wide on purpose. For LETTERS, relative size carries
+        // personal style, so rescaling is destructive and tightly limited.
+        // A math symbol has canonical proportions — a "+" is a "+" at any
+        // size — so a badly captured one should be corrected all the way,
+        // in ONE pass (a partial correction would also make the migration
+        // non-idempotent, drifting a little further on each run).
+        if let height, drawnHeight > 0.04 {
+            // 4× covers the worst real captures (a "(" trained at a third of
+            // its proper height, an "=" scribbled tiny). Anything beyond that
+            // is measurement noise, and the `drawnHeight > 0.04` guard above
+            // already rejects degenerate ink. The bound must be wide enough
+            // to finish the correction in ONE pass: a clamped, partial fix
+            // would leave the migration non-idempotent, drifting the bank a
+            // little further every time it re-runs.
+            let scale = min(4.0, max(0.25, height / drawnHeight))
+            if abs(scale - 1) > 0.06 {
+                g = scaleGlyph(g, by: scale)
+            }
+        }
+
+        // 2. Shift so the symbol's vertical midpoint lands on its anchor.
+        guard let ext2 = inkExtent(g) else { return rebaseWidth(g) }
+        let mid = (ext2.lo + ext2.hi) / 2
+        let shift = center - mid
+        if abs(shift) > 0.02 {
+            var strokes = g.strokes
+            for si in 0..<strokes.count {
+                for pi in 0..<strokes[si].count {
+                    strokes[si][pi].y += shift
+                }
+            }
+            g = replacingStrokes(g, strokes)
+        }
+        return rebaseWidth(g)
+    }
+
+    /// Digits: baseline at 0, top at cap height (the user's own ascender line).
+    static func anchorDigit(_ glyph: PersonalGlyph) -> PersonalGlyph {
+        guard let ext = inkExtent(glyph) else { return rebaseWidth(glyph) }
+        var g = glyph
+        let drawnHeight = ext.hi - ext.lo
+        let target = HandMetrics.active.ascender
+
+        if drawnHeight > 0.15 {
+            // Wide enough that a digit captured at ~30% of cap height (a bad
+            // Solve-chip cluster) still corrects in ONE pass. That matters
+            // beyond tidiness: if capture leaves a digit short, render-time
+            // reseat would scale it the rest of the way, and capture and
+            // render would once again disagree about the same glyph — the
+            // exact class of bug PEN-06 exists to make impossible.
+            let scale = min(3.5, max(0.3, target / drawnHeight))
+            if abs(scale - 1) > 0.08 {
+                g = scaleGlyph(g, by: scale)
+            }
+        }
+        // Sit the digit's floor on the baseline.
+        guard let ext2 = inkExtent(g) else { return rebaseWidth(g) }
+        if abs(ext2.lo) > 0.04 {
+            var strokes = g.strokes
+            for si in 0..<strokes.count {
+                for pi in 0..<strokes[si].count {
+                    strokes[si][pi].y -= ext2.lo
+                }
+            }
+            g = replacingStrokes(g, strokes)
+        }
+        return rebaseWidth(g)
+    }
+
+    /// Uniform scale about the unit origin, carrying pen widths along.
+    private static func scaleGlyph(_ glyph: PersonalGlyph, by scale: CGFloat) -> PersonalGlyph {
+        var strokes = glyph.strokes
+        for si in 0..<strokes.count {
+            for pi in 0..<strokes[si].count {
+                strokes[si][pi].x *= scale
+                strokes[si][pi].y *= scale
+            }
+        }
+        // PEN-31: `map` instead of force-unwrapped mutation. The old form was
+        // guarded by `if widths != nil` and safe today, but the guard and the
+        // unwrap were separate statements — one refactor apart from crashing
+        // the app's only critical path.
+        let widths = glyph.widths?.map { row in row.map { $0 * scale } }
+        var g = replacingStrokes(glyph, strokes)
+        g.widths = widths
+        g.width = glyph.width * scale
         return g
     }
 
-    /// Lighter pass after morphs — reseat on baseline without aggressive rescale.
-    static func reseat(_ glyph: PersonalGlyph) -> PersonalGlyph {
-        rebaseWidth(snapBaseline(glyph, char: nil, soft: true))
+    private static func replacingStrokes(_ glyph: PersonalGlyph,
+                                         _ strokes: [[CGPoint]]) -> PersonalGlyph {
+        PersonalGlyph(width: glyph.width, strokes: strokes, widths: glyph.widths,
+                      durations: glyph.durations, gaps: glyph.gaps, refSize: glyph.refSize,
+                      pointTimes: glyph.pointTimes, forces: glyph.forces,
+                      altitudes: glyph.altitudes, azimuths: glyph.azimuths,
+                      inputSource: glyph.inputSource, quality: glyph.quality)
+    }
+
+    /// Render-time placement, after a VAE morph or fragment stitch has nudged
+    /// the geometry. Routes through the SAME owner as `normalize`, differing
+    /// only in `settled: true` — which softens the letter case and changes
+    /// nothing for symbols or digits, whose anchors are absolute.
+    ///
+    /// This shared route is the actual PEN-06 fix. Previously this function
+    /// had its own copy of the classification logic and quietly disagreed with
+    /// `normalize` about math symbols, baseline-snapping them at render time
+    /// and undoing their anchor (BB-01 defect #2).
+    static func reseat(_ glyph: PersonalGlyph, forChar ch: Character? = nil) -> PersonalGlyph {
+        place(glyph, as: role(for: ch), settled: true)
     }
 
     // MARK: Deskew
@@ -209,14 +409,7 @@ enum GlyphAlign {
                 strokes[si][pi].y *= scale
             }
         }
-        var widths = glyph.widths
-        if widths != nil {
-            for si in 0..<widths!.count {
-                for pi in 0..<widths![si].count {
-                    widths![si][pi] *= scale
-                }
-            }
-        }
+        let widths = glyph.widths?.map { row in row.map { $0 * scale } }   // PEN-31
         return PersonalGlyph(width: glyph.width * scale, strokes: strokes, widths: widths,
                              durations: glyph.durations, gaps: glyph.gaps, refSize: glyph.refSize,
                              pointTimes: glyph.pointTimes, forces: glyph.forces,

@@ -93,8 +93,7 @@ final class FragmentBank {
     }
 
     private var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ink_fragments.json")
+        HandProfiles.fileURL("ink_fragments.json")   // PEN-20
     }
 
     var fragmentCount: Int { fragments.values.reduce(0) { $0 + $1.count } }
@@ -405,32 +404,31 @@ final class FragmentBank {
             let samples = pts.count
             let connDuration = 0.05
 
+            // PEN-31: every one of these was `if x != nil { x!.insert(...) }`
+            // — nine separate test-then-force-unwrap pairs in one block. Safe
+            // as written, but nine chances for a later edit to separate the
+            // guard from the unwrap. `insert(into:)` binds once instead.
+            func insert<T>(_ value: T, into array: inout [T]?) {
+                guard var existing = array, nextIdx <= existing.count else { return }
+                existing.insert(value, at: nextIdx)
+                array = existing
+            }
+
             g.strokes.insert(pts, at: nextIdx)
-            if g.widths != nil, nextIdx <= g.widths!.count {
-                g.widths!.insert(connWidths, at: nextIdx)
+            insert(connWidths, into: &g.widths)
+            insert(connDuration, into: &g.durations)
+            insert(0, into: &g.gaps)
+            // The stroke after the connector follows with no pen lift.
+            if var gaps = g.gaps, nextIdx + 1 < gaps.count {
+                gaps[nextIdx + 1] = 0
+                g.gaps = gaps
             }
-            if g.durations != nil, nextIdx <= g.durations!.count {
-                g.durations!.insert(connDuration, at: nextIdx)
-            }
-            if g.gaps != nil, nextIdx <= g.gaps!.count {
-                g.gaps!.insert(0, at: nextIdx)
-                // The stroke after the connector follows with no pen lift.
-                if nextIdx + 1 < g.gaps!.count { g.gaps![nextIdx + 1] = 0 }
-            }
-            if g.pointTimes != nil, nextIdx <= g.pointTimes!.count {
-                g.pointTimes!.insert((0..<samples).map {
-                    connDuration * Double($0) / Double(samples - 1)
-                }, at: nextIdx)
-            }
-            if g.forces != nil, nextIdx <= g.forces!.count {
-                g.forces!.insert(Array(repeating: 0, count: samples), at: nextIdx)
-            }
-            if g.altitudes != nil, nextIdx <= g.altitudes!.count {
-                g.altitudes!.insert(Array(repeating: 0, count: samples), at: nextIdx)
-            }
-            if g.azimuths != nil, nextIdx <= g.azimuths!.count {
-                g.azimuths!.insert(Array(repeating: 0, count: samples), at: nextIdx)
-            }
+            insert((0..<samples).map {
+                connDuration * Double($0) / Double(samples - 1)
+            }, into: &g.pointTimes)
+            insert(Array(repeating: 0, count: samples), into: &g.forces)
+            insert(Array(repeating: 0, count: samples), into: &g.altitudes)
+            insert(Array(repeating: 0, count: samples), into: &g.azimuths)
         }
     }
 

@@ -326,8 +326,7 @@ final class StyleRL {
     }
 
     private var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("style_rl.json")
+        HandProfiles.fileURL("style_rl.json")   // PEN-20
     }
 
     var hasCritic: Bool { n >= 3 }

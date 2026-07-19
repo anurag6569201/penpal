@@ -40,8 +40,7 @@ final class StrokeVAE {
     var corpusSize: Int { corpus }
 
     private var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("stroke_vae.json")
+        HandProfiles.fileURL("stroke_vae.json")   // PEN-20
     }
 
     private struct Persist: Codable {
