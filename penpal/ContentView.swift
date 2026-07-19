@@ -27,6 +27,8 @@ struct MagicPaper: UIViewRepresentable {
     var onUndoRedoChange: (Bool, Bool) -> Void
     var onTypedTextsChange: ([TypedNoteText]) -> Void
     var onReplyInksChange: ([ReplyInk]) -> Void
+    var onCodeBlocksChange: ([CodeBlock]) -> Void
+    var onRequestEditCodeBlock: (CodeBlock) -> Void
 
     func makeUIView(context: Context) -> MagicPaperView {
         let view = MagicPaperView()
@@ -50,6 +52,8 @@ struct MagicPaper: UIViewRepresentable {
         view.onUndoRedoChange = onUndoRedoChange
         view.onTypedTextsChange = onTypedTextsChange
         view.onReplyInksChange = onReplyInksChange
+        view.onCodeBlocksChange = onCodeBlocksChange
+        view.onRequestEditCodeBlock = onRequestEditCodeBlock
     }
 }
 
@@ -92,6 +96,10 @@ struct ContentView: View {
     @State private var loadedNoteID: UUID?
     @State private var bodyText: String = ""
     @State private var titleText: String = ""
+    /// Page edit mode: arrange/edit embedded code blocks (move/resize/edit).
+    @State private var pageEditMode = false
+    /// The code block currently being edited in the source sheet, if any.
+    @State private var editingCodeBlock: CodeBlock?
     @FocusState private var titleFocused: Bool
     @FocusState private var bodyFocused: Bool
 
@@ -177,6 +185,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showShare) {
             ActivityView(items: shareItems)
+        }
+        .sheet(item: $editingCodeBlock) { block in
+            CodeBlockEditorView(block: block) { updated in
+                proxy.view?.updateCodeBlock(updated)
+            }
+            .presentationDetents([.large])
         }
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .alert("Penpal", isPresented: $showStatus) {
@@ -304,6 +318,22 @@ struct ContentView: View {
                 if toolsVisible { bodyFocused = false }
             } label: {
                 Image(systemName: toolsVisible ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle")
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+
+            // Page edit mode — arrange embedded code blocks (move/resize/edit).
+            Button {
+                pageEditMode.toggle()
+                proxy.view?.setPageEditMode(pageEditMode)
+                if pageEditMode {
+                    penpalOn = false
+                    toolsVisible = false
+                    proxy.view?.setToolsVisible(false)
+                    bodyFocused = false
+                }
+            } label: {
+                Image(systemName: pageEditMode ? "square.dashed.inset.filled" : "square.dashed")
+                    .foregroundStyle(pageEditMode ? Pen.inkAccent : Color.primary)
             }
             .disabled(store.selectedNote == nil || selectedIsCoded)
 
@@ -532,6 +562,12 @@ struct ContentView: View {
                 },
                 onReplyInksChange: { inks in
                     store.updateSelectedReplyInks(inks)
+                },
+                onCodeBlocksChange: { blocks in
+                    store.updateSelectedCodeBlocks(blocks)
+                },
+                onRequestEditCodeBlock: { block in
+                    editingCodeBlock = block
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -689,6 +725,8 @@ struct ContentView: View {
             titleText = note.title
             bodyText = note.body
             loadedNoteID = note.id
+            // Switching notes always leaves the page's edit mode.
+            pageEditMode = false
             if note.isCoded {
                 // Coded paper renders in CodedPaperView — no canvas to load,
                 // and ink-only modes make no sense here.
@@ -700,7 +738,8 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 self.proxy.view?.loadDrawing(note.drawing,
                                              typedTexts: note.typedTexts ?? [],
-                                             replyInks: note.replyInks ?? [])
+                                             replyInks: note.replyInks ?? [],
+                                             codeBlocks: note.codeBlocks ?? [])
                 if self.toolsVisible {
                     self.proxy.view?.setToolsVisible(true)
                 }
@@ -721,6 +760,7 @@ struct ContentView: View {
                 note.drawing = view.currentDrawing
                 note.typedTexts = view.currentTypedTexts
                 note.replyInks = view.currentReplyInks
+                note.codeBlocks = view.currentCodeBlocks.isEmpty ? nil : view.currentCodeBlocks
             }
             store.updateNote(note)
         }
@@ -858,6 +898,10 @@ struct ContentView: View {
             }
         }
         Button("Add Page", systemImage: "plus.rectangle.portrait") { proxy.view?.addPage() }
+        Button("Insert Code Block", systemImage: "curlybraces") {
+            proxy.view?.insertCodeBlock()
+            pageEditMode = true
+        }
         Button("Erase Penpal Replies", systemImage: "eraser") { proxy.view?.clearPenpalContent() }
         Divider()
         Button("Train Handwriting", systemImage: "signature") { showTraining = true }

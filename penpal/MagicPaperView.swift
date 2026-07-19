@@ -129,6 +129,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Fired whenever the AI hand-written replies on this page change,
     /// so the store can persist them with the note.
     var onReplyInksChange: (([ReplyInk]) -> Void)?
+    /// Fired whenever the embedded code blocks change (added/moved/resized/
+    /// edited/deleted), so the store can persist them with the note.
+    var onCodeBlocksChange: (([CodeBlock]) -> Void)?
+    /// Fired when a code block asks to edit its source — SwiftUI presents the
+    /// editor sheet and calls back into `updateCodeBlock(_:)`.
+    var onRequestEditCodeBlock: ((CodeBlock) -> Void)?
     /// PEN-19 — set while a practice problem is on the page. Receives whether
     /// the student's working was correct, so the schedule can be updated.
     var onWorkMarked: ((Bool) -> Void)?
@@ -165,6 +171,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private var placedTexts: [TypedNoteText] = []
     /// Persisted AI replies already on this page (renderer strokes).
     private var placedInks: [ReplyInk] = []
+    /// Embedded code-block assets on this page (behind the ink). Each view
+    /// carries its own `CodeBlock` model.
+    private var codeBlockViews: [CodeBlockView] = []
+    /// The page's edit mode: when on, blocks show chrome and can be moved /
+    /// resized / edited, and ink drawing is suspended so gestures reach them.
+    private(set) var isPageEditMode = false
     /// Hand-style reply strokes currently animating; once the animation ends
     /// (or is interrupted) they're persisted with the note as renderer ink —
     /// never converted to PencilKit strokes, which render differently and
@@ -328,6 +340,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     var currentDrawing: PKDrawing { canvas.drawing }
     var currentTypedTexts: [TypedNoteText] { placedTexts }
     var currentReplyInks: [ReplyInk] { placedInks }
+    var currentCodeBlocks: [CodeBlock] { codeBlockViews.map(\.block) }
 
     var canUndo: Bool { canvas.undoManager?.canUndo ?? false }
     var canRedo: Bool { canvas.undoManager?.canRedo ?? false }
@@ -335,6 +348,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     func loadDrawing(_ drawing: PKDrawing,
                      typedTexts: [TypedNoteText] = [],
                      replyInks: [ReplyInk] = [],
+                     codeBlocks: [CodeBlock] = [],
                      resetReplyCursor: Bool = true) {
         // A reply that was still animating belongs to the previous note —
         // stop it and drop it so it can't leak onto this one.
@@ -373,6 +387,20 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             replyBottom = max(replyBottom, ink.bottomY)
         }
 
+        // Rebuild embedded code blocks behind the ink. A note switch always
+        // drops edit mode — blocks belong to the note being loaded.
+        codeBlockViews.forEach { $0.removeFromSuperview() }
+        codeBlockViews.removeAll()
+        isPageEditMode = false
+        canvas.drawingGestureRecognizer.isEnabled = true
+        var blockBottom: CGFloat = 0
+        for block in codeBlocks {
+            let view = makeCodeBlockView(block)
+            canvas.insertSubview(view, aboveSubview: paper)
+            codeBlockViews.append(view)
+            blockBottom = max(blockBottom, block.frame.maxY)
+        }
+
         if resetReplyCursor {
             let inkBottom = drawing.strokes.map { $0.renderBounds.maxY }.max() ?? 0
             lastReplyBottom = max(inkBottom, max(typedBottom, replyBottom))
@@ -384,6 +412,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let inkMaxY = drawing.strokes.isEmpty ? 0 : drawing.bounds.maxY
         contentHeight = max(bounds.height, inkMaxY + lineGap * 4,
                             typedBottom + lineGap * 4, replyBottom + lineGap * 4,
+                            blockBottom + lineGap * 4,
                             lastReplyBottom + lineGap * 4)
         updateContentLayout()
         suppressChanges = false
@@ -1011,6 +1040,88 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         renderer.clearInk()
         for ink in placedInks {
             renderer.drawStatic(ink.strokes.map(\.inkStroke), baseWidth: ink.baseWidth)
+        }
+    }
+
+    // MARK: - Embedded code blocks
+
+    private func makeCodeBlockView(_ block: CodeBlock) -> CodeBlockView {
+        let view = CodeBlockView(block: block)
+        view.setEditing(isPageEditMode)
+        view.onChange = { [weak self] _ in
+            guard let self else { return }
+            self.growForCodeBlocks()
+            self.persistCodeBlocks()
+        }
+        view.onEditCode = { [weak self] v in
+            self?.onRequestEditCodeBlock?(v.block)
+        }
+        view.onDelete = { [weak self] v in
+            self?.removeCodeBlock(v)
+        }
+        return view
+    }
+
+    /// Drop a new code block near the middle of the current viewport and
+    /// enter edit mode so it can be positioned right away.
+    func insertCodeBlock() {
+        let w = min(max(240, bounds.width - 48), 560)
+        let h: CGFloat = 300
+        let x = max(leftMargin, (bounds.width - w) / 2)
+        let y = max(0, canvas.contentOffset.y + max(24, (bounds.height - h) / 2))
+        let block = CodeBlock(html: CodedPaper.blockStarterHTML,
+                              x: x, y: y, width: w, height: h)
+        let view = makeCodeBlockView(block)
+        canvas.insertSubview(view, aboveSubview: paper)
+        codeBlockViews.append(view)
+        // setPageEditMode brings every block (incl. this one) to the front.
+        setPageEditMode(true)
+        growForCodeBlocks()
+        persistCodeBlocks()
+    }
+
+    /// Toggle the page's edit mode. In edit mode blocks show chrome, become
+    /// interactive and rise above the ink; ink drawing is suspended. Out of
+    /// edit mode they drop behind the ink and stop intercepting touches.
+    func setPageEditMode(_ on: Bool) {
+        isPageEditMode = on
+        canvas.drawingGestureRecognizer.isEnabled = !on
+        for view in codeBlockViews {
+            view.setEditing(on)
+            if on {
+                canvas.bringSubviewToFront(view)
+            } else {
+                canvas.insertSubview(view, aboveSubview: paper)
+            }
+        }
+        // Keep the AI/handwriting renderer above the ink layer regardless.
+        canvas.bringSubviewToFront(renderer)
+    }
+
+    /// Apply an edited block (new source/geometry) coming back from the sheet.
+    func updateCodeBlock(_ block: CodeBlock) {
+        guard let view = codeBlockViews.first(where: { $0.block.id == block.id }) else { return }
+        view.apply(block)
+        growForCodeBlocks()
+        persistCodeBlocks()
+    }
+
+    private func removeCodeBlock(_ view: CodeBlockView) {
+        view.removeFromSuperview()
+        codeBlockViews.removeAll { $0 === view }
+        persistCodeBlocks()
+    }
+
+    private func persistCodeBlocks() {
+        onCodeBlocksChange?(currentCodeBlocks)
+    }
+
+    /// Grow the paper so the lowest block always has room below it.
+    private func growForCodeBlocks() {
+        let maxY = codeBlockViews.map { $0.frame.maxY }.max() ?? 0
+        if maxY + lineGap * 2 > contentHeight {
+            contentHeight = maxY + lineGap * 4
+            updateContentLayout()
         }
     }
 

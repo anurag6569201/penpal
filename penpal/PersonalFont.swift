@@ -77,6 +77,23 @@ private struct PersonalFontData: Codable {
     var profile: HandwritingProfile?
 }
 
+enum GlyphBankError: LocalizedError {
+    case empty
+    case invalidFormat
+    case unreadable(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .empty:
+            return "This hand has no training to export yet."
+        case .invalidFormat:
+            return "That file isn\u{2019}t a Penpal glyph bank."
+        case .unreadable(let error):
+            return "Couldn\u{2019}t read the file: \(error.localizedDescription)"
+        }
+    }
+}
+
 final class PersonalFontStore {
 
     static let shared = PersonalFontStore()
@@ -88,6 +105,21 @@ final class PersonalFontStore {
 
     var trainedChars: Set<String> { Set(data.glyphs.keys) }
     var trainedWords: Set<String> { Set(data.words.keys) }
+    var hasTraining: Bool { !data.glyphs.isEmpty || !data.words.isEmpty }
+
+    /// Short count line for settings / share UI.
+    var trainingSummary: String {
+        let charKeys = data.glyphs.count
+        let wordKeys = data.words.count
+        let samples = data.glyphs.values.reduce(0) { $0 + $1.count }
+            + data.words.values.reduce(0) { $0 + $1.count }
+        if samples == 0 { return "No training yet" }
+        var parts: [String] = []
+        if charKeys > 0 { parts.append("\(charKeys) letter\(charKeys == 1 ? "" : "s")") }
+        if wordKeys > 0 { parts.append("\(wordKeys) word\(wordKeys == 1 ? "" : "s")") }
+        parts.append("\(samples) sample\(samples == 1 ? "" : "s")")
+        return parts.joined(separator: " · ")
+    }
 
     func variantCount(forChar ch: Character) -> Int { data.glyphs[String(ch)]?.count ?? 0 }
     func variantCount(forWord w: String) -> Int { data.words[normalize(w)]?.count ?? 0 }
@@ -492,16 +524,46 @@ final class PersonalFontStore {
         save()
     }
 
-    /// Renders a stored glyph into view-space ink without StyleRL jitter (for previews).
-    func previewInk(for g: PersonalGlyph, in rect: CGRect, padding: CGFloat = 8) -> [InkStroke] {
+    /// The exact unit→view mapping used when previewing a stored glyph. Sharing
+    /// this lets the calibration UI draw metric guide lines (baseline, x-height,
+    /// ascender, descender) that land on the very same pixels as the ink — so a
+    /// saved sample can be checked against the lines it will be composed onto.
+    struct PreviewLayout {
+        /// Left edge of the (centered) glyph in view space.
+        var originX: CGFloat
+        /// View-space y of the baseline (unit y = 0).
+        var baselineY: CGFloat
+        /// Points per unit x-height.
+        var scale: CGFloat
+        /// Horizontal span the guide lines should cover (the padded cell width).
+        var lineMinX: CGFloat
+        var lineMaxX: CGFloat
+
+        /// View-space y for any unit height (unit y grows up; view y grows down).
+        func y(forUnit u: CGFloat) -> CGFloat { baselineY - u * scale }
+    }
+
+    /// Geometry a preview would use for this glyph in `rect`, or nil if the cell
+    /// is too small. Mirrors `previewInk` exactly (single source of truth).
+    func previewLayout(for g: PersonalGlyph, in rect: CGRect, padding: CGFloat = 8) -> PreviewLayout? {
         let usable = rect.insetBy(dx: padding, dy: padding)
-        guard usable.width > 4, usable.height > 4 else { return [] }
+        guard usable.width > 4, usable.height > 4 else { return nil }
         // Fit width and leave room for ascenders (~1.7) + descenders (~0.7).
         let unitH: CGFloat = 2.5
         let scale = min(usable.width / max(0.2, g.width + 0.1),
                         usable.height / unitH)
         let originX = usable.minX + (usable.width - g.width * scale) / 2
         let baselineY = usable.minY + usable.height * (1.75 / unitH)
+        return PreviewLayout(originX: originX, baselineY: baselineY, scale: scale,
+                             lineMinX: usable.minX, lineMaxX: usable.maxX)
+    }
+
+    /// Renders a stored glyph into view-space ink without StyleRL jitter (for previews).
+    func previewInk(for g: PersonalGlyph, in rect: CGRect, padding: CGFloat = 8) -> [InkStroke] {
+        guard let layout = previewLayout(for: g, in: rect, padding: padding) else { return [] }
+        let originX = layout.originX
+        let baselineY = layout.baselineY
+        let scale = layout.scale
         let baseWidth = max(1.2, scale * 0.11)
 
         var out: [InkStroke] = []
@@ -743,6 +805,62 @@ final class PersonalFontStore {
             return sampled
         }
         return list.randomElement()
+    }
+
+    // MARK: - Export / import
+
+    /// File extension for shared glyph banks (JSON body = `PersonalFontData`).
+    static let glyphBankExtension = "penpalglyphs"
+
+    /// Writes the in-memory bank to `url`. Prefer this over copying disk so a
+    /// pending debounced save cannot export a stale snapshot.
+    func exportGlyphBank(to url: URL) throws {
+        guard hasTraining else { throw GlyphBankError.empty }
+        let encoded = try JSONEncoder().encode(data)
+        try encoded.write(to: url, options: .atomic)
+    }
+
+    /// Replaces the active hand's glyph bank from a shared file, then reloads
+    /// so fragments / VAE / ligatures rebuild from the imported samples.
+    func installGlyphBank(from url: URL) throws {
+        let bank = try Self.decodeGlyphBank(from: url)
+        saver.cancel()
+        let encoded = try JSONEncoder().encode(bank)
+        try encoded.write(to: fileURL, options: .atomic)
+        reloadForActiveHand()
+    }
+
+    /// Decodes a shared bank into `directory` without touching the active hand.
+    /// Caller activates the profile afterward so reload picks it up.
+    static func writeGlyphBank(from url: URL, toHandDirectory directory: URL) throws {
+        let bank = try decodeGlyphBank(from: url)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        let target = directory.appendingPathComponent("personal_font.json")
+        let encoded = try JSONEncoder().encode(bank)
+        try encoded.write(to: target, options: .atomic)
+    }
+
+    private static func decodeGlyphBank(from url: URL) throws -> PersonalFontData {
+        let raw: Data
+        do {
+            raw = try Data(contentsOf: url)
+        } catch {
+            throw GlyphBankError.unreadable(error)
+        }
+        if let decoded = try? JSONDecoder().decode(PersonalFontData.self, from: raw),
+           !(decoded.glyphs.isEmpty && decoded.words.isEmpty) {
+            return decoded
+        }
+        // Accept a raw v1 letters-only map (same migration as load).
+        if let v1 = try? JSONDecoder().decode([String: PersonalGlyph].self, from: raw),
+           !v1.isEmpty {
+            return PersonalFontData(schemaVersion: 4,
+                                    glyphs: v1.mapValues { [$0] },
+                                    words: [:],
+                                    profile: nil)
+        }
+        throw GlyphBankError.invalidFormat
     }
 
     // MARK: - Persistence

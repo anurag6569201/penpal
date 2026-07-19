@@ -6,6 +6,8 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
+import UIKit
 
 struct PenpalSettingsView: View {
     @ObservedObject var settings: HandwritingSettings
@@ -16,6 +18,13 @@ struct PenpalSettingsView: View {
     @StateObject private var hands = HandProfiles.shared
     @State private var newHandName = ""
     @State private var showInsights = false
+    @State private var shareItems: [Any] = []
+    @State private var showShare = false
+    @State private var showImporter = false
+    @State private var pendingImportURL: URL?
+    @State private var showImportChoices = false
+    @State private var showReplaceConfirm = false
+    @State private var importError: String?
     var onStatus: (String) -> Void
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -92,6 +101,64 @@ struct PenpalSettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $showShare) {
+                ActivityView(items: shareItems)
+            }
+            .fileImporter(
+                isPresented: $showImporter,
+                allowedContentTypes: [.json, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    do {
+                        pendingImportURL = try Self.stagingCopy(of: url)
+                        showImportChoices = true
+                    } catch {
+                        importError = error.localizedDescription
+                    }
+                case .failure(let error):
+                    importError = error.localizedDescription
+                }
+            }
+            .confirmationDialog("Import glyphs", isPresented: $showImportChoices, titleVisibility: .visible) {
+                Button("Create new hand") {
+                    importAsNewHand()
+                }
+                if hands.active != nil {
+                    Button("Replace “\(hands.active?.name ?? "current")”", role: .destructive) {
+                        showReplaceConfirm = true
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingImportURL = nil
+                }
+            } message: {
+                Text("Save as its own hand, or overwrite the training on the hand you’re using now.")
+            }
+            .confirmationDialog(
+                "Replace “\(hands.active?.name ?? "this hand")”?",
+                isPresented: $showReplaceConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Replace training", role: .destructive) {
+                    importReplacingActive()
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingImportURL = nil
+                }
+            } message: {
+                Text("The letters you’ve trained on this hand will be overwritten. Notes are not affected.")
+            }
+            .alert("Couldn’t import", isPresented: Binding(
+                get: { importError != nil },
+                set: { if !$0 { importError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(importError ?? "")
             }
         }
     }
@@ -230,10 +297,21 @@ struct PenpalSettingsView: View {
                 }
                 .disabled(newHandName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            Button {
+                exportActiveGlyphs()
+            } label: {
+                Label("Export glyphs", systemImage: "square.and.arrow.up")
+            }
+            .disabled(!PersonalFontStore.shared.hasTraining)
+            Button {
+                showImporter = true
+            } label: {
+                Label("Import glyphs…", systemImage: "square.and.arrow.down")
+            }
         } header: {
             Label("Whose handwriting", systemImage: "person.2")
         } footer: {
-            Text("Each hand keeps its own training. Notes are shared — the hand is who's writing, not whose notebook this is.")
+            Text("Each hand keeps its own training. Export a `.penpalglyphs` file so you don’t have to train again on another device — or after a reinstall. Notes are shared; the hand is who’s writing, not whose notebook this is.")
         }
 
         // PEN-24 — observation, not correction. Opt-in behind a disclosure so
@@ -590,4 +668,77 @@ struct PenpalSettingsView: View {
             Text("Gestures: box a problem to solve it · double-underline your working to have it checked · strike through ink to delete it.")
         }
     }
+
+    // MARK: - Glyph bank transfer
+
+    /// Copies a security-scoped picker URL into tmp so later dialogs don't
+    /// race the scope being revoked.
+    private static func stagingCopy(of url: URL) throws -> URL {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        let ext = url.pathExtension.isEmpty
+            ? PersonalFontStore.glyphBankExtension
+            : url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(stem)-\(UUID().uuidString.prefix(8)).\(ext)")
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        try FileManager.default.copyItem(at: url, to: dest)
+        return dest
+    }
+
+    private func exportActiveGlyphs() {
+        let name = hands.active?.name ?? "Hand"
+        let safe = name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let filename = "\(safe.isEmpty ? "Hand" : safe).\(PersonalFontStore.glyphBankExtension)"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        do {
+            try PersonalFontStore.shared.exportGlyphBank(to: url)
+            shareItems = [url]
+            showShare = true
+            onStatus("Exported \(PersonalFontStore.shared.trainingSummary).")
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func withPendingImport(_ body: (URL) throws -> Void) {
+        guard let url = pendingImportURL else { return }
+        defer { pendingImportURL = nil }
+        do {
+            try body(url)
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func importAsNewHand() {
+        withPendingImport { url in
+            let profile = try hands.importGlyphBank(from: url, named: "")
+            onStatus("Imported “\(profile.name)” — \(PersonalFontStore.shared.trainingSummary).")
+        }
+    }
+
+    private func importReplacingActive() {
+        withPendingImport { url in
+            try PersonalFontStore.shared.installGlyphBank(from: url)
+            onStatus("Replaced “\(hands.active?.name ?? "hand")” — \(PersonalFontStore.shared.trainingSummary).")
+        }
+    }
+}
+
+/// Share sheet used by glyph export (same pattern as note export in ContentView).
+private struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

@@ -116,6 +116,38 @@ final class HandProfiles: ObservableObject {
         return profile
     }
 
+    /// Creates a hand from a shared glyph bank and makes it active.
+    @discardableResult
+    func importGlyphBank(from url: URL, named name: String) throws -> Profile {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profile = Profile(name: trimmed.isEmpty
+                              ? suggestedImportName(from: url)
+                              : trimmed)
+        try PersonalFontStore.writeGlyphBank(from: url,
+                                             toHandDirectory: Self.directory(for: profile.id))
+        profiles.append(profile)
+        persist()
+        activate(profile.id)
+        return profile
+    }
+
+    /// Best-effort name from an exported filename like `Alex.penpalglyphs`.
+    private func suggestedImportName(from url: URL) -> String {
+        var base = url.deletingPathExtension().lastPathComponent
+        // Staging copies append "-<8 hex chars>"; strip that so the hand
+        // keeps the name the user exported under.
+        if let dash = base.lastIndex(of: "-"),
+           base[base.index(after: dash)...].count == 8,
+           base[base.index(after: dash)...].allSatisfy(\.isHexDigit) {
+            base = String(base[..<dash])
+        }
+        let cleaned = base
+            .replacingOccurrences(of: "-handwriting", with: "", options: .caseInsensitive)
+            .replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "Imported hand" : cleaned
+    }
+
     /// Switches hands and tells every store to reload from the new directory.
     func activate(_ id: UUID) {
         guard id != activeID, profiles.contains(where: { $0.id == id }) else { return }

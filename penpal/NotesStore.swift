@@ -167,6 +167,40 @@ nonisolated struct ReplyInk: Identifiable, Codable, Hashable {
     }
 }
 
+/// An embedded "coded" asset placed on an ink page — a live HTML/CSS/JS
+/// block (a graph, a widget, anything the web can render). It sits *behind*
+/// the ink so handwriting and Penpal replies annotate on top of it. In the
+/// page's edit mode it can be moved, resized, edited and deleted; in normal
+/// mode it has no border, background or shadow — it's just part of the page.
+nonisolated struct CodeBlock: Identifiable, Codable, Hashable {
+    var id: UUID
+    var html: String
+    /// Geometry in canvas *content* coordinates (same space as ink strokes).
+    var x: CGFloat
+    var y: CGFloat
+    var width: CGFloat
+    var height: CGFloat
+    var createdAt: Date
+
+    init(id: UUID = UUID(),
+         html: String,
+         x: CGFloat,
+         y: CGFloat,
+         width: CGFloat,
+         height: CGFloat,
+         createdAt: Date = .now) {
+        self.id = id
+        self.html = html
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.createdAt = createdAt
+    }
+
+    var frame: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+}
+
 /// What kind of paper a note is. `.ink` is the classic PencilKit canvas;
 /// `.coded` renders the note's HTML in a web view — the page IS the paper.
 nonisolated enum NoteKind: String, Codable, Hashable {
@@ -187,6 +221,9 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     /// AI hand-written replies, stored as renderer strokes (optional for
     /// backward compatibility).
     var replyInks: [ReplyInk]?
+    /// Embedded coded assets (graphs/widgets) placed on an ink page, behind
+    /// the ink (optional for backward compatibility).
+    var codeBlocks: [CodeBlock]?
     /// Paper kind (optional for backward compatibility — nil means .ink).
     var kind: NoteKind?
     /// Source of a coded paper (HTML/CSS/JS). Only used when kind == .coded.
@@ -207,6 +244,7 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
          attachments: [NoteAttachment] = [],
          typedTexts: [TypedNoteText]? = nil,
          replyInks: [ReplyInk]? = nil,
+         codeBlocks: [CodeBlock]? = nil,
          kind: NoteKind? = nil,
          htmlContent: String? = nil,
          createdAt: Date = .now,
@@ -220,6 +258,7 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
         self.attachments = attachments
         self.typedTexts = typedTexts
         self.replyInks = replyInks
+        self.codeBlocks = codeBlocks
         self.kind = kind
         self.htmlContent = htmlContent
         self.createdAt = createdAt
@@ -238,6 +277,7 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
         if let typed = typedTexts { parts += typed.map(\.text) }
         if let transcript = replyTranscript { parts += transcript }
         if let html = htmlContent, !html.isEmpty { parts.append(html) }
+        if let blocks = codeBlocks { parts += blocks.map(\.html) }
         return parts.joined(separator: "\n")
     }
 
@@ -495,6 +535,7 @@ final class NotesStore: ObservableObject {
            existing.attachments == note.attachments,
            (existing.typedTexts ?? []) == (note.typedTexts ?? []),
            (existing.replyInks ?? []) == (note.replyInks ?? []),
+           (existing.codeBlocks ?? []) == (note.codeBlocks ?? []),
            existing.kind == note.kind,
            existing.htmlContent == note.htmlContent,
            existing.folderID == note.folderID {
@@ -556,6 +597,16 @@ final class NotesStore: ObservableObject {
               let idx = notes.firstIndex(where: { $0.id == id }) else { return }
         guard (notes[idx].replyInks ?? []) != inks else { return }
         notes[idx].replyInks = inks
+        notes[idx].modifiedAt = .now
+        scheduleSave()
+    }
+
+    /// Embedded coded assets (graphs/widgets) for the selected note.
+    func updateSelectedCodeBlocks(_ blocks: [CodeBlock]) {
+        guard let id = selectedNoteID,
+              let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        guard (notes[idx].codeBlocks ?? []) != blocks else { return }
+        notes[idx].codeBlocks = blocks.isEmpty ? nil : blocks
         notes[idx].modifiedAt = .now
         scheduleSave()
     }

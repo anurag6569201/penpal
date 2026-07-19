@@ -38,6 +38,13 @@ nonisolated final class DebouncedSaver {
         Self.queue.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
+    /// Drops a not-yet-run write. Use before an out-of-band replace (import)
+    /// so a stale snapshot cannot overwrite the new file a moment later.
+    func cancel() {
+        pending?.cancel()
+        pending = nil
+    }
+
     /// Encode-and-write helper for the common Codable-snapshot case.
     static func write<T: Codable>(_ snapshot: T, to url: URL, label: String) {
         do {

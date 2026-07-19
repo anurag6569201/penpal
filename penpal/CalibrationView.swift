@@ -161,14 +161,26 @@ struct GuidedCanvas: UIViewRepresentable {
 
 struct GlyphPreview: View {
     let glyph: PersonalGlyph
+    /// The character this sample represents — lets the preview brighten the
+    /// guide lines the letter is meant to touch, matching the training canvas.
+    var char: Character? = nil
     var selected = false
     var onDelete: (() -> Void)?
+
+    private static let previewPadding: CGFloat = 6
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Canvas { ctx, size in
                 let rect = CGRect(origin: .zero, size: size)
-                let strokes = PersonalFontStore.shared.previewInk(for: glyph, in: rect, padding: 6)
+                // Draw the four-line metric system behind the ink so the saved
+                // sample can be read against the lines it will be composed onto.
+                if let layout = PersonalFontStore.shared.previewLayout(
+                    for: glyph, in: rect, padding: Self.previewPadding) {
+                    drawGuideLines(ctx, layout: layout)
+                }
+                let strokes = PersonalFontStore.shared.previewInk(
+                    for: glyph, in: rect, padding: Self.previewPadding)
                 for s in strokes {
                     if s.isDot, let c = s.points.first {
                         let r = s.dotRadius
@@ -193,7 +205,7 @@ struct GlyphPreview: View {
                     }
                 }
             }
-            .frame(width: 72, height: 56)
+            .frame(width: 76, height: 62)
             .background(Color.secondary.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
@@ -211,6 +223,41 @@ struct GlyphPreview: View {
                 .offset(x: 4, y: -4)
             }
         }
+    }
+
+    /// Draws the baseline / x-height / ascender / descender guides on the same
+    /// mapping the ink uses, so a saved sample can be verified against the lines
+    /// it will be composed onto. The lines a glyph is meant to touch are drawn
+    /// stronger (mirrors `GuidedCanvasView`), the rest stay faint for context.
+    private func drawGuideLines(_ ctx: GraphicsContext,
+                                layout: PersonalFontStore.PreviewLayout) {
+        let metrics = HandMetrics.active
+
+        func line(_ y: CGFloat, color: Color, dashed: Bool, strong: Bool) {
+            var path = Path()
+            path.move(to: CGPoint(x: layout.lineMinX, y: y))
+            path.addLine(to: CGPoint(x: layout.lineMaxX, y: y))
+            ctx.stroke(path,
+                       with: .color(color.opacity(strong ? 0.7 : 0.14)),
+                       style: StrokeStyle(lineWidth: strong ? 1.2 : 0.8,
+                                          dash: dashed ? [3, 3] : []))
+        }
+
+        // Which zones this sample's letter is expected to reach.
+        var ascStrong = false, xStrong = true, baseStrong = true, descStrong = false
+        if let ch = char {
+            switch GlyphZoneClass.of(ch) {
+            case .xHeight:  xStrong = true
+            case .ascender, .cap: ascStrong = true; xStrong = false
+            case .descender: descStrong = true
+            case .mark: xStrong = false; baseStrong = true
+            }
+        }
+
+        line(layout.y(forUnit: metrics.ascender), color: .indigo, dashed: true, strong: ascStrong)
+        line(layout.y(forUnit: 1), color: .teal, dashed: true, strong: xStrong)
+        line(layout.y(forUnit: 0), color: .blue, dashed: false, strong: baseStrong)
+        line(layout.y(forUnit: metrics.descender), color: .gray, dashed: true, strong: descStrong)
     }
 }
 
@@ -473,7 +520,9 @@ struct CalibrationView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(Array(currentVariants.enumerated()), id: \.offset) { idx, glyph in
-                        GlyphPreview(glyph: glyph, selected: idx == currentVariants.count - 1) {
+                        GlyphPreview(glyph: glyph,
+                                     char: selectedChar,
+                                     selected: idx == currentVariants.count - 1) {
                             deleteVariant(at: idx)
                         }
                     }

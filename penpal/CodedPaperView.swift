@@ -61,6 +61,80 @@ enum CodedPaper {
     </script>
     """
 
+    /// Seed content for a freshly inserted code block on an ink page. A tiny
+    /// live graph, no chrome — it should read as "part of the page", something
+    /// the user can annotate on top of.
+    static let blockStarterHTML = """
+    <style>
+      html, body { margin: 0; height: 100%; }
+      #wrap { height: 100%; }
+      canvas { width: 100%; height: 100%; display: block; }
+    </style>
+    <div id="wrap"><canvas id="c"></canvas></div>
+    <script>
+      const c = document.getElementById('c');
+      const g = c.getContext('2d');
+      function draw() {
+        const dpr = window.devicePixelRatio || 1;
+        c.width = c.clientWidth * dpr;
+        c.height = c.clientHeight * dpr;
+        const w = c.width, h = c.height;
+        g.clearRect(0, 0, w, h);
+        // axes
+        g.strokeStyle = 'rgba(120,120,140,0.35)';
+        g.lineWidth = dpr;
+        g.beginPath();
+        g.moveTo(0, h / 2); g.lineTo(w, h / 2);
+        g.moveTo(w / 2, 0); g.lineTo(w / 2, h);
+        g.stroke();
+        // y = sin(x)
+        g.strokeStyle = '#4A4E9E';
+        g.lineWidth = 2.5 * dpr;
+        g.beginPath();
+        for (let px = 0; px < w; px++) {
+          const x = (px - w / 2) / (w / 12);
+          const y = Math.sin(x);
+          const py = h / 2 - y * (h / 3);
+          px === 0 ? g.moveTo(px, py) : g.lineTo(px, py);
+        }
+        g.stroke();
+      }
+      draw();
+      window.addEventListener('resize', draw);
+    </script>
+    """
+
+    /// Wraps a code block's source in a tight, transparent document (no page
+    /// padding), so the asset fills its frame and blends into the paper.
+    static func blockDocument(from source: String) -> String {
+        let lowered = source.lowercased()
+        if lowered.contains("<html") || lowered.contains("<!doctype") {
+            return source
+        }
+        return """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <style>
+          :root { color-scheme: light dark; }
+          html, body { margin: 0; height: 100%; background: transparent; }
+          body {
+            font: 15px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+            color: #1c1c1e;
+            -webkit-text-size-adjust: 100%;
+          }
+          @media (prefers-color-scheme: dark) { body { color: #ececf0; } }
+        </style>
+        </head>
+        <body>
+        \(source)
+        </body>
+        </html>
+        """
+    }
+
     /// Wraps a fragment in a minimal paper-styled document. If the source is
     /// already a full document (<html> / <!doctype>), it is used untouched.
     static func fullDocument(from source: String) -> String {
