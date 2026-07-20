@@ -105,7 +105,7 @@ final class PaperBackgroundView: UIView {
 
 // MARK: - Magic paper
 
-final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionDelegate, PKToolPickerObserver {
+final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionDelegate, PKToolPickerObserver, UIGestureRecognizerDelegate {
 
     // MARK: Tunables (set from SwiftUI)
 
@@ -155,7 +155,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     // MARK: Subviews / state
 
-    private let canvas = PKCanvasView()
+    private let canvas = BlockRoutingCanvasView()
     private let paper = PaperBackgroundView()
     private let renderer = HandwritingRenderer()
     private var idleTimer: Timer?
@@ -181,6 +181,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Embedded code-block assets on this page (behind the ink). Each view
     /// carries its own `CodeBlock` model.
     private var codeBlockViews: [CodeBlockView] = []
+    /// The one block currently raised above the ink and taking finger input.
+    /// Set by tapping a block; cleared by a pencil stroke, a tap elsewhere,
+    /// or entering page-edit mode.
+    private weak var activeCodeBlock: CodeBlockView?
     /// The page's edit mode: when on, blocks show chrome and can be moved /
     /// resized / edited, and ink drawing is suspended so gestures reach them.
     private(set) var isPageEditMode = false
@@ -258,6 +262,33 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         canvas.addInteraction(menu)
         editMenu = menu
 
+        // One finger tap routes ALL code-block state changes: tap a sleeping
+        // block → wake it; tap outside the active block → back to sleep.
+        // Living at the canvas level (not on the blocks) means sleeping
+        // blocks stay entirely out of hit-testing — cheap, and the recognizer
+        // sees the REAL touch type, unlike `event.allTouches` in hitTest.
+        // Non-cancelling and simultaneous with every other gesture, so
+        // scrolling and drawing are unaffected.
+        let blockTap = UITapGestureRecognizer(target: self,
+                                              action: #selector(handleCanvasTap(_:)))
+        blockTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        blockTap.cancelsTouchesInView = false
+        blockTap.delegate = self
+        canvas.addGestureRecognizer(blockTap)
+
+        // The instant the Pencil touches down anywhere, the active block goes
+        // back to sleep below the ink — "the pen wins". Zero-duration press,
+        // pencil-only, purely an observer.
+        let pencilDown = UILongPressGestureRecognizer(target: self,
+                                                      action: #selector(handlePencilDown(_:)))
+        pencilDown.minimumPressDuration = 0
+        pencilDown.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+        pencilDown.cancelsTouchesInView = false
+        pencilDown.delaysTouchesBegan = false
+        pencilDown.delaysTouchesEnded = false
+        pencilDown.delegate = self
+        canvas.addGestureRecognizer(pencilDown)
+
         // Keep the undo/redo buttons in sync with the canvas's undo stack.
         for name in [NSNotification.Name.NSUndoManagerDidUndoChange,
                      .NSUndoManagerDidRedoChange,
@@ -288,6 +319,23 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Hover is ambient — anything louder would turn "resting your hand" into
     /// a flickering distraction.
     @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
+        // The pen is APPROACHING the active block — writing posture. Stand the
+        // block down NOW, before the tip lands, so the first stroke over it
+        // inks normally instead of being swallowed by the widget.
+        //
+        // Scoped to the block's own frame on purpose: hover fires the whole
+        // time the pencil is anywhere near the glass, and merely holding the
+        // pen while tapping a calculator with the other hand must not keep
+        // killing the block. Only an approach over the block itself counts.
+        //
+        // Deliberately ahead of the penpal / isWriting guards below: this is
+        // input arbitration, not a Penpal feature.
+        if gesture.state == .began || gesture.state == .changed,
+           let active = activeCodeBlock,
+           active.frame.insetBy(dx: -24, dy: -24).contains(gesture.location(in: canvas)) {
+            setActiveCodeBlock(nil)
+        }
+
         guard penpalEnabled, !renderer.isWriting else {
             renderer.clearReplyGuide()
             return
@@ -326,10 +374,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // .anyInput would silently ignore it (finger keeps drawing).
         let policy: PKCanvasViewDrawingPolicy = settings.pencilOnly ? .pencilOnly : .default
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
-        // A block only takes finger taps when the finger isn't also a pen.
-        for view in codeBlockViews where view.isLive != settings.pencilOnly {
-            view.isLive = settings.pencilOnly
-        }
+        // Blocks are tap-activated (see setActiveCodeBlock) — their
+        // interactivity no longer tracks the pencil-only setting.
         // Lock the live-writing color to the same light-resolved value used
         // when the stroke is baked into the canvas (see bakedInkColor).
         // Using the raw dynamic color here would let it track the device's
@@ -402,15 +448,22 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // drops edit mode — blocks belong to the note being loaded.
         codeBlockViews.forEach { $0.removeFromSuperview() }
         codeBlockViews.removeAll()
+        // Never let a stale ref to the previous note's active block survive —
+        // it would keep the canvas redirecting touches into a dead block.
+        activeCodeBlock = nil
+        canvas.activeBlock = nil
         isPageEditMode = false
         canvas.drawingGestureRecognizer.isEnabled = true
         var blockBottom: CGFloat = 0
         for block in codeBlocks {
             let view = makeCodeBlockView(block)
-            canvas.insertSubview(view, aboveSubview: paper)
+            canvas.addSubview(view)
             codeBlockViews.append(view)
             blockBottom = max(blockBottom, block.frame.maxY)
         }
+        // One pass, so saved blocks keep their stored order under the ink
+        // (inserting each one directly above the paper would reverse them).
+        restackCodeBlocks()
 
         if resetReplyCursor {
             let inkBottom = drawing.strokes.map { $0.renderBounds.maxY }.max() ?? 0
@@ -1095,7 +1148,6 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             guard let self, !self.isPageEditMode else { return }
             self.canvas.drawingGestureRecognizer.isEnabled = !active
         }
-        view.isLive = settings.pencilOnly
         view.setEditing(isPageEditMode)
         view.onChange = { [weak self] _ in
             guard let self else { return }
@@ -1121,7 +1173,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let block = CodeBlock(html: CodedPaper.blockStarterHTML,
                               x: x, y: y, width: w, height: h)
         let view = makeCodeBlockView(block)
-        canvas.insertSubview(view, aboveSubview: paper)
+        canvas.addSubview(view)
         codeBlockViews.append(view)
         // setPageEditMode brings every block (incl. this one) to the front.
         setPageEditMode(true)
@@ -1129,22 +1181,104 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         persistCodeBlocks()
     }
 
+    /// Make `target` the page's one interactive block: it rises above the ink
+    /// so its controls are reachable, and its web content takes finger input.
+    /// Pass nil to put every block back to sleep below the ink.
+    private func setActiveCodeBlock(_ target: CodeBlockView?) {
+        guard !isPageEditMode, activeCodeBlock !== target else { return }
+        if let old = activeCodeBlock {
+            old.isActive = false
+        }
+        activeCodeBlock = target
+        target?.isActive = true
+        // Touch routing, not z-order: the block stays under the ink so the
+        // annotation drawn on it remains visible while it's being used.
+        canvas.activeBlock = target
+        restackCodeBlocks()
+        // A block can be put to sleep WHILE a finger rests on it (pencil-down,
+        // note switch, delete). Its fingerGuard is disabled in the same breath,
+        // so the "finger lifted" callback may never arrive — without this the
+        // canvas's drawing gesture would stay off and the page would go dead.
+        if target == nil { canvas.drawingGestureRecognizer.isEnabled = true }
+    }
+
+    /// Rebuild the block z-order in one pass: blocks keep their stable
+    /// creation order directly above the paper (so overlapping blocks never
+    /// shuffle when one is woken), the active block is lifted above the ink,
+    /// and the AI renderer stays on top of the ink layer.
+    ///
+    ///     paper → code blocks (stable order) → ink → renderer
+    ///
+    /// The ACTIVE block is not special here: it stays under the ink like every
+    /// other, so annotations drawn over it stay visible while it's operated.
+    /// Its touches arrive by redirection (see BlockRoutingCanvasView).
+    private func restackCodeBlocks() {
+        var below: UIView = paper
+        for view in codeBlockViews {
+            canvas.insertSubview(view, aboveSubview: below)
+            below = view
+        }
+        canvas.bringSubviewToFront(renderer)
+    }
+
+    @objc private func handleCanvasTap(_ g: UITapGestureRecognizer) {
+        guard !isPageEditMode else { return }
+        let p = g.location(in: canvas)
+        // Taps ON the active block operate its content — leave it alone.
+        if let active = activeCodeBlock {
+            if active.frame.contains(p) { return }
+            setActiveCodeBlock(nil)
+        }
+        // Wake the topmost sleeping block under the tap, if any.
+        if let target = codeBlockViews.last(where: { !$0.isHidden && $0.frame.contains(p) }) {
+            setActiveCodeBlock(target)
+        }
+    }
+
+    @objc private func handlePencilDown(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        setActiveCodeBlock(nil)
+    }
+
+    /// Simultaneity for the block-tap and pencil-down observers (the only
+    /// recognizers with this view as delegate) — they watch, never compete.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
+    }
+
+    /// The block tap observes every finger tap on the page — but a tap that
+    /// floating chrome already claimed (an intent-chip button, a toolbar…)
+    /// must not ALSO wake or sleep a block that happens to sit underneath.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer is UITapGestureRecognizer else { return true }
+        var v = touch.view
+        while let cur = v, cur !== canvas {
+            if cur is UIControl || cur is MathIntentChip { return false }
+            v = cur.superview
+        }
+        return true
+    }
+
     /// Toggle the page's edit mode. In edit mode blocks show chrome, become
     /// interactive and rise above the ink; ink drawing is suspended. Out of
     /// edit mode they drop behind the ink and stop intercepting touches.
     func setPageEditMode(_ on: Bool) {
+        setActiveCodeBlock(nil)   // edit chrome and active state are exclusive
         isPageEditMode = on
         canvas.drawingGestureRecognizer.isEnabled = !on
         for view in codeBlockViews {
             view.setEditing(on)
-            if on {
-                canvas.bringSubviewToFront(view)
-            } else {
-                canvas.insertSubview(view, aboveSubview: paper)
-            }
         }
-        // Keep the AI/handwriting renderer above the ink layer regardless.
-        canvas.bringSubviewToFront(renderer)
+        if on {
+            // Edit mode: every block is an object being arranged, so all of
+            // them sit above the ink — in stable creation order.
+            canvas.bringSubviewToFront(renderer)
+            for view in codeBlockViews { canvas.bringSubviewToFront(view) }
+        } else {
+            restackCodeBlocks()
+        }
     }
 
     /// Apply an edited block (new source/geometry) coming back from the sheet.
@@ -1156,6 +1290,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     private func removeCodeBlock(_ view: CodeBlockView) {
+        if activeCodeBlock === view {
+            activeCodeBlock = nil
+            canvas.activeBlock = nil
+            // The block may be deleted with a finger still on it — see
+            // setActiveCodeBlock: don't leave the drawing gesture switched off.
+            canvas.drawingGestureRecognizer.isEnabled = true
+        }
         view.removeFromSuperview()
         codeBlockViews.removeAll { $0 === view }
         persistCodeBlocks()
@@ -1244,6 +1385,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     // MARK: PKCanvasViewDelegate
+
+    /// The pen has touched down — writing wins. The active code block drops
+    /// back below the ink layer automatically, so the stroke lands on top of
+    /// it just like anywhere else on the page.
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        setActiveCodeBlock(nil)
+    }
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard !suppressChanges else { return }
@@ -2802,4 +2950,43 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         return label.frame.maxY
     }
 
+}
+
+// MARK: - Canvas that routes touches to the active code block
+
+/// The page's visual stack never changes in normal writing mode:
+///
+///     paper → code blocks → PencilKit ink → AI renderer
+///
+/// Blocks stay UNDER the ink permanently, so an annotation drawn across a
+/// block is always visible on top of it — even while that block is being
+/// operated. Raising the block instead (the obvious approach) hides the
+/// annotation behind opaque web content, which defeats the point of a widget
+/// that lives on a page you write on.
+///
+/// Interaction is therefore decoupled from z-order: exactly one block may be
+/// "active" at a time, and while it is, finger touches landing inside its
+/// frame are redirected past the ink layer straight into its web content.
+///
+/// The override is deliberately narrow — one nil check and one rect test —
+/// so pages with no active block (the overwhelming majority of touch and
+/// hover events, including every pencil stroke) pay nothing at all. An
+/// earlier version walked the view hierarchy comparing class names on every
+/// event and was measurably laggy.
+final class BlockRoutingCanvasView: PKCanvasView {
+
+    /// Set by `MagicPaperView` whenever the active block changes. Weak: the
+    /// canvas must never keep a deleted block alive.
+    weak var activeBlock: CodeBlockView?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        // Fast path — nothing is active, so the page behaves exactly like a
+        // plain PencilKit canvas.
+        guard let block = activeBlock else { return super.hitTest(point, with: event) }
+        let local = convert(point, to: block)
+        guard let hit = block.interactiveHit(local, with: event) else {
+            return super.hitTest(point, with: event)
+        }
+        return hit
+    }
 }

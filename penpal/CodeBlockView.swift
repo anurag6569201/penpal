@@ -6,6 +6,12 @@
 //  live HTML/CSS/JS block (a graph, a widget, anything the web can draw) and
 //  sits behind the handwriting so ink and Penpal replies annotate on top.
 //
+//  It STAYS behind the ink even while being used: a finger tap makes it the
+//  page's active block, and the canvas then redirects touches into it past
+//  the ink layer. Nothing moves, so an annotation drawn across the block
+//  remains visible while its buttons are being pressed. A pencil approaching
+//  the block, or a tap elsewhere, stands it back down.
+//
 //  In normal mode it is chrome-less — no border, background or shadow — so it
 //  reads as part of the page. In the page's *edit mode* it shows a dashed
 //  outline plus corner handles and a small toolbar, and can be moved, resized,
@@ -32,6 +38,8 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
 
     private let webView: WKWebView
     private let outline = CAShapeLayer()
+    /// Quiet "accepting input" ring shown while the block is active.
+    private let activeRing = CAShapeLayer()
     private var handles: [UIView] = []
     private let toolbar = UIStackView()
 
@@ -46,25 +54,36 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     private let minSize = CGSize(width: 80, height: 60)
     private let handleSize: CGFloat = 24
 
-    /// PEN-INTERACT — "the Pencil writes, the hand operates".
+    /// TAP-ACTIVATE — "the Pencil writes, the hand operates — on request".
     ///
-    /// A block can render a live thing: a simulation, a slider, a button. The
-    /// page has exactly two input devices and they already mean two different
-    /// things to the user, so we let the hardware disambiguate instead of
-    /// adding a mode switch:
+    /// A block can render a live thing: a simulation, a slider, a submit
+    /// button. But it must never swallow touches while the user is just
+    /// writing, and it usually sits BELOW the ink so annotations stay on top —
+    /// which also puts its controls out of reach. So a block has two states:
     ///
-    ///   * Apple Pencil  -> falls straight through to the canvas, so ink is
-    ///                      annotated ON TOP of the block exactly as before.
-    ///   * finger        -> reaches the web content, so the simulation can be
-    ///                      played with.
+    ///   * inactive (default) -> asleep below the ink and COMPLETELY
+    ///                           transparent to touches: the Pencil inks over
+    ///                           it like plain paper, and a finger tap is
+    ///                           noticed by the page's own tap recognizer
+    ///                           (MagicPaperView), which wakes the block.
+    ///   * active             -> raised above the ink by the owner, and its
+    ///                           web content receives touches, so its buttons
+    ///                           and controls actually work. A pencil landing
+    ///                           on it is caught by the page's pencil
+    ///                           recognizer, which puts it back to sleep.
     ///
-    /// On by default: a block that renders a control exists to be used.
-    /// While a finger is down on a live block, `onFingerActive` suspends the
-    /// canvas's drawing gesture — otherwise PencilKit claims the touch and
-    /// draws a stroke instead of letting the button be pressed.
-    var isLive = true {
+    /// Touch-type routing deliberately does NOT happen in `hitTest`:
+    /// `event.allTouches` is unreliable at touch-down, and misreading a
+    /// pencil as a finger made strokes that started on a block vanish.
+    /// Gesture recognizers see the real `UITouch.type`, so the page-level
+    /// recognizers decide; the block just claims all or nothing.
+    ///
+    /// While a finger is down on an ACTIVE block, `onFingerActive` suspends
+    /// the canvas's drawing gesture — otherwise PencilKit claims the touch
+    /// and draws a stroke instead of letting the button press land.
+    var isActive = false {
         didSet {
-            guard isLive != oldValue else { return }
+            guard isActive != oldValue else { return }
             applyInteractionState()
         }
     }
@@ -116,7 +135,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         backgroundColor = .clear
         clipsToBounds = false
 
-        // Touch routing is decided in `hitTest` (see `isLive`), not by making
+        // Touch routing is decided in `hitTest` (see `isActive`), not by making
         // the web content permanently passive: in normal mode a finger may
         // operate it while the Pencil passes through to the ink canvas, and in
         // edit mode our own move/resize gestures win outright.
@@ -133,6 +152,14 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         if #available(iOS 16.4, *) { webView.isInspectable = true }
         #endif
         addSubview(webView)
+
+        // Live ring (normal mode, active only). Below the ink visually, like
+        // the block itself — it marks the block, it doesn't float over ink.
+        activeRing.fillColor = UIColor.clear.cgColor
+        activeRing.strokeColor = UIColor.tintColor.withAlphaComponent(0.55).cgColor
+        activeRing.lineWidth = 2
+        activeRing.isHidden = true
+        layer.addSublayer(activeRing)
 
         // Dashed selection outline (edit mode only).
         outline.fillColor = UIColor.clear.cgColor
@@ -250,16 +277,30 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         isUserInteractionEnabled = true
         // Move/resize must not fire from a stray finger drag on a live block.
         bodyPan.isEnabled = isEditing
-        fingerGuard.isEnabled = !isEditing && isLive
+        // A finger operating the ACTIVE block suspends the canvas's drawing
+        // gesture, so the touch never turns into a stray ink dot.
+        fingerGuard.isEnabled = !isEditing && isActive
         // While editing, the block is an OBJECT being arranged, not a running
         // widget — the web content must not swallow the drag that moves it.
-        webView.isUserInteractionEnabled = !isEditing && isLive
+        // Inactive blocks are inert too: content only runs once activated.
+        webView.isUserInteractionEnabled = !isEditing && isActive
+        updateActiveHighlight()
     }
 
-    /// True when this event is (or includes) an Apple Pencil touch.
-    private static func isPencil(_ event: UIEvent?) -> Bool {
-        guard let touches = event?.allTouches, !touches.isEmpty else { return false }
-        return touches.contains { $0.type == .pencil }
+    /// "This block is live — a tap here presses IT, not the page."
+    ///
+    /// Deliberately NOT a lift shadow: an active block no longer rises above
+    /// the ink (that would hide the very annotation drawn on it), so anything
+    /// suggesting elevation would be a lie. A thin tinted ring reads as
+    /// "focused / accepting input" without implying the block moved, and sits
+    /// inside the bounds so it never overlaps neighbouring writing.
+    private func updateActiveHighlight() {
+        let live = isActive && !isEditing
+        activeRing.isHidden = !live
+        guard live else { return }
+        activeRing.frame = bounds
+        activeRing.path = UIBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1),
+                                       cornerRadius: 6).cgPath
     }
 
     // The toolbar sits above the block and the resize handles straddle the
@@ -278,13 +319,24 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
             return nil
         }
 
-        // Normal mode. The Pencil ALWAYS passes through, so annotating over a
-        // block is unchanged whether it is live or not. Returning nil here
-        // hands the touch to the ink canvas underneath.
-        // A nil event (programmatic hit-test) is treated as "not a finger":
-        // ink-first is the safer default to fall back to.
-        guard isLive, !Self.isPencil(event), event != nil else { return nil }
-        return super.hitTest(point, with: event)
+        // Normal mode the block is ALWAYS below the ink and never claims a
+        // touch through the ordinary front-to-back hit-test — not even when
+        // active. Raising it would hide the annotation drawn on top of it,
+        // which is the whole point of a block living on a page.
+        //
+        // Touches reach an active block by REDIRECTION instead: the canvas
+        // (see BlockRoutingCanvasView) sends touches landing inside the
+        // active block's frame straight here, via `interactiveHit`.
+        // Visual order and touch order are simply two different things.
+        return nil
+    }
+
+    /// Entry point for the canvas's redirect: resolve a point (in this view's
+    /// coordinates) to the web content, bypassing z-order entirely.
+    func interactiveHit(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard isActive, !isEditing, !isHidden else { return nil }
+        guard bounds.contains(point) else { return nil }
+        return webView.hitTest(convert(point, to: webView), with: event) ?? webView
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
@@ -303,6 +355,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         outline.frame = bounds
         outline.path = UIBezierPath(roundedRect: bounds.insetBy(dx: 0.75, dy: 0.75),
                                     cornerRadius: 6).cgPath
+        updateActiveHighlight()
 
         let s = handleSize
         let positions = [
