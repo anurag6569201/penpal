@@ -248,6 +248,63 @@ enum GlyphAlign {
         place(glyph, as: role(for: ch), settled: true)
     }
 
+    // MARK: Word-aware placement
+
+    /// Whether the TEXT of a word/join/fragment contains a descender letter.
+    static func wordHasDescender(_ word: String) -> Bool {
+        word.lowercased().contains { descenders.contains($0) }
+    }
+
+    /// Shift every stroke vertically (keeps all parallel metadata rows).
+    private static func shifted(_ glyph: PersonalGlyph, byY dy: CGFloat) -> PersonalGlyph {
+        var strokes = glyph.strokes
+        for si in 0..<strokes.count {
+            for pi in 0..<strokes[si].count { strokes[si][pi].y += dy }
+        }
+        return replacingStrokes(glyph, strokes)
+    }
+
+    /// Where a word unit's baseline REALLY is: the median floor of the
+    /// letters that belong on the line, sliced by the same width priors the
+    /// fragment bank uses. Descender letters are excluded outright rather
+    /// than diluted through a quantile, so a word's seating no longer
+    /// depends on how many tails it happens to contain.
+    static func wordBaseline(_ glyph: PersonalGlyph, word: String) -> CGFloat? {
+        let chars = Array(word.lowercased().filter(\.isLetter))
+        guard chars.count >= 2, glyph.width > 0.1 else { return nil }
+        var cum: [CGFloat] = [0]
+        for ch in chars {
+            cum.append(cum.last! + max(0.15, StrokeFont.glyph(for: ch).width))
+        }
+        let total = max(0.3, cum.last!)
+        let pts = measurablePoints(glyph)
+        var floors: [CGFloat] = []
+        for (i, ch) in chars.enumerated() where !descenders.contains(ch) {
+            let x0 = glyph.width * cum[i] / total
+            let x1 = glyph.width * cum[i + 1] / total
+            let ys = pts.filter { $0.x >= x0 && $0.x < x1 }.map(\.y)
+            guard ys.count >= 3, let floor = ys.min() else { continue }
+            floors.append(floor)
+        }
+        guard !floors.isEmpty else { return nil }
+        let sorted = floors.sorted()
+        return sorted[sorted.count / 2]
+    }
+
+    /// Capture-time placement for a unit whose TEXT is known ("ing", "day",
+    /// a stitched fragment slice). Descender presence comes from the letters
+    /// themselves, never from the ink heuristic — see snapBaseline.
+    static func normalize(_ glyph: PersonalGlyph, forWord word: String) -> PersonalGlyph {
+        rebaseWidth(snapBaseline(glyph, char: nil, soft: false, deadBand: 0.15,
+                                 knownWord: word))
+    }
+
+    /// Render-time reseat for a unit whose TEXT is known.
+    static func reseat(_ glyph: PersonalGlyph, forWord word: String) -> PersonalGlyph {
+        rebaseWidth(snapBaseline(glyph, char: nil, soft: true, deadBand: 0.02,
+                                 knownWord: word))
+    }
+
     // MARK: Deskew
 
     /// Rotate around centroid to cancel mild pen tilt (clamped).
@@ -298,12 +355,28 @@ enum GlyphAlign {
     /// made against visible guides get a generous band so near-correct
     /// training stays exactly as drawn.
     static func snapBaseline(_ glyph: PersonalGlyph, char: Character?, soft: Bool = false,
-                             deadBand: CGFloat = 0.02) -> PersonalGlyph {
+                             deadBand: CGFloat = 0.02,
+                             knownWord: String? = nil) -> PersonalGlyph {
         let body = bodyPoints(glyph)
         guard !body.isEmpty else { return glyph }
 
+        // When the TEXT is known, seat the unit on the letters that actually
+        // sit on the line instead of a quantile over all its ink. A quantile
+        // moves with how much descender ink a word happens to contain —
+        // "fighting" has two g tails — so whole words drifted off the line.
+        if let knownWord, let measured = wordBaseline(glyph, word: knownWord) {
+            guard abs(measured) > deadBand else { return glyph }
+            return shifted(glyph, byY: -measured)
+        }
+
         let ys = body.map(\.y).sorted()
         let hasDescender: Bool = {
+            // When the caller KNOWS the text (a word unit, a join, a stitched
+            // fragment), that beats any ink heuristic. Short units like "ing"
+            // sit right at the auto-detect threshold: when it missed, the
+            // baseline estimate (10th percentile) landed inside g's tail and
+            // the whole unit shifted UP — the "ng floats above the line" bug.
+            if let knownWord { return wordHasDescender(knownWord) }
             // Only LOWERCASE g/j/p/q/y are descenders by class. A capital
             // G/J/P/Q/Y must NOT inherit its lowercase twin's tail — caps
             // live between the baseline and the cap line, and classifying

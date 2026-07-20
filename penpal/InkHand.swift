@@ -95,7 +95,10 @@ final class FragmentBank {
         //     stitched words); re-harvest with the edge filters.
         // v8: ink-refined slice boundaries — priors alone land mid-letter on
         //     cursive words; boundaries now snap to thin connector points.
-        var version: Int? = 8
+        // v9: word-aware descender reseat at harvest — "ng"/"ing" fragments
+        //     stored with the ink-heuristic reseat could float above the
+        //     baseline; re-harvest with the slice text deciding.
+        var version: Int? = 9
         var fragments: [String: [PersonalGlyph]]
         var connectors: [String: [ConnectorSample]]? = nil
     }
@@ -138,7 +141,10 @@ final class FragmentBank {
                 let x0 = boundary(start)
                 let x1 = boundary(start + len)
                 if let piece = Self.crop(glyph, fromX: x0, toX: x1) {
-                    store(GlyphAlign.reseat(piece), for: slice)
+                    // The slice text is known — descender-aware reseat, so an
+                    // "ng" fragment keeps its tail below the line instead of
+                    // the auto-detect sometimes floating it up.
+                    store(GlyphAlign.reseat(piece, forWord: slice), for: slice)
                 }
             }
         }
@@ -398,7 +404,8 @@ final class FragmentBank {
                 guard let b = bodies[i], b > 0.2 else { continue }
                 let s = min(1.3, max(0.75, 1 + (target / b - 1) * 0.85))
                 if abs(s - 1) > 0.08 {
-                    parts[i] = GlyphAlign.reseat(ScaleConsensus.apply(s, to: parts[i]))
+                    parts[i] = GlyphAlign.reseat(ScaleConsensus.apply(s, to: parts[i]),
+                                                 forWord: i < subs.count ? subs[i] : "")
                 }
             }
         }
@@ -431,7 +438,7 @@ final class FragmentBank {
                 }
             }
         }
-        return GlyphAlign.reseat(packed)
+        return GlyphAlign.reseat(packed, forWord: subs.joined())
     }
 
     /// Bridge fragment boundaries with the user's own harvested connector for
@@ -729,7 +736,7 @@ final class FragmentBank {
     private func load() {
         guard let raw = try? Data(contentsOf: fileURL) else { return }
         if let payload = try? JSONDecoder().decode(Persist.self, from: raw),
-           (payload.version ?? 0) >= 8 {
+           (payload.version ?? 0) >= 9 {
             fragments = payload.fragments
             connectors = payload.connectors ?? [:]
         }

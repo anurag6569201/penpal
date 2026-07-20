@@ -431,6 +431,11 @@ struct PenpalSettingsView: View {
             LabeledContent("Variation", value: "\(Int(settings.variation))")
             Slider(value: $settings.variation, in: 0...10, step: 1)
             Toggle("Apple Pencil only", isOn: $settings.pencilOnly)
+            if settings.pencilOnly {
+                Text("Your finger scrolls the page and works the controls inside a code block. Turn this off to draw with a finger too — the blocks then stop taking finger taps.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         } header: {
             Label("Pen & ink", systemImage: "applepencil.tip")
         }

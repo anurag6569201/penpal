@@ -68,9 +68,12 @@ final class HandwritingSettings: ObservableObject {
         lineSpacingScale = defaults.object(forKey: "penpal.settings.lineSpacing") as? Double ?? 1
         speedLevel = defaults.object(forKey: "penpal.settings.speed") as? Double ?? 5
         variation = defaults.object(forKey: "penpal.settings.variation") as? Double ?? 4
-        // Default to allowing finger + Pencil (like Apple Notes). New key so the
-        // previous "Pencil only" default doesn't silently block finger drawing.
-        pencilOnly = defaults.object(forKey: "penpal.settings.pencilOnlyV2") as? Bool ?? false
+        // PEN-INTERACT — the Pencil draws, the hand operates. The finger is
+        // now the way to USE the page (scrolling, and pressing the controls
+        // inside a code block), so it can no longer also mean "draw": one
+        // input cannot carry both meanings without guessing. V3 key so the
+        // old stored preference doesn't reinstate finger drawing.
+        pencilOnly = defaults.object(forKey: "penpal.settings.pencilOnlyV3") as? Bool ?? true
         inkColorName = defaults.string(forKey: "penpal.settings.inkColor") ?? "indigo"
         customColorHex = defaults.string(forKey: "penpal.settings.customColorHex") ?? "#3B3B3B"
         autoReply = defaults.object(forKey: "penpal.settings.autoReply") as? Bool ?? true
@@ -114,7 +117,7 @@ final class HandwritingSettings: ObservableObject {
         d.set(lineSpacingScale, forKey: "penpal.settings.lineSpacing")
         d.set(speedLevel, forKey: "penpal.settings.speed")
         d.set(variation, forKey: "penpal.settings.variation")
-        d.set(pencilOnly, forKey: "penpal.settings.pencilOnlyV2")
+        d.set(pencilOnly, forKey: "penpal.settings.pencilOnlyV3")
         d.set(inkColorName, forKey: "penpal.settings.inkColor")
         d.set(customColorHex, forKey: "penpal.settings.customColorHex")
         d.set(autoReply, forKey: "penpal.settings.autoReply")

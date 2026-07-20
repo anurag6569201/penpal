@@ -67,7 +67,11 @@ class Route:
 
     @property
     def max_output_tokens(self) -> int:
-        return 1200 if self.cas_certain else 8000
+        # Thinking-class models spend output tokens on reasoning BEFORE the
+        # visible text; 1200 could be consumed entirely and return an empty
+        # draft (→ 503 / vanished reply). The prompt bounds the visible
+        # length; this only needs to cover reasoning headroom.
+        return 4000 if self.cas_certain else 8000
 
 
 # Problems the CAS solves outright AND that need no explanation to be useful.

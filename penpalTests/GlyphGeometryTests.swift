@@ -620,4 +620,85 @@ final class GlyphGeometryTests: XCTestCase {
         XCTAssertEqual(Double(real.strokesPerLetter),
                        Double(episode.strokesPerLetter), accuracy: 0.01)
     }
+
+    // MARK: - Word-aware descender seating (the raised "ng" bug)
+
+    /// A short unit like "ng" sits at the ink-heuristic's detection
+    /// threshold; when the heuristic missed, the baseline estimate landed
+    /// inside g's tail and the unit was stored floating above the line.
+    /// With the TEXT known, seating must be deterministic: a floating "ng"
+    /// comes back down, and a correctly seated one stays put.
+    func testKnownDescenderSeatsFloatingUnit() {
+        // "ng" with a shallow tail (the ambiguous case): n-arch and g-bowl
+        // 0…1, connector mass along the baseline, tail to −0.35 — then the
+        // whole thing floated up by 0.25 (as the old capture bug stored it).
+        func bump(x0: CGFloat) -> [CGPoint] {
+            (0...24).map { i in
+                let t = CGFloat(i) / 24
+                return CGPoint(x: x0 + t * 0.5, y: 0.98 * sin(t * .pi))
+            }
+        }
+        let connector: [CGPoint] = (0...30).map { i in
+            CGPoint(x: 0.45 + CGFloat(i) / 30 * 0.25, y: 0.02)
+        }
+        let tail: [CGPoint] = (0...20).map { i in
+            let t = CGFloat(i) / 20
+            return CGPoint(x: 1.15 - t * 0.1, y: -0.35 * t)
+        }
+        let lift: CGFloat = 0.25
+        let floated = make(([bump(x0: 0), connector, bump(x0: 0.7), tail])
+            .map { pts in pts.map { CGPoint(x: $0.x, y: $0.y + lift) } })
+
+        let fixed = GlyphAlign.normalize(floated, forWord: "ng")
+        let lo = fixed.strokes.flatMap { $0 }.map(\.y).min() ?? 0
+        XCTAssertLessThan(lo, -0.15,
+            "floating ng was not pulled back down — tail must dip below the baseline")
+
+        // A correctly seated unit must pass through (near-)unchanged.
+        let seated = make([bump(x0: 0), connector, bump(x0: 0.7), tail])
+        let kept = GlyphAlign.normalize(seated, forWord: "ng")
+        let seatedLo = seated.strokes.flatMap { $0 }.map(\.y).min() ?? 0
+        let keptLo = kept.strokes.flatMap { $0 }.map(\.y).min() ?? 0
+        XCTAssertEqual(Double(keptLo), Double(seatedLo), accuracy: 0.2,
+                       "correctly seated ng should not be moved significantly")
+    }
+
+    /// Seating must not depend on HOW MUCH descender ink a word contains.
+    /// A quantile over all ink moves with every extra tail, which is how
+    /// "fighting" (two g's) ended up riding above the line while shorter
+    /// words sat correctly.
+    func testWordSeatingIsIndependentOfDescenderCount() {
+        // Build a word of n bodies sitting on y=0, with `tails` of them
+        // dropping to −0.55. Every version must seat identically.
+        func word(letters: Int, tails: Int) -> PersonalGlyph {
+            var strokes: [[CGPoint]] = []
+            for k in 0..<letters {
+                let x0 = CGFloat(k) * 0.6
+                strokes.append((0...20).map { i in
+                    let t = CGFloat(i) / 20
+                    return CGPoint(x: x0 + t * 0.5, y: 0.95 * sin(t * .pi))
+                })
+                if k < tails {
+                    strokes.append((0...12).map { i in
+                        let t = CGFloat(i) / 12
+                        return CGPoint(x: x0 + 0.45, y: -0.55 * t)
+                    })
+                }
+            }
+            return make(strokes)
+        }
+
+        // "fig" style: 3 letters, 1 tail — vs "fighting" style: 8 letters,
+        // 2 tails. Same body line; the seating must agree.
+        let few = GlyphAlign.wordBaseline(word(letters: 3, tails: 1), word: "fig")
+        let many = GlyphAlign.wordBaseline(word(letters: 8, tails: 2), word: "fighting")
+        guard let few, let many else {
+            return XCTFail("word baseline unmeasurable")
+        }
+        XCTAssertEqual(Double(few), Double(many), accuracy: 0.12,
+            "baseline moved with descender count — words will ride off the line")
+        // And it must find the true body floor (~0), not the tail floor.
+        XCTAssertEqual(Double(many), 0.0, accuracy: 0.15,
+            "baseline was pulled toward the descender tails")
+    }
 }

@@ -19,7 +19,14 @@ import SwiftUI
 
 // MARK: - On-page asset (UIKit)
 
-final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
+final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDelegate {
+
+    /// Documents loaded with `baseURL: nil` get a NULL origin: WebKit then
+    /// refuses storage, denies resource loads ("Couldn't open … Permission
+    /// denied") and disables anything needing a secure context. A block that
+    /// renders a real simulation needs a real origin, and `https://localhost`
+    /// gives it one without touching the network.
+    static let contentBaseURL = URL(string: "https://localhost/")
 
     private(set) var block: CodeBlock
 
@@ -39,6 +46,48 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
     private let minSize = CGSize(width: 80, height: 60)
     private let handleSize: CGFloat = 24
 
+    /// PEN-INTERACT — "the Pencil writes, the hand operates".
+    ///
+    /// A block can render a live thing: a simulation, a slider, a button. The
+    /// page has exactly two input devices and they already mean two different
+    /// things to the user, so we let the hardware disambiguate instead of
+    /// adding a mode switch:
+    ///
+    ///   * Apple Pencil  -> falls straight through to the canvas, so ink is
+    ///                      annotated ON TOP of the block exactly as before.
+    ///   * finger        -> reaches the web content, so the simulation can be
+    ///                      played with.
+    ///
+    /// On by default: a block that renders a control exists to be used.
+    /// While a finger is down on a live block, `onFingerActive` suspends the
+    /// canvas's drawing gesture — otherwise PencilKit claims the touch and
+    /// draws a stroke instead of letting the button be pressed.
+    var isLive = true {
+        didSet {
+            guard isLive != oldValue else { return }
+            applyInteractionState()
+        }
+    }
+
+    /// Fired when a finger touch starts / ends on a live block, so the owner
+    /// can stop the ink canvas competing for that touch.
+    var onFingerActive: ((Bool) -> Void)?
+
+    /// Zero-duration press used purely as a SIGNAL that a finger is on the
+    /// block. It never consumes the touch (`cancelsTouchesInView = false`),
+    /// so the web content still receives the full sequence.
+    private lazy var fingerGuard: UILongPressGestureRecognizer = {
+        let g = UILongPressGestureRecognizer(target: self,
+                                             action: #selector(handleFingerGuard(_:)))
+        g.minimumPressDuration = 0
+        g.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        g.cancelsTouchesInView = false
+        g.delaysTouchesBegan = false
+        g.delaysTouchesEnded = false
+        g.delegate = self
+        return g
+    }()
+
     private lazy var bodyPan: UIPanGestureRecognizer = {
         let p = UIPanGestureRecognizer(target: self, action: #selector(handleBodyPan(_:)))
         p.delegate = self
@@ -51,9 +100,13 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
         self.block = block
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
+        // A block is meant to RUN — be explicit rather than relying on the
+        // default, which has changed across WebKit versions.
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
         webView = WKWebView(frame: .zero, configuration: config)
         super.init(frame: block.frame)
         setup()
+        webView.navigationDelegate = self
         reload()
     }
 
@@ -63,8 +116,10 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
         backgroundColor = .clear
         clipsToBounds = false
 
-        // The web content is passive: it never eats touches, so in normal mode
-        // ink draws straight over it and in edit mode our own gestures win.
+        // Touch routing is decided in `hitTest` (see `isLive`), not by making
+        // the web content permanently passive: in normal mode a finger may
+        // operate it while the Pencil passes through to the ink canvas, and in
+        // edit mode our own move/resize gestures win outright.
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
@@ -124,6 +179,30 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
         addSubview(toolbar)
 
         addGestureRecognizer(bodyPan)
+        addGestureRecognizer(fingerGuard)
+        // Safe default before the owner configures editing / live state:
+        // no stray drags, no touch capture.
+        applyInteractionState()
+    }
+
+    /// The web process can be killed under memory pressure (the device logs
+    /// `WebProcessProxy::didBecomeUnresponsive` / `mach_vm_allocate failed`
+    /// first). The block then renders its last frame but is DEAD — it looks
+    /// perfectly fine and simply ignores every tap, which is indistinguishable
+    /// from a touch-routing bug. Reload so it comes back by itself.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        reload()
+    }
+
+    @objc private func handleFingerGuard(_ g: UILongPressGestureRecognizer) {
+        switch g.state {
+        case .began:
+            onFingerActive?(true)
+        case .ended, .cancelled, .failed:
+            onFingerActive?(false)
+        default:
+            break
+        }
     }
 
     private func makeToolButton(system: String, action: Selector, destructive: Bool = false) -> UIButton {
@@ -141,7 +220,8 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
     // MARK: Content
 
     func reload() {
-        webView.loadHTMLString(CodedPaper.blockDocument(from: block.html), baseURL: nil)
+        webView.loadHTMLString(CodedPaper.blockDocument(from: block.html),
+                               baseURL: Self.contentBaseURL)
     }
 
     /// Apply an edited model (new code and/or geometry) and re-render.
@@ -157,11 +237,29 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
 
     func setEditing(_ editing: Bool) {
         isEditing = editing
-        isUserInteractionEnabled = editing
         outline.isHidden = !editing
         toolbar.isHidden = !editing
         handles.forEach { $0.isHidden = !editing }
+        applyInteractionState()
         setNeedsLayout()
+    }
+
+    /// Who may receive touches right now. The view itself always accepts them
+    /// so `hitTest` can route by touch type; what changes is who is behind it.
+    private func applyInteractionState() {
+        isUserInteractionEnabled = true
+        // Move/resize must not fire from a stray finger drag on a live block.
+        bodyPan.isEnabled = isEditing
+        fingerGuard.isEnabled = !isEditing && isLive
+        // While editing, the block is an OBJECT being arranged, not a running
+        // widget — the web content must not swallow the drag that moves it.
+        webView.isUserInteractionEnabled = !isEditing && isLive
+    }
+
+    /// True when this event is (or includes) an Apple Pencil touch.
+    private static func isPencil(_ event: UIEvent?) -> Bool {
+        guard let touches = event?.allTouches, !touches.isEmpty else { return false }
+        return touches.contains { $0.type == .pencil }
     }
 
     // The toolbar sits above the block and the resize handles straddle the
@@ -169,13 +267,24 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
     // return nil. Extend the touch area to cover them while editing so the
     // edit-code / delete buttons and every handle are actually tappable.
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        if let hit = super.hitTest(point, with: event) { return hit }
-        guard isEditing, !isHidden, isUserInteractionEnabled else { return nil }
-        for sub in ([toolbar] as [UIView]) + handles where !sub.isHidden {
-            let p = sub.convert(point, from: self)
-            if let hit = sub.hitTest(p, with: event) { return hit }
+        guard !isHidden, isUserInteractionEnabled else { return nil }
+
+        if isEditing {
+            if let hit = super.hitTest(point, with: event) { return hit }
+            for sub in ([toolbar] as [UIView]) + handles where !sub.isHidden {
+                let p = sub.convert(point, from: self)
+                if let hit = sub.hitTest(p, with: event) { return hit }
+            }
+            return nil
         }
-        return nil
+
+        // Normal mode. The Pencil ALWAYS passes through, so annotating over a
+        // block is unchanged whether it is live or not. Returning nil here
+        // hands the touch to the ink canvas underneath.
+        // A nil event (programmatic hit-test) is treated as "not a finger":
+        // ink-first is the safer default to fall back to.
+        guard isLive, !Self.isPencil(event), event != nil else { return nil }
+        return super.hitTest(point, with: event)
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
@@ -279,7 +388,15 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate {
 
     // Body pan must ignore touches that land on a handle or a control, so
     // resizing and the toolbar buttons win over dragging the whole block.
+    /// The finger signal must never block the web content's own gestures —
+    /// it only observes.
+    func gestureRecognizer(_ g: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        g == fingerGuard || other == fingerGuard
+    }
+
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if g == fingerGuard { return touch.type == .direct }
         guard g == bodyPan else { return true }
         if let v = touch.view {
             if handles.contains(v) { return false }
@@ -373,6 +490,7 @@ private struct BlockPreview: UIViewRepresentable {
     func updateUIView(_ web: WKWebView, context: Context) {
         guard context.coordinator.lastHTML != html else { return }
         context.coordinator.lastHTML = html
-        web.loadHTMLString(CodedPaper.blockDocument(from: html), baseURL: nil)
+        web.loadHTMLString(CodedPaper.blockDocument(from: html),
+                           baseURL: CodeBlockView.contentBaseURL)
     }
 }

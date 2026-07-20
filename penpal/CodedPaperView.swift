@@ -124,6 +124,15 @@ enum CodedPaper {
             font: 15px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
             color: #1c1c1e;
             -webkit-text-size-adjust: 100%;
+            /* A block is operated by finger on a page that is also being
+               written on: suppress the selection magnifier, the long-press
+               callout and double-tap zoom so a tap on a control reads as a
+               control press. Authors can override in their own <style>,
+               which lands later in the document. */
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+            touch-action: manipulation;
           }
           @media (prefers-color-scheme: dark) { body { color: #ececf0; } }
         </style>
@@ -297,6 +306,7 @@ private struct WebPaper: UIViewRepresentable {
     func updateUIView(_ web: WKWebView, context: Context) {
         guard context.coordinator.lastHTML != html else { return }
         context.coordinator.lastHTML = html
-        web.loadHTMLString(html, baseURL: nil)
+        // Real origin, not a null one — see CodeBlockView.contentBaseURL.
+        web.loadHTMLString(html, baseURL: CodeBlockView.contentBaseURL)
     }
 }

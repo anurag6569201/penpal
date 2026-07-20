@@ -357,8 +357,12 @@ final class PersonalFontStore {
                  baselineY: CGFloat, xHeight: CGFloat) -> Bool {
         let key = normalize(word)
         guard !key.isEmpty,
-              let g = makeAlignedGlyph(from: strokes, baselineY: baselineY,
-                                       xHeight: xHeight) else { return false }
+              let raw = makeGlyph(from: strokes, baselineY: baselineY,
+                                  xHeight: xHeight) else { return false }
+        // Word-aware alignment: the KEY tells us whether a descender exists,
+        // so "ing" can never be mistaken for a descender-free unit and get
+        // shifted up by its own g tail.
+        let g = GlyphAlign.normalize(raw, forWord: key)
         // LINE TRUST: the capture was made against visible guide lines and is
         // already normalized by them — that IS the user's size for this word.
         // Cross-calibrating against corpus averages resized good captures.
@@ -442,6 +446,16 @@ final class PersonalFontStore {
         let m = ScaleConsensus.classMeans(words: data.words)
         cachedMeans = m
         return m
+    }
+
+    /// The hand's typical letter-body height in unit space — the size a word
+    /// SHOULD render at. Trained captures are line-true by definition; this
+    /// exists for assembled words (fragments / VAE), which inherit whatever
+    /// size their donor pieces happened to have.
+    var corpusBodyTarget: CGFloat? {
+        let heights = consensusMeans.values.filter { $0 > 0.2 }.sorted()
+        guard heights.count >= 2 else { return nil }
+        return heights[heights.count / 2]
     }
 
     /// Isolated char training runs bigger than the same letters in word flow.
@@ -765,11 +779,30 @@ final class PersonalFontStore {
         guard let resolved else { return nil }
         var glyph = resolved.0
         let source = resolved.1
+        // LINE TRUST APPLIES TO CAPTURES, NOT ASSEMBLIES. An exact word was
+        // written against the guides, so its size is the user's own and is
+        // never touched. A stitched or synthesized word is built from pieces
+        // of whatever donors happened to match, so it inherits their size —
+        // that is why an assembled word like "fighting" rendered noticeably
+        // smaller than the trained words around it. Normalize it to the
+        // hand's own body height instead.
+        if source != .exact, let target = corpusBodyTarget,
+           let body = ScaleConsensus.bodyHeight(word: key, glyph: glyph)
+            ?? GlyphAlign.bodyHeight(glyph), body > 0.2 {
+            let s = min(1.35, max(0.72, target / body))
+            if abs(s - 1) > 0.06 {
+                glyph = ScaleConsensus.apply(s, to: glyph)
+            }
+        }
         glyph = InkUnity.shared.unify(glyph, source: source)
         // Morph can nudge baseline — reseat so the line stays level.
         // (Shift only. ZoneFit zone-stretching is deliberately gone: locally
         // warping ascenders/descenders skewed the user's letterforms.)
-        glyph = GlyphAlign.reseat(glyph)
+        // Word-aware: the key's letters decide descender handling.
+        glyph = GlyphAlign.reseat(glyph, forWord: key)
+        // A morph that produced non-finite geometry would render as a moving
+        // pen with no ink — fall back to the un-morphed resolved glyph.
+        if !Self.isValid(glyph) { glyph = resolved.0 }
         if vaeCache.count > 64 { vaeCache.removeAll(keepingCapacity: true) }
         vaeCache[key] = (glyph, source)
         return (glyph, source)
@@ -979,7 +1012,11 @@ final class PersonalFontStore {
     /// keys descender class off lowercase only; re-normalizing reseats any
     /// capitals stored with the old placement.
     private func realignStoredGlyphsIfNeeded() {
-        let flag = "penpal.glyphsAligned.v8"
+        // v9: word units realign with WORD-AWARE descender handling — short
+        // units like "ing" sat at the auto-detect threshold and, when it
+        // missed, were stored floating above the line (raised "ng" in
+        // replies). Only descender-containing words are touched.
+        let flag = "penpal.glyphsAligned.v9"
         guard !UserDefaults.standard.bool(forKey: flag) else { return }
         let firstRun = !UserDefaults.standard.bool(forKey: "penpal.glyphsAligned.v3")
         for (key, list) in data.glyphs {
@@ -990,6 +1027,9 @@ final class PersonalFontStore {
             for (key, list) in data.words {
                 data.words[key] = list.map { GlyphAlign.normalize($0, forChar: nil) }
             }
+        }
+        for (key, list) in data.words where GlyphAlign.wordHasDescender(key) {
+            data.words[key] = list.map { GlyphAlign.normalize($0, forWord: key) }
         }
         UserDefaults.standard.set(true, forKey: flag)
         UserDefaults.standard.set(true, forKey: "penpal.glyphsAligned.v3")

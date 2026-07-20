@@ -326,6 +326,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // .anyInput would silently ignore it (finger keeps drawing).
         let policy: PKCanvasViewDrawingPolicy = settings.pencilOnly ? .pencilOnly : .default
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
+        // A block only takes finger taps when the finger isn't also a pen.
+        for view in codeBlockViews where view.isLive != settings.pencilOnly {
+            view.isLive = settings.pencilOnly
+        }
         // Lock the live-writing color to the same light-resolved value used
         // when the stroke is baked into the canvas (see bakedInkColor).
         // Using the raw dynamic color here would let it track the device's
@@ -820,9 +824,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// erasable, lassoable, undoable, shared and saved exactly like the
     /// user's own ink. Called stroke-by-stroke as the animation finishes each
     /// one, so the pen appears to write directly onto the page.
-    private func bakeStroke(_ raw: InkStroke, baseWidth: CGFloat, color: UIColor) {
+    /// Returns false when the stroke could not be converted — the CALLER must
+    /// then keep the ink visible another way (the animation layer is removed
+    /// the moment this returns, so a silent false meant vanishing ink).
+    @discardableResult
+    private func bakeStroke(_ raw: InkStroke, baseWidth: CGFloat, color: UIColor) -> Bool {
         let smoothed = HandwritingRenderer.smoothed(raw, amount: CGFloat(settings.smoothness))
-        guard let pk = Self.pkStroke(from: smoothed, baseWidth: baseWidth, color: color) else { return }
+        guard let pk = Self.pkStroke(from: smoothed, baseWidth: baseWidth, color: color) else { return false }
         suppressChanges = true
         var drawing = canvas.drawing
         // Insert at the reply baseline so strokes the user draws while the AI
@@ -833,6 +841,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         lastReplyStrokeCount += 1
         suppressChanges = false
         onDrawingChange?(canvas.drawing)   // debounced persistence
+        return true
     }
 
     /// Tip width + ink color from the user's expression (Pencil tip size along
@@ -842,9 +851,27 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let line = strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
         let hand = InkAnalyzer.measureUserHand(from: strokes, fallbackLine: line,
                                                fallbackXHeight: 16)
+        // Match the user's pen colour — but ONLY if that colour can actually
+        // be seen on paper. This samples the LAST stroke, which may be a
+        // highlighter (translucent), an eraser artefact, or a near-white pen;
+        // copying it wrote the reply in invisible ink. Companion replies pass
+        // no match strokes at all, so they always used the settings colour —
+        // which is why this only ever showed up in Mathematician mode, where
+        // the user's own expression ink is the match source.
         let rawColor = strokes.last?.ink.color ?? .label
         let color = rawColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        guard Self.isLegibleOnPaper(color) else { return (hand.tipWidth, .label) }
         return (hand.tipWidth, color)
+    }
+
+    /// Whether ink of this colour would actually be visible on the page:
+    /// solid enough to see, and not so pale it disappears into the paper.
+    private static func isLegibleOnPaper(_ color: UIColor) -> Bool {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+        guard color.getRed(&r, green: &g, blue: &b, alpha: &a) else { return false }
+        guard a >= 0.55 else { return false }               // highlighter / faded
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return luminance <= 0.82                            // near-white on cream
     }
 
     /// PencilKit stores stroke colors as light-mode authored and auto-adjusts
@@ -868,7 +895,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         renderer.abandonCurrentWrite()
         if bakedUpTo < pending.strokes.count {
             for stroke in pending.strokes[bakedUpTo...] {
-                bakeStroke(stroke, baseWidth: pending.baseWidth, color: pending.color)
+                if !bakeStroke(stroke, baseWidth: pending.baseWidth,
+                               color: pending.color) {
+                    // Keep failed bakes visible — see renderReply.
+                    renderer.drawStatic([stroke], baseWidth: pending.baseWidth)
+                }
             }
         }
         bakedUpTo = 0
@@ -1054,6 +1085,17 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     private func makeCodeBlockView(_ block: CodeBlock) -> CodeBlockView {
         let view = CodeBlockView(block: block)
+        // "The Pencil writes, the hand operates." While a finger rests on a
+        // live block, PencilKit's drawing gesture must stand down — otherwise
+        // it claims the touch and draws a stroke instead of letting the block's
+        // own buttons and controls receive it. The Pencil is unaffected: it
+        // passes through the block (see CodeBlockView.hitTest) and still inks
+        // straight over the top.
+        view.onFingerActive = { [weak self] active in
+            guard let self, !self.isPageEditMode else { return }
+            self.canvas.drawingGestureRecognizer.isEnabled = !active
+        }
+        view.isLive = settings.pencilOnly
         view.setEditing(isPageEditMode)
         view.onChange = { [weak self] _ in
             guard let self else { return }
@@ -1380,7 +1422,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         if settings.diagnostics, sequence.confidence < 0.55 {
             onStatus?("This reply uses low-confidence fallback glyphs. Train its words for a closer match.")
         }
-        let strokes = sequence.strokes
+        // Non-finite geometry renders as a moving pen with no ink — drop it.
+        let strokes = sequence.strokes.filter { s in
+            s.points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
+        }
         let bottomY = sequence.bottomY
 
         let letters = text.filter { $0.isLetter || $0.isNumber }.count
@@ -1408,8 +1453,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 // Each finished stroke becomes real canvas ink immediately.
                 guard let self, let pending = self.pendingBake,
                       i < pending.strokes.count else { return }
-                self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth,
-                                color: pending.color)
+                if !self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth,
+                                    color: pending.color) {
+                    // Keep failed bakes visible — see renderReply.
+                    self.renderer.drawStatic([pending.strokes[i]],
+                                             baseWidth: pending.baseWidth)
+                }
                 self.bakedUpTo = i + 1
             }) { [weak self] in
                 guard let self else { return }
@@ -1427,7 +1476,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Trigger rules, per mode:
     /// - On-device calculator: "=" when Penpal is off, or Penpal + Companion.
     ///   Penpal + Mathematician never uses it — "=" goes to the brain/LLM.
-    /// - Boxing: only Penpal + Mathematician.
+    /// - Penpal + Mathematician: the BOX is the only automatic trigger.
+    ///   Nothing else fires while the user is writing — no Solve chip, no
+    ///   idle-pause send — because a problem in this mode is often written
+    ///   across several pauses and interrupting it is worse than waiting.
     /// - Penpal + Companion: replies after the writing pause (as before).
     /// `auto` is true when the idle timer fired; false for an explicit
     /// "reply now" request from the user.
@@ -1460,6 +1512,26 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         if mathematicianMode,
            let box = InkAnalyzer.detectProblemBox(all: all, newStart: newStart) {
             solveBoxedProblem(box, all: all)
+            return
+        }
+
+        // MATHEMATICIAN: THE BOX IS THE ONLY AUTOMATIC TRIGGER.
+        //
+        // Someone in this mode is writing a problem out — often over several
+        // pauses, often with an "=" partway through. Every automatic trigger
+        // here is an interruption of a question that isn't finished being
+        // asked: the Solve chip pops over the working, or a half-written
+        // problem gets sent to the brain. In this mode the user has ALREADY
+        // told us they want the model, so there is nothing to infer — we just
+        // need to know WHICH problem, and drawing a box says exactly that.
+        //
+        // Explicit requests (the send button, auto == false) still go through
+        // to the brain below; only idle-timer firing is suppressed.
+        if mathematicianMode, auto {
+            // Nothing was consumed visually, but the stroke counter moved —
+            // put it back so a later box (or explicit ask) still sees this
+            // ink as new, unanswered input.
+            lastReplyStrokeCount = newStart
             return
         }
 
@@ -1513,6 +1585,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             let trimmed = (candidates.first ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
+            // "=" still drives the full-line reading below in every mode.
+            // It does NOT reach the on-device calculator in Mathematician
+            // mode: that path returns at the `mathematicianMode` block below,
+            // before any Solve chip can appear.
             let hasEquals = trimmed.contains("=")
                 || MathInkParser.looksLikeEqualsAsk(inkToRead)
 
@@ -2537,7 +2613,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
         // Stamp constant tip width so the animation uses the opaque filled
         // outline path (same visual weight as real Pencil ink), not a thin stroke.
-        let strokes: [InkStroke] = sequence.strokes.map { s in
+        // Non-finite geometry is dropped here: a NaN point makes CAShapeLayer
+        // silently render nothing while the pen dot still animates — a moving
+        // pen that deposits no ink. One bad glyph must not do that.
+        let strokes: [InkStroke] = sequence.strokes.compactMap { s in
+            guard s.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
             var copy = s
             if copy.isDot {
                 copy.dotRadius = max(copy.dotRadius, baseWidth * 0.45)
@@ -2545,6 +2625,31 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 copy.widths = Array(repeating: baseWidth, count: copy.points.count)
             }
             return copy
+        }
+        // DIAGNOSTIC (PEN-INK): "it animates but nothing lands on paper" has
+        // exactly four possible causes, and they are indistinguishable by
+        // eye. Report all four at once so one run identifies it:
+        //   1. strokes never baked          -> baked count stays 0
+        //   2. baked but transparent        -> alpha ~0
+        //   3. baked but hairline           -> width ~0
+        //   4. baked outside the page       -> bounds off-canvas
+        let diagnoseInk: () -> Void = { [weak self] in
+            guard let self, self.settings.diagnostics else { return }
+            var alpha: CGFloat = -1
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+            _ = bakeColor.getRed(&r, green: &g, blue: &b, alpha: &alpha)
+            let inkBounds = strokes.reduce(CGRect.null) { partial, s in
+                s.points.reduce(partial) { $0.union(CGRect(origin: $1, size: .zero)) }
+            }
+            let onPage = inkBounds.intersects(
+                CGRect(x: 0, y: 0, width: self.canvas.bounds.width,
+                       height: self.contentHeight))
+            self.onStatus?(String(
+                format: "ink: %d strokes · w %.2f · alpha %.2f · y %.0f–%.0f · onPage %@ · canvas %d",
+                strokes.count, baseWidth, alpha,
+                inkBounds.minY, inkBounds.maxY,
+                onPage ? "YES" : "NO",
+                self.canvas.drawing.strokes.count))
         }
         let bottomY = sequence.bottomY
 
@@ -2596,8 +2701,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             self.renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
                 guard let self, let pending = self.pendingBake,
                       i < pending.strokes.count else { return }
-                self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth,
-                                color: pending.color)
+                if !self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth,
+                                    color: pending.color) {
+                    // The animation layer is removed the moment this handler
+                    // returns — redraw the stroke statically so a failed bake
+                    // can never read as ink vanishing while Penpal writes.
+                    self.renderer.drawStatic([pending.strokes[i]],
+                                             baseWidth: pending.baseWidth)
+                }
                 self.bakedUpTo = i + 1
             }) { [weak self] in
                 guard let self else { return }
@@ -2609,6 +2720,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 self.onWritingStateChange?(false)
                 self.publishUndoRedo()
                 self.flushWritingCompletions()   // PEN-09
+                diagnoseInk()
                 if celebrate {
                     self.renderer.celebrateAnswer(in: celebrateRect)
                 }
