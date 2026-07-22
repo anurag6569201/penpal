@@ -2,17 +2,15 @@
 //  FoldersSidebarView.swift
 //  penpal
 //
-//  Native NavigationSplitView sidebar — real glass, native selection.
+//  Folder browser used by the floating navigation drawer.
 //
 
 import SwiftUI
 
 struct FoldersSidebarView: View {
     @ObservedObject var store: NotesStore
-    @Environment(\.editMode) private var editMode
+    var onSelectFolder: (UUID) -> Void
 
-    @State private var newFolderAlert = false
-    @State private var newFolderName = ""
     @State private var renameTarget: NoteFolder?
     @State private var renameText = ""
 
@@ -22,13 +20,18 @@ struct FoldersSidebarView: View {
     private var selection: Binding<UUID?> {
         Binding(
             get: { store.selectedFolderID },
-            set: { if let id = $0 { store.selectFolder(id) } }
+            set: {
+                if let id = $0 {
+                    store.selectFolder(id)
+                    onSelectFolder(id)
+                }
+            }
         )
     }
 
     var body: some View {
         List(selection: selection) {
-            Section("On My iPad") {
+            Section {
                 row(kind: .allNotes, icon: "tray.full", tint: accent)
                 row(kind: .notes, icon: "folder", tint: accent)
 
@@ -42,36 +45,11 @@ struct FoldersSidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(.regularMaterial)
         .tint(accent)
         .navigationTitle("Folders")
         .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                EditButton()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    newFolderName = ""
-                    newFolderAlert = true
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                }
-            }
-        }
-        .alert("New Folder", isPresented: $newFolderAlert) {
-            TextField("Name", text: $newFolderName)
-            Button("Cancel", role: .cancel) { newFolderName = "" }
-            Button("Save") {
-                let name = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !name.isEmpty {
-                    let f = store.createFolder(named: name)
-                    store.selectFolder(f.id)
-                }
-                newFolderName = ""
-            }
-        } message: {
-            Text("Folders stay on this device.")
-        }
         .alert("Rename Folder", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
@@ -165,4 +143,5 @@ struct FoldersSidebarView: View {
             set: { _ in store.toggleExpanded(folder.id) }
         )
     }
+
 }

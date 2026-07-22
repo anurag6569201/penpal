@@ -10,6 +10,9 @@ import SwiftUI
 struct NotesListView: View {
     @ObservedObject var store: NotesStore
     var folderTitle: String
+    var onBack: () -> Void
+    var onClose: () -> Void
+    var onSelectNote: (UUID) -> Void
     var onNewNote: () -> Void
 
     @State private var viewMode: ViewMode = .list
@@ -37,8 +40,10 @@ struct NotesListView: View {
                 galleryView
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(.regularMaterial)
         .navigationTitle(folderTitle)
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .searchable(text: $store.searchQuery,
                     placement: .navigationBarDrawer(displayMode: .always),
@@ -96,7 +101,12 @@ struct NotesListView: View {
                 Button("Done") { endSelecting() }
             }
         } else {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: onBack) {
+                    Label("Folders", systemImage: "chevron.left")
+                }
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
                     Button("Select Notes", systemImage: "checkmark.circle") {
                         selecting = true
@@ -122,6 +132,10 @@ struct NotesListView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .accessibilityLabel("Close Navigation")
             }
         }
     }
@@ -178,7 +192,7 @@ struct NotesListView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture {
-            if selecting { toggle(note.id) } else { store.selectNote(note.id) }
+            if selecting { toggle(note.id) } else { onSelectNote(note.id) }
         }
         .contextMenu { rowMenu(note) }
         .swipeActions(edge: .trailing) { swipeButtons(note) }
@@ -272,7 +286,7 @@ struct NotesListView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            if selecting { toggle(note.id) } else { store.selectNote(note.id) }
+            if selecting { toggle(note.id) } else { onSelectNote(note.id) }
         }
         .contextMenu { rowMenu(note) }
     }

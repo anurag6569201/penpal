@@ -67,9 +67,10 @@ struct ContentView: View {
     /// The practice item awaiting a verdict, if one is on the page.
     @State private var practiceInProgress: (id: UUID, item: PenpalAPI.PracticeProblem)?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var proxy = PaperProxy()
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var navigationDrawerPresented = false
     @State private var toolsVisible = false
     @State private var penpalOn = false
     @State private var stickyHidden = true
@@ -109,21 +110,46 @@ struct ContentView: View {
     private let accent = Pen.inkAccent
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            FoldersSidebarView(store: store)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 360)
-        } content: {
-            NotesListView(
-                store: store,
-                folderTitle: store.selectedFolder?.name ?? "Notes",
-                onNewNote: createNote
-            )
-            .navigationSplitViewColumnWidth(min: 300, ideal: 340, max: 400)
-        } detail: {
-            editorDetail
+        NavigationStack {
+            GeometryReader { geometry in
+                let drawerWidth = min(380, max(280, geometry.size.width - 32))
+
+                ZStack(alignment: .leading) {
+                    editorDetail
+
+                    Color.black.opacity(navigationDrawerPresented ? 0.16 : 0)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { closeNavigationDrawer() }
+                        .allowsHitTesting(navigationDrawerPresented)
+                        .accessibilityHidden(true)
+
+                    NavigationDrawerView(
+                        store: store,
+                        onSelectNote: { noteID in
+                            store.selectNote(noteID)
+                            closeNavigationDrawer()
+                        },
+                        onNewNote: {
+                            createNote()
+                            closeNavigationDrawer()
+                        },
+                        onClose: closeNavigationDrawer
+                    )
+                    .frame(width: drawerWidth)
+                    .padding(.leading, 12)
+                    .padding(.vertical, 12)
+                    .offset(x: navigationDrawerPresented ? 0 : -(drawerWidth + 24))
+                    .opacity(navigationDrawerPresented ? 1 : 0.7)
+                    .allowsHitTesting(navigationDrawerPresented)
+                    .accessibilityHidden(!navigationDrawerPresented)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        .navigationSplitViewStyle(.balanced)
         .tint(accent)
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.88),
+                   value: navigationDrawerPresented)
         .animation(.easeOut(duration: 0.25), value: showPrefer)
         .onAppear {
             syncEditorFromStore(force: true)
@@ -251,7 +277,6 @@ struct ContentView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { editorToolbar }
-        .toolbarRole(.editor)
         .animation(.spring(response: 0.35, dampingFraction: 0.86), value: penpalOn)
         .animation(.spring(response: 0.35, dampingFraction: 0.86), value: mathChipsVisible)
     }
@@ -261,127 +286,187 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var editorToolbar: some ToolbarContent {
+        // Left: navigation and sticky note share one pill.
         ToolbarItem(placement: .topBarLeading) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    columnVisibility = (columnVisibility == .detailOnly) ? .all : .detailOnly
-                }
-            } label: {
-                Image(systemName: columnVisibility == .detailOnly
-                      ? "arrow.down.right.and.arrow.up.left"
-                      : "arrow.up.left.and.arrow.down.right")
-            }
-        }
-        ToolbarItem(placement: .topBarLeading) {
-            Button {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                    stickyHidden.toggle()
-                }
-                if !stickyHidden { flushEditor() }
-            } label: {
-                Image(systemName: stickyHidden ? "note.text.badge.plus" : "chevron.up.circle")
-            }
-            .disabled(store.selectedNote == nil)
-        }
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            Button { proxy.view?.undo() } label: {
-                Image(systemName: "arrow.uturn.backward.circle")
-            }
-            .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
-            .keyboardShortcut("z", modifiers: .command)
-
-            Button { proxy.view?.redo() } label: {
-                Image(systemName: "arrow.uturn.forward.circle")
-            }
-            .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
-
-            Button { showFormat = true } label: {
-                Image(systemName: "textformat.size")
-            }
-            .disabled(store.selectedNote == nil)
-
-            Button(action: insertChecklist) {
-                Image(systemName: "checklist")
-            }
-            .disabled(store.selectedNote == nil)
-
-            Button { showPhotos = true } label: {
-                Image(systemName: "paperclip")
-            }
-            .disabled(store.selectedNote == nil)
-
-            // Native Apple Notes pen tray (PKToolPicker)
-            Button {
-                toolsVisible.toggle()
-                proxy.view?.setToolsVisible(toolsVisible)
-                if toolsVisible { bodyFocused = false }
-            } label: {
-                Image(systemName: toolsVisible ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle")
-            }
-            .disabled(store.selectedNote == nil || selectedIsCoded)
-
-            // Page edit mode — arrange embedded code blocks (move/resize/edit).
-            Button {
-                pageEditMode.toggle()
-                proxy.view?.setPageEditMode(pageEditMode)
-                if pageEditMode {
-                    penpalOn = false
-                    toolsVisible = false
-                    proxy.view?.setToolsVisible(false)
-                    bodyFocused = false
-                }
-            } label: {
-                Image(systemName: pageEditMode ? "square.dashed.inset.filled" : "square.dashed")
-                    .foregroundStyle(pageEditMode ? Pen.inkAccent : Color.primary)
-            }
-            .disabled(store.selectedNote == nil || selectedIsCoded)
-
-            // Penpal mode — the special mode; only this makes ink get a reply.
-            Button {
-                penpalOn.toggle()
-                if penpalOn {
-                    if !toolsVisible {
-                        toolsVisible = true
-                        proxy.view?.setToolsVisible(true)
+            HStack(spacing: 0) {
+                Button {
+                    withAnimation(reduceMotion ? nil : Pen.spring) {
+                        navigationDrawerPresented.toggle()
                     }
-                    bodyFocused = false
-                }
-            } label: {
-                Image(systemName: "signature")
-                    .foregroundStyle(penpalOn ? Pen.inkAccent : Color.primary)
-            }
-            .disabled(store.selectedNote == nil || selectedIsCoded)
-
-            Button(action: shareCurrentNote) {
-                Image(systemName: "square.and.arrow.up")
-            }
-            .disabled(store.selectedNote == nil)
-
-            Menu {
-                moreActions
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .disabled(store.selectedNote == nil)
-
-            Menu {
-                Button {
-                    createNote()
                 } label: {
-                    Label("New Note", systemImage: "square.and.pencil")
+                    Image(systemName: "sidebar.left")
+                        .foregroundStyle(navigationDrawerPresented ? Pen.inkAccent : Color.primary)
+                        .frame(width: 44, height: 40)
                 }
+                .accessibilityLabel(navigationDrawerPresented
+                                    ? "Close Navigation"
+                                    : "Open Folders and Notes")
+
                 Button {
-                    createCodedNote()
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        stickyHidden.toggle()
+                    }
+                    if !stickyHidden { flushEditor() }
                 } label: {
-                    Label("New Coded Paper", systemImage: "curlybraces.square")
+                    Image(systemName: stickyHidden ? "note.text.badge.plus" : "chevron.up.circle")
+                        .foregroundStyle(stickyHidden ? Color.primary : Pen.inkAccent)
+                        .frame(width: 44, height: 40)
                 }
-            } label: {
-                Image(systemName: "square.and.pencil")
-            } primaryAction: {
-                createNote()
+                .disabled(store.selectedNote == nil)
+                .accessibilityLabel(stickyHidden ? "Show Sticky Note" : "Hide Sticky Note")
             }
+            .buttonStyle(.plain)
+            .frame(width: 104, height: 40, alignment: .center)
+            .glassEffect(.regular, in: Capsule())
         }
+        .sharedBackgroundVisibility(.hidden)
+
+        ToolbarSpacer(.fixed, placement: .topBarLeading)
+
+        // Left: history gets a separate adjacent pill.
+        ToolbarItem(placement: .topBarLeading) {
+            HStack(spacing: 0) {
+                Button { proxy.view?.undo() } label: {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 44, height: 40)
+                }
+                .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
+                .keyboardShortcut("z", modifiers: .command)
+
+                Button { proxy.view?.redo() } label: {
+                    Image(systemName: "arrow.uturn.forward.circle")
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 44, height: 40)
+                }
+                .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
+            .buttonStyle(.plain)
+            .frame(width: 104, height: 40, alignment: .center)
+            .glassEffect(.regular, in: Capsule())
+        }
+        .sharedBackgroundVisibility(.hidden)
+
+        // Center: tools that act directly on the paper.
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: 0) {
+                Button { showPhotos = true } label: {
+                    Image(systemName: "paperclip")
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 44, height: 40)
+                }
+                .disabled(store.selectedNote == nil)
+                .accessibilityLabel("Attach Photo")
+
+                Button {
+                    toolsVisible.toggle()
+                    proxy.view?.setToolsVisible(toolsVisible)
+                    if toolsVisible { bodyFocused = false }
+                } label: {
+                    Image(systemName: toolsVisible
+                          ? "pencil.tip.crop.circle.fill"
+                          : "pencil.tip.crop.circle")
+                        .foregroundStyle(toolsVisible ? Pen.inkAccent : Color.primary)
+                        .frame(width: 44, height: 40)
+                }
+                .disabled(store.selectedNote == nil || selectedIsCoded)
+                .accessibilityLabel(toolsVisible ? "Hide Markup" : "Show Markup")
+
+                Button {
+                    pageEditMode.toggle()
+                    proxy.view?.setPageEditMode(pageEditMode)
+                    if pageEditMode {
+                        penpalOn = false
+                        toolsVisible = false
+                        proxy.view?.setToolsVisible(false)
+                        bodyFocused = false
+                    }
+                } label: {
+                    Image(systemName: pageEditMode
+                          ? "square.dashed.inset.filled"
+                          : "square.dashed")
+                        .foregroundStyle(pageEditMode ? Pen.inkAccent : Color.primary)
+                        .frame(width: 44, height: 40)
+                }
+                .disabled(store.selectedNote == nil || selectedIsCoded)
+                .accessibilityLabel(pageEditMode ? "Stop Arranging" : "Arrange Page")
+
+                Button {
+                    penpalOn.toggle()
+                    if penpalOn {
+                        if !toolsVisible {
+                            toolsVisible = true
+                            proxy.view?.setToolsVisible(true)
+                        }
+                        bodyFocused = false
+                    }
+                } label: {
+                    Image(systemName: "signature")
+                        .foregroundStyle(penpalOn ? Pen.inkAccent : Color.primary)
+                        .frame(width: 44, height: 40)
+                }
+                .disabled(store.selectedNote == nil || selectedIsCoded)
+                .accessibilityLabel(penpalOn ? "Turn Off Penpal Mode" : "Turn On Penpal Mode")
+            }
+            .buttonStyle(.plain)
+            .frame(width: 192, height: 40, alignment: .center)
+            .glassEffect(.regular, in: Capsule())
+        }
+        .sharedBackgroundVisibility(.hidden)
+
+        // Right: document-level actions share one pill.
+        ToolbarItem(placement: .topBarTrailing) {
+            HStack(spacing: 0) {
+                Button { showFormat = true } label: {
+                    Image(systemName: "textformat.size")
+                        .foregroundStyle(Color.primary)
+                }
+                .disabled(store.selectedNote == nil)
+                .frame(width: 44, height: 40)
+
+                Button(action: shareCurrentNote) {
+                    Image(systemName: "square.and.arrow.up")
+                        .foregroundStyle(Color.primary)
+                }
+                .disabled(store.selectedNote == nil)
+                .frame(width: 44, height: 40)
+
+                Menu {
+                    Button {
+                        createNote()
+                    } label: {
+                        Label("New Note", systemImage: "square.and.pencil")
+                    }
+                    Button {
+                        createCodedNote()
+                    } label: {
+                        Label("New Coded Paper", systemImage: "curlybraces.square")
+                    }
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .foregroundStyle(Color.primary)
+                } primaryAction: {
+                    createNote()
+                }
+                .menuIndicator(.hidden)
+                .frame(width: 44, height: 40)
+
+                Menu {
+                    moreActions
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(Color.primary)
+                }
+                .disabled(store.selectedNote == nil)
+                .menuIndicator(.hidden)
+                .frame(width: 44, height: 40)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 192, height: 40, alignment: .center)
+            .glassEffect(.regular, in: Capsule())
+        }
+        .sharedBackgroundVisibility(.hidden)
     }
 
     private var isMathematician: Bool { settings.capability == "mathematician" }
@@ -711,6 +796,12 @@ struct ContentView: View {
         toolsVisible = false
         _ = store.createNote(in: store.selectedFolderID, kind: .coded)
         bodyFocused = false
+    }
+
+    private func closeNavigationDrawer() {
+        withAnimation(reduceMotion ? nil : Pen.spring) {
+            navigationDrawerPresented = false
+        }
     }
 
     private func syncEditorFromStore(force: Bool) {
