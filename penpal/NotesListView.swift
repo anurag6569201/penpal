@@ -31,23 +31,23 @@ struct NotesListView: View {
     private var isTrash: Bool { store.recentlyDeletedSelected }
 
     var body: some View {
-        Group {
-            if store.visibleNotes().isEmpty {
-                emptyState
-            } else if viewMode == .list {
-                listView
-            } else {
-                galleryView
+        VStack(spacing: 0) {
+            listTopBar
+            if !selecting && (!store.visibleNotes().isEmpty || !store.searchQuery.isEmpty) {
+                sidebarHeader
+            }
+            Group {
+                if store.visibleNotes().isEmpty {
+                    emptyState
+                } else if viewMode == .list {
+                    listView
+                } else {
+                    galleryView
+                }
             }
         }
         .scrollContentBackground(.hidden)
         .background(.regularMaterial)
-        .navigationTitle(folderTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
-        .searchable(text: $store.searchQuery,
-                    placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: "Search")
         .overlay(alignment: .bottom) {
             if selecting { selectionBar } else { newNoteBar }
         }
@@ -86,58 +86,100 @@ struct NotesListView: View {
         }
     }
 
-    // MARK: Toolbar
+    // MARK: Top bar (in-body, so it stays within the sidebar)
 
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        if selecting {
-            ToolbarItem(placement: .topBarLeading) {
+    private var listTopBar: some View {
+        HStack(spacing: 12) {
+            if selecting {
                 Button(allSelected ? "Deselect All" : "Select All") {
                     if allSelected { selectedIDs = [] }
                     else { selectedIDs = Set(store.visibleNotes().map(\.id)) }
                 }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
+                Spacer(minLength: 0)
+                Text("\(selectedIDs.count) Selected")
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
                 Button("Done") { endSelecting() }
-            }
-        } else {
-            ToolbarItem(placement: .topBarLeading) {
+                    .fontWeight(.semibold)
+            } else {
                 Button(action: onBack) {
                     Label("Folders", systemImage: "chevron.left")
+                        .labelStyle(.titleAndIcon)
                 }
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu {
-                    Button("Select Notes", systemImage: "checkmark.circle") {
-                        selecting = true
-                    }
-                    .disabled(store.visibleNotes().isEmpty)
-
-                    Button(viewMode == .list ? "View as Gallery" : "View as List",
-                           systemImage: viewMode == .list ? "square.grid.2x2" : "list.bullet") {
-                        withAnimation { viewMode = viewMode == .list ? .gallery : .list }
-                    }
-
-                    if isTrash {
-                        Divider()
-                        Button("Recover All", systemImage: "arrow.uturn.backward") {
-                            store.recoverAllDeleted()
-                        }
-                        .disabled(store.visibleNotes().isEmpty)
-                        Button("Delete All", systemImage: "trash", role: .destructive) {
-                            confirmEmptyTrash = true
-                        }
-                        .disabled(store.visibleNotes().isEmpty)
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                }
-                .accessibilityLabel("Close Navigation")
+                Spacer(minLength: 8)
+                Text(folderTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
         }
+        .tint(Pen.inkAccent)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 4)
+    }
+
+    // MARK: In-sidebar header (search + actions)
+
+    /// Search and the Select / Gallery actions live INSIDE the sidebar body, not
+    /// in the navigation bar. In the floating drawer, `.searchable` and nav-bar
+    /// toolbar items were surfacing in the app's top bar to the right of the
+    /// panel; keeping them in the body guarantees they stay within the sidebar.
+    private var sidebarHeader: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search", text: $store.searchQuery)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+                if !store.searchQuery.isEmpty {
+                    Button {
+                        store.searchQuery = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color.primary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            Menu {
+                Button("Select Notes", systemImage: "checkmark.circle") {
+                    selecting = true
+                }
+                .disabled(store.visibleNotes().isEmpty)
+
+                Button(viewMode == .list ? "View as Gallery" : "View as List",
+                       systemImage: viewMode == .list ? "square.grid.2x2" : "list.bullet") {
+                    withAnimation { viewMode = viewMode == .list ? .gallery : .list }
+                }
+
+                if isTrash {
+                    Divider()
+                    Button("Recover All", systemImage: "arrow.uturn.backward") {
+                        store.recoverAllDeleted()
+                    }
+                    .disabled(store.visibleNotes().isEmpty)
+                    Button("Delete All", systemImage: "trash", role: .destructive) {
+                        confirmEmptyTrash = true
+                    }
+                    .disabled(store.visibleNotes().isEmpty)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                    .foregroundStyle(.primary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
     }
 
     private var allSelected: Bool {
@@ -345,15 +387,6 @@ struct NotesListView: View {
             Text("\(store.visibleNotes().count) Notes")
                 .font(.footnote).foregroundStyle(.secondary)
             Spacer()
-        }
-        .overlay(alignment: .trailing) {
-            if !isTrash {
-                Button(action: onNewNote) {
-                    Image(systemName: "square.and.pencil")
-                        .font(.title2).foregroundStyle(selectionYellow)
-                }
-                .padding(.trailing, 16)
-            }
         }
         .padding(.vertical, 10)
         .background(.bar)

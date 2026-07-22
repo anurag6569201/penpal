@@ -30,26 +30,35 @@ struct FoldersSidebarView: View {
     }
 
     var body: some View {
-        List(selection: selection) {
-            Section {
-                row(kind: .allNotes, icon: "tray.full", tint: accent)
-                row(kind: .notes, icon: "folder", tint: accent)
+        VStack(spacing: 0) {
+            HStack {
+                Text("Folders")
+                    .font(.title.bold())
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 6)
 
-                ForEach(store.rootCustomFolders()) { folder in
-                    folderNode(folder)
+            List(selection: selection) {
+                Section {
+                    row(kind: .allNotes, icon: "tray.full", tint: accent)
+                    row(kind: .notes, icon: "folder", tint: accent)
+
+                    ForEach(store.rootCustomFolders()) { folder in
+                        folderNode(folder)
+                    }
+                }
+
+                Section {
+                    row(kind: .recentlyDeleted, icon: "trash", tint: accent)
                 }
             }
-
-            Section {
-                row(kind: .recentlyDeleted, icon: "trash", tint: accent)
-            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
         .background(.regularMaterial)
         .tint(accent)
-        .navigationTitle("Folders")
-        .navigationBarTitleDisplayMode(.large)
         .alert("Rename Folder", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }

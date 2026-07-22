@@ -29,6 +29,7 @@ struct MagicPaper: UIViewRepresentable {
     var onReplyInksChange: ([ReplyInk]) -> Void
     var onCodeBlocksChange: ([CodeBlock]) -> Void
     var onRequestEditCodeBlock: (CodeBlock) -> Void
+    var onPageEditModeChange: (Bool) -> Void
 
     func makeUIView(context: Context) -> MagicPaperView {
         let view = MagicPaperView()
@@ -54,6 +55,7 @@ struct MagicPaper: UIViewRepresentable {
         view.onReplyInksChange = onReplyInksChange
         view.onCodeBlocksChange = onCodeBlocksChange
         view.onRequestEditCodeBlock = onRequestEditCodeBlock
+        view.onPageEditModeChange = onPageEditModeChange
     }
 }
 
@@ -86,7 +88,6 @@ struct ContentView: View {
     @State private var showMathChips = false
     @State private var statusMessage = ""
     @State private var showStatus = false
-    @State private var showFormat = false
     @State private var showMoveNote = false
     @State private var showShare = false
     @State private var shareItems: [Any] = []
@@ -101,6 +102,33 @@ struct ContentView: View {
     @State private var pageEditMode = false
     /// The code block currently being edited in the source sheet, if any.
     @State private var editingCodeBlock: CodeBlock?
+    /// Whether the Block Studio is expanded to a full-screen cover. Off by
+    /// default so editing stays a modal layered over the notes page.
+    @State private var studioFullScreen = false
+
+    /// The Studio is presented as a sheet unless the user asks for full view;
+    /// these bindings route the same `editingCodeBlock` to whichever container
+    /// is active so toggling `studioFullScreen` swaps between them in place.
+    private var studioSheetItem: Binding<CodeBlock?> {
+        Binding(
+            get: { studioFullScreen ? nil : editingCodeBlock },
+            set: { if $0 == nil { editingCodeBlock = nil; studioFullScreen = false } }
+        )
+    }
+
+    private var studioFullScreenItem: Binding<CodeBlock?> {
+        Binding(
+            get: { studioFullScreen ? editingCodeBlock : nil },
+            set: { if $0 == nil { editingCodeBlock = nil; studioFullScreen = false } }
+        )
+    }
+
+    /// Persist a Studio edit to the page and keep `editingCodeBlock` in sync so
+    /// swapping sheet ↔ full view carries the latest content across.
+    private func studioSave(_ updated: CodeBlock) {
+        proxy.view?.updateCodeBlock(updated)
+        if editingCodeBlock?.id == updated.id { editingCodeBlock = updated }
+    }
     @FocusState private var titleFocused: Bool
     @FocusState private var bodyFocused: Bool
 
@@ -128,6 +156,7 @@ struct ContentView: View {
 
                     NavigationDrawerView(
                         store: store,
+                        isPresented: navigationDrawerPresented,
                         onSelectNote: { noteID in
                             store.selectNote(noteID)
                             closeNavigationDrawer()
@@ -203,10 +232,6 @@ struct ContentView: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showFormat) {
-            formatSheet
-                .presentationDetents([.medium])
-        }
         .sheet(isPresented: $showMoveNote) {
             moveNoteSheet
                 .presentationDetents([.medium])
@@ -214,11 +239,11 @@ struct ContentView: View {
         .sheet(isPresented: $showShare) {
             ActivityView(items: shareItems)
         }
-        .sheet(item: $editingCodeBlock) { block in
-            CodeBlockEditorView(block: block) { updated in
-                proxy.view?.updateCodeBlock(updated)
-            }
-            .presentationDetents([.large])
+        .sheet(item: studioSheetItem) { block in
+            BlockStudioView(block: block, expanded: $studioFullScreen, onSave: studioSave)
+        }
+        .fullScreenCover(item: studioFullScreenItem) { block in
+            BlockStudioView(block: block, expanded: $studioFullScreen, onSave: studioSave)
         }
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .alert("Penpal", isPresented: $showStatus) {
@@ -301,6 +326,11 @@ struct ContentView: View {
         ToolbarItem(placement: .topBarLeading) {
             HStack(spacing: 0) {
                 Button {
+                    // Open straight to the notes list of the folder the current
+                    // note lives in, so the drawer lands "where the note is".
+                    if !navigationDrawerPresented, let note = store.selectedNote {
+                        store.selectedFolderID = note.folderID
+                    }
                     withAnimation(reduceMotion ? nil : Pen.spring) {
                         navigationDrawerPresented.toggle()
                     }
@@ -363,14 +393,14 @@ struct ContentView: View {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 0) {
                 Menu {
-                    Button("Add Image Attachment", systemImage: "photo") {
-                        showPhotos = true
+                    Button("Add Attachment", systemImage: "paperclip") {
+                        insertPageBlock(CodedPaper.attachmentBlockHTML, kind: .attachment, height: 280)
                     }
                     Divider()
                     Button("Add Code Block", systemImage: "chevron.left.forwardslash.chevron.right") {
                         insertPageBlock(CodedPaper.blockStarterHTML, kind: .code, height: 300)
                     }
-                    Button("Add Mermaid Diagram", systemImage: "point.3.connected.trianglepath.dotted") {
+                    Button("Add Diagram", systemImage: "point.3.connected.trianglepath.dotted") {
                         insertPageBlock(CodedPaper.mermaidBlockHTML, kind: .mermaid, height: 300)
                     }
                     Button("Add Text Block", systemImage: "text.quote") {
@@ -381,10 +411,6 @@ struct ContentView: View {
                     }
                     Button("Add Checklist Block", systemImage: "checklist") {
                         insertPageBlock(CodedPaper.checklistBlockHTML, kind: .checklist, height: 210)
-                    }
-                    Divider()
-                    Button("Format Note", systemImage: "textformat.size") {
-                        showFormat = true
                     }
                 } label: {
                     Image(systemName: "paperclip")
@@ -454,13 +480,6 @@ struct ContentView: View {
         // Right: document-level actions share one pill.
         ToolbarItem(placement: .topBarTrailing) {
             HStack(spacing: 0) {
-                Button { showFormat = true } label: {
-                    Image(systemName: "textformat.size")
-                        .foregroundStyle(Color.primary)
-                }
-                .disabled(store.selectedNote == nil)
-                .frame(width: 44, height: 40)
-
                 Button(action: shareCurrentNote) {
                     Image(systemName: "square.and.arrow.up")
                         .foregroundStyle(Color.primary)
@@ -499,7 +518,7 @@ struct ContentView: View {
                 .frame(width: 44, height: 40)
             }
             .buttonStyle(.plain)
-            .frame(width: 192, height: 40, alignment: .center)
+            .frame(width: 132, height: 40, alignment: .center)
             .glassEffect(.regular, in: Capsule())
         }
         .sharedBackgroundVisibility(.hidden)
@@ -627,6 +646,17 @@ struct ContentView: View {
                 },
                 onRequestEditCodeBlock: { block in
                     editingCodeBlock = block
+                },
+                onPageEditModeChange: { on in
+                    pageEditMode = on
+                    // Match the Arrange button's side-effects so long-pressing a
+                    // block into Arrange also parks writing/markup tools.
+                    if on {
+                        penpalOn = false
+                        toolsVisible = false
+                        proxy.view?.setToolsVisible(false)
+                        bodyFocused = false
+                    }
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -800,22 +830,16 @@ struct ContentView: View {
         }
     }
 
-    private func insertChecklist() {
-        bodyFocused = true
-        if bodyText.isEmpty || bodyText.hasSuffix("\n") {
-            bodyText += "☐ "
-        } else {
-            bodyText += "\n☐ "
-        }
-        store.updateSelectedBody(bodyText)
-    }
-
     private func insertPageBlock(_ html: String, kind: PageBlockKind, height: CGFloat) {
         penpalOn = false
         toolsVisible = false
         proxy.view?.setToolsVisible(false)
-        proxy.view?.insertCodeBlock(html: html, kind: kind, preferredHeight: height)
-        pageEditMode = true
+        // Attachment blocks open with input fields, so they wake ready to use
+        // instead of dropping into Arrange (which would make the fields inert).
+        let activate = kind == .attachment
+        proxy.view?.insertCodeBlock(html: html, kind: kind,
+                                    preferredHeight: height, activateForInput: activate)
+        pageEditMode = activate ? false : true
         bodyFocused = false
     }
 
@@ -974,58 +998,6 @@ struct ContentView: View {
                 }
             }
         }
-    }
-
-    private var formatSheet: some View {
-        NavigationStack {
-            Form {
-                Section("Insert") {
-                    Button("Heading", systemImage: "textformat.size.larger") { wrapBody(prefix: "# ", suffix: "") }
-                    Button("Bold", systemImage: "bold") { wrapBody(prefix: "**", suffix: "**") }
-                    Button("Italic", systemImage: "italic") { wrapBody(prefix: "_", suffix: "_") }
-                    Button("Monospaced", systemImage: "chevron.left.forwardslash.chevron.right") { wrapBody(prefix: "`", suffix: "`") }
-                }
-                Section("Lists") {
-                    Button("Bulleted list") {
-                        bodyText += bodyText.isEmpty || bodyText.hasSuffix("\n") ? "• " : "\n• "
-                        store.updateSelectedBody(bodyText)
-                    }
-                    Button("Numbered list") {
-                        bodyText += bodyText.isEmpty || bodyText.hasSuffix("\n") ? "1. " : "\n1. "
-                        store.updateSelectedBody(bodyText)
-                    }
-                    Button("Checklist") { insertChecklist() }
-                }
-                Section {
-                    Toggle("Show drawing tools", isOn: Binding(
-                        get: { toolsVisible },
-                        set: { toolsVisible = $0; proxy.view?.setToolsVisible($0) }
-                    ))
-                    Toggle("Penpal mode", isOn: $penpalOn)
-                } footer: {
-                    Text("Drawing tools are the system pen tray. Penpal mode reads your writing and replies.")
-                }
-            }
-            .navigationTitle("Format")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showFormat = false }
-                }
-            }
-        }
-    }
-
-    private func wrapBody(prefix: String, suffix: String) {
-        bodyFocused = true
-        if bodyText.isEmpty {
-            bodyText = prefix + suffix
-        } else if bodyText.hasSuffix("\n") {
-            bodyText += prefix + suffix
-        } else {
-            bodyText += "\n" + prefix + suffix
-        }
-        store.updateSelectedBody(bodyText)
     }
 
     private var moveNoteSheet: some View {

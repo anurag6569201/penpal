@@ -180,6 +180,9 @@ nonisolated enum PageBlockKind: String, Codable, Hashable {
     case checklist
     case image
     case web
+    /// A flexible media card: an uploaded image/video/audio, or an embedded
+    /// URL (YouTube, a live image, a video/audio link, or any web link).
+    case attachment
 }
 
 nonisolated struct PageBlock: Identifiable, Codable, Hashable {
@@ -218,6 +221,9 @@ nonisolated struct PageBlock: Identifiable, Codable, Hashable {
     var resolvedKind: PageBlockKind {
         if let kind { return kind }
         let source = html.lowercased()
+        if source.contains("data-penpal-kind=\"attachment\"") {
+            return .attachment
+        }
         if source.contains("data-penpal-kind=\"table\"") || source.contains("<table") {
             return .table
         }

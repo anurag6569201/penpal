@@ -135,6 +135,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Fired when a code block asks to edit its source — SwiftUI presents the
     /// editor sheet and calls back into `updateCodeBlock(_:)`.
     var onRequestEditCodeBlock: ((CodeBlock) -> Void)?
+    /// Fired whenever Arrange (page edit) mode turns on/off from inside the
+    /// canvas — e.g. a long-press on a block — so the toolbar button stays in
+    /// sync with the actual state.
+    var onPageEditModeChange: ((Bool) -> Void)?
     /// PEN-19 — set while a practice problem is on the page. Receives whether
     /// the student's working was correct, so the schedule can be updated.
     var onWorkMarked: ((Bool) -> Void)?
@@ -189,6 +193,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// The page's edit mode: when on, blocks show chrome and can be moved /
     /// resized / edited, and ink drawing is suspended so gestures reach them.
     private(set) var isPageEditMode = false
+    /// A SINGLE block in Arrange mode on its own (via long-press) while the
+    /// rest of the page stays live — the focused counterpart to the page-wide
+    /// Arrange button. Mutually exclusive with `isPageEditMode`.
+    private weak var editingBlock: CodeBlockView?
     /// Hand-style reply strokes currently animating; once the animation ends
     /// (or is interrupted) they're persisted with the note as renderer ink —
     /// never converted to PencilKit strokes, which render differently and
@@ -453,6 +461,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // it would keep the canvas redirecting touches into a dead block.
         activeCodeBlock = nil
         canvas.activeBlock = nil
+        editingBlock = nil
         isPageEditMode = false
         canvas.drawingGestureRecognizer.isEnabled = true
         var blockBottom: CGFloat = 0
@@ -1070,6 +1079,17 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     @objc private func handleInkLongPress(_ gr: UILongPressGestureRecognizer) {
         guard gr.state == .began else { return }
         let pt = gr.location(in: canvas)
+
+        // Long-press a code block → open THAT block in Arrange mode
+        // (move/resize/edit), leaving the rest of the page live. The page-wide
+        // Arrange button remains the way to arrange everything at once.
+        if !isPageEditMode,
+           let target = codeBlockViews.last(where: { !$0.isHidden && $0.frame.contains(pt) }) {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            setEditingBlock(target)
+            return
+        }
+
         pendingHit = penpalHit(at: pt)
         guard pendingHit != nil else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -1178,7 +1198,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// enter edit mode so it can be positioned right away.
     func insertCodeBlock(html: String = CodedPaper.blockStarterHTML,
                          kind: PageBlockKind = .code,
-                         preferredHeight: CGFloat = 300) {
+                         preferredHeight: CGFloat = 300,
+                         activateForInput: Bool = false) {
         let w = min(max(240, bounds.width - 48), 560)
         let h = min(max(100, preferredHeight), 520)
         let x = max(leftMargin, (bounds.width - w) / 2)
@@ -1188,8 +1209,17 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let view = makeCodeBlockView(block)
         canvas.addSubview(view)
         codeBlockViews.append(view)
-        // setPageEditMode brings every block (incl. this one) to the front.
-        setPageEditMode(true)
+        if activateForInput {
+            // Blocks that greet the user with input fields (attachment) must be
+            // immediately interactive — Arrange mode makes the web content
+            // passive — so wake the block instead of entering Arrange.
+            setPageEditMode(false)
+            restackCodeBlocks()
+            setActiveCodeBlock(view)
+        } else {
+            // setPageEditMode brings every block (incl. this one) to the front.
+            setPageEditMode(true)
+        }
         growForCodeBlocks()
         persistCodeBlocks()
     }
@@ -1255,20 +1285,31 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     @objc private func handleCanvasTap(_ g: UITapGestureRecognizer) {
         guard !isPageEditMode else { return }
         let p = g.location(in: canvas)
+        // A single block in Arrange mode: a tap outside it (allowing for the
+        // corner handles/toolbar) commits and exits; taps within belong to the
+        // block's own move/resize/edit chrome.
+        if let editing = editingBlock {
+            if !editing.frame.insetBy(dx: -28, dy: -28).contains(p) { setEditingBlock(nil) }
+            return
+        }
         // Taps ON the active block operate its content — leave it alone.
         if let active = activeCodeBlock {
             if active.frame.contains(p) { return }
             setActiveCodeBlock(nil)
         }
-        // Wake the topmost sleeping block under the tap, if any.
+        // Wake the topmost sleeping block under the tap, if any — and drop the
+        // caret where the finger landed so the same tap starts editing inline
+        // (a table cell, a checklist label, a paragraph), no "edit" step.
         if let target = codeBlockViews.last(where: { !$0.isHidden && $0.frame.contains(p) }) {
             setActiveCodeBlock(target)
+            target.beginInlineEdit(at: target.convert(p, from: canvas))
         }
     }
 
     @objc private func handlePencilDown(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began else { return }
         setActiveCodeBlock(nil)
+        setEditingBlock(nil)   // the pen wins — drop single-block Arrange
     }
 
     /// Simultaneity for the block-tap and pencil-down observers (the only
@@ -1295,7 +1336,34 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Toggle the page's edit mode. In edit mode blocks show chrome, become
     /// interactive and rise above the ink; ink drawing is suspended. Out of
     /// edit mode they drop behind the ink and stop intercepting touches.
+    /// Put ONE block into Arrange mode (move / resize / edit chrome) while
+    /// everything else on the page stays live. Pass nil to exit. This is what
+    /// a long-press on a block triggers — the page-wide Arrange button is a
+    /// separate, all-blocks affordance.
+    private func setEditingBlock(_ target: CodeBlockView?) {
+        guard editingBlock !== target else { return }
+        setActiveCodeBlock(nil)
+        editingBlock?.setEditing(false)
+        editingBlock = target
+        if let target {
+            target.setEditing(true)
+            // Suspend ink so finger drags move/resize the block instead of
+            // drawing, and lift just this block above the ink so its handles
+            // and toolbar are reachable.
+            canvas.drawingGestureRecognizer.isEnabled = false
+            canvas.bringSubviewToFront(renderer)
+            canvas.bringSubviewToFront(target)
+        } else {
+            canvas.drawingGestureRecognizer.isEnabled = true
+            restackCodeBlocks()
+        }
+    }
+
     func setPageEditMode(_ on: Bool) {
+        let changed = isPageEditMode != on
+        // The page-wide button and single-block Arrange are exclusive.
+        editingBlock?.setEditing(false)
+        editingBlock = nil
         setActiveCodeBlock(nil)   // edit chrome and active state are exclusive
         isPageEditMode = on
         canvas.drawingGestureRecognizer.isEnabled = !on
@@ -1310,6 +1378,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         } else {
             restackCodeBlocks()
         }
+        if changed { onPageEditModeChange?(on) }
     }
 
     /// Apply an edited block (new source/geometry) coming back from the sheet.
@@ -1326,6 +1395,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             canvas.activeBlock = nil
             // The block may be deleted with a finger still on it — see
             // setActiveCodeBlock: don't leave the drawing gesture switched off.
+            canvas.drawingGestureRecognizer.isEnabled = true
+        }
+        if editingBlock === view {
+            editingBlock = nil
             canvas.drawingGestureRecognizer.isEnabled = true
         }
         view.removeFromSuperview()
@@ -1363,6 +1436,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             for view in codeBlockViews { canvas.bringSubviewToFront(view) }
         } else {
             restackCodeBlocks()
+            // Keep a single-block Arrange session lifted above the ink so its
+            // handles and toolbar stay reachable after a layer change.
+            if let editingBlock {
+                canvas.bringSubviewToFront(renderer)
+                canvas.bringSubviewToFront(editingBlock)
+            }
         }
     }
 

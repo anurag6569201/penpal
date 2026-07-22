@@ -104,69 +104,134 @@ enum CodedPaper {
     </script>
     """
 
+    // The mermaid runtime (in CodeBlockView) renders from this <pre>'s source
+    // and loads the library itself, so the template stays script-free and the
+    // saved note only ever holds the diagram source, never the rendered SVG.
     static let mermaidBlockHTML = """
+    <div id="penpal-content">
     <style>
       html, body { margin: 0; min-height: 100%; font-family: -apple-system, sans-serif; }
-      .mermaid { display: flex; justify-content: center; align-items: center; min-height: 100%; }
     </style>
-    <pre class="mermaid" data-penpal-kind="mermaid">
-    flowchart LR
-      Idea[Idea] --> Build[Build]
-      Build --> Learn[Learn]
-    </pre>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-    <script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+    <pre class="mermaid" data-penpal-kind="mermaid">flowchart LR
+      A[Idea] --> B[Build]
+      B --> C[Learn]
+      C --> A</pre>
+    </div>
     """
 
     static let textBlockHTML = """
+    <div id="penpal-content">
     <style>
       html, body { margin: 0; font-family: -apple-system, sans-serif; color: #252530; }
-      .note { padding: 18px; border-radius: 14px; background: rgba(99,102,241,.08);
-              border: 1px solid rgba(99,102,241,.18); line-height: 1.45; }
-      h3 { margin: 0 0 8px; }
+      #penpal-content .note { padding: 18px; line-height: 1.5; font-size: 16px; }
+      #penpal-content .note h1 { font-size: 26px; margin: 0 0 10px; }
+      #penpal-content .note h2 { font-size: 21px; margin: 0 0 8px; }
+      #penpal-content .note h3 { font-size: 18px; margin: 0 0 8px; }
+      #penpal-content .note blockquote { margin: 8px 0; padding-left: 14px;
+        border-left: 3px solid rgba(99,102,241,.5); color: #4a4a58; }
+      #penpal-content .note pre { background: rgba(120,120,140,.12); padding: 10px 12px;
+        border-radius: 8px; overflow: auto; font-family: ui-monospace, monospace; }
+      #penpal-content .note a { color: #4A4E9E; }
+      /* Callout presets — persisted so they render even without the runtime. */
+      #penpal-content .note.callout-note,
+      #penpal-content .note.callout-tip,
+      #penpal-content .note.callout-warn,
+      #penpal-content .note.callout-quote {
+        border-left: 4px solid #4A4E9E; border-radius: 10px;
+        padding: 14px 16px 14px 16px;
+      }
+      #penpal-content .note.callout-note { background: rgba(74,78,158,.10); border-color: #4A4E9E; }
+      #penpal-content .note.callout-tip { background: rgba(26,127,90,.10); border-color: #1a7f5a; }
+      #penpal-content .note.callout-warn { background: rgba(176,83,42,.10); border-color: #b0532a; }
+      #penpal-content .note.callout-quote { background: rgba(120,120,140,.10); border-color: #8a8a9a; font-style: italic; }
+      @media (prefers-color-scheme: dark) { html, body { color: #ececf0; }
+        #penpal-content .note blockquote { color: #c7c7d2; } }
     </style>
     <section class="note" data-penpal-kind="text" data-penpal-editable="true">
-      <h3>Text block</h3><p>Tap the block, then tap this text to edit it directly.</p>
+      <h3>Text block</h3><p>Enter Arrange mode to format this text — styles, colour, lists, callouts and more.</p>
     </section>
+    </div>
     """
 
     static let tableBlockHTML = """
+    <div id="penpal-content">
     <style>
       html, body { margin: 0; font-family: -apple-system, sans-serif; color: #252530; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { border: 1px solid rgba(80,80,95,.28); padding: 10px; text-align: left; }
-      th { background: rgba(99,102,241,.1); }
+      #penpal-content table { width: 100%; border-collapse: collapse; }
+      #penpal-content th, #penpal-content td { border: 1px solid rgba(80,80,95,.28); padding: 10px; text-align: left; }
+      #penpal-content th { background: rgba(99,102,241,.1); }
+      #penpal-content table.pp-striped tbody tr:nth-child(even) td { background: rgba(99,102,241,.06); }
+      #penpal-content table.pp-noborder th, #penpal-content table.pp-noborder td { border: none; }
+      @media (prefers-color-scheme: dark) { html, body { color: #ececf0; } }
     </style>
     <table data-penpal-kind="table">
       <thead><tr><th>Column 1</th><th>Column 2</th><th>Column 3</th></tr></thead>
       <tbody><tr><td></td><td></td><td></td></tr><tr><td></td><td></td><td></td></tr></tbody>
     </table>
+    </div>
     """
 
     static let checklistBlockHTML = """
+    <div id="penpal-content">
     <style>
       html, body { margin: 0; font-family: -apple-system, sans-serif; color: #252530; }
-      .list { padding: 12px 16px; border-radius: 14px; background: rgba(99,102,241,.06); }
-      label { display: flex; gap: 10px; align-items: center; padding: 8px 0; font-size: 16px; }
-      input { width: 20px; height: 20px; accent-color: #4A4E9E; }
+      #penpal-content .list { padding: 12px 16px; border-radius: 14px; background: rgba(99,102,241,.06); --pp-accent: #4A4E9E; }
+      #penpal-content .item { display: flex; gap: 10px; align-items: center; padding: 8px 0; font-size: 16px; }
+      #penpal-content .penpal-item-text { flex: 1; outline: none; }
+      #penpal-content input { width: 20px; height: 20px; flex: none; accent-color: var(--pp-accent, #4A4E9E); }
+      @media (prefers-color-scheme: dark) { html, body { color: #ececf0; } }
     </style>
     <div class="list" data-penpal-kind="checklist">
-      <label><input type="checkbox"><span class="penpal-item-text">First item</span></label>
-      <label><input type="checkbox"><span class="penpal-item-text">Second item</span></label>
-      <label><input type="checkbox"><span class="penpal-item-text">Third item</span></label>
+      <div class="item"><input type="checkbox"><span class="penpal-item-text">First item</span></div>
+      <div class="item"><input type="checkbox"><span class="penpal-item-text">Second item</span></div>
+      <div class="item"><input type="checkbox"><span class="penpal-item-text">Third item</span></div>
+    </div>
     </div>
     """
 
     static func imageBlockHTML(base64JPEG: String) -> String {
         """
+        <div id="penpal-content">
         <style>
-          html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
-          img { width: 100%; height: 100%; display: block; object-fit: contain; }
+          html, body { margin: 0; width: 100%; height: 100%; }
+          #penpal-content { overflow: hidden; }
+          #penpal-content img { width: 100%; height: 100%; display: block; object-fit: contain; }
         </style>
         <img data-penpal-kind="image"
              src="data:image/jpeg;base64,\(base64JPEG)" alt="Note attachment">
+        </div>
         """
     }
+
+    /// A flexible media card. Starts empty (showing input fields) and, once the
+    /// user drops in a file or a URL, embeds an image, video, audio player,
+    /// YouTube frame, or a link card. The interactive fields are injected by
+    /// the block runtime and never persisted; only the chosen media is saved.
+    static let attachmentBlockHTML = """
+    <div id="penpal-content">
+    <style>
+      html, body { margin: 0; height: 100%; font-family: -apple-system, sans-serif; color: #252530; }
+      #penpal-content { height: 100%; }
+      .pp-attach { height: 100%; box-sizing: border-box; display: flex; }
+      .pp-attach figure { margin: 0; flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .pp-attach img, .pp-attach video, .pp-attach iframe {
+        width: 100%; height: 100%; flex: 1; display: block; object-fit: contain;
+        border: 0; background: #000; border-radius: 10px; min-height: 0;
+      }
+      .pp-attach.pp-fill img, .pp-attach.pp-fill video { object-fit: cover; }
+      .pp-attach audio { width: 100%; margin: auto; }
+      .pp-attach a.pp-link {
+        display: flex; gap: 12px; align-items: center; width: 100%; padding: 16px;
+        text-decoration: none; color: inherit; box-sizing: border-box;
+        background: rgba(99,102,241,.06); border-radius: 12px;
+      }
+      .pp-attach a.pp-link .pp-link-ic { font-size: 22px; }
+      .pp-attach a.pp-link .pp-link-t { font-weight: 600; word-break: break-all; }
+      @media (prefers-color-scheme: dark) { html, body { color: #ececf0; } }
+    </style>
+    <div class="pp-attach" data-penpal-kind="attachment"></div>
+    </div>
+    """
 
     /// Wraps a code block's source in a tight, transparent document (no page
     /// padding), so the asset fills its frame and blends into the paper.
