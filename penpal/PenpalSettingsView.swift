@@ -12,7 +12,7 @@ import UIKit
 struct PenpalSettingsView: View {
     @ObservedObject var settings: HandwritingSettings
     @Environment(\.dismiss) private var dismiss
-    @State private var tab: Tab = .capability
+    @State private var tab: Tab = .style
     @State private var health: PenpalAPI.VerificationHealth?
     @State private var accessToken = PenpalAPI.accessToken
     @StateObject private var hands = HandProfiles.shared
@@ -28,28 +28,11 @@ struct PenpalSettingsView: View {
     var onStatus: (String) -> Void
 
     enum Tab: String, CaseIterable, Identifiable {
-        case capability = "Penpal"
         case style = "Style"
         case page = "Page"
         case behavior = "Behavior"
         var id: String { rawValue }
     }
-
-    /// (tag, title, icon, blurb) for the capability cards.
-    static let capabilities: [(tag: String, title: String, icon: String, blurb: String)] = [
-        ("companion", "Companion", "heart.text.square",
-         "A friend on the page. Talks with you in the mood you pick."),
-        ("mathematician", "Mathematician", "x.squareroot",
-         "Any math, school to university — algebra, calculus, proofs, olympiad. Every answer independently verified."),
-    ]
-
-    static let moods: [(tag: String, title: String, icon: String)] = [
-        ("warm", "Warm friend", "cup.and.saucer"),
-        ("playful", "Playful", "party.popper"),
-        ("thoughtful", "Thoughtful", "moon.stars"),
-        ("coach", "Coach", "figure.run"),
-        ("custom", "Custom…", "wand.and.stars"),
-    ]
 
     static let replyFonts: [(name: String, display: String)] = [
         ("SnellRoundhand", "Snell Roundhand"),
@@ -86,7 +69,6 @@ struct PenpalSettingsView: View {
 
                 Form {
                     switch tab {
-                    case .capability: capabilitySettings
                     case .style: styleSettings
                     case .page: pageSettings
                     case .behavior: behaviorSettings
@@ -159,108 +141,6 @@ struct PenpalSettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(importError ?? "")
-            }
-        }
-    }
-
-    // MARK: - Capability (what Penpal IS)
-
-    @ViewBuilder private var capabilitySettings: some View {
-        Section {
-            ForEach(Self.capabilities, id: \.tag) { cap in
-                Button {
-                    settings.capability = cap.tag
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: cap.icon)
-                            .font(.title3)
-                            .frame(width: 34, height: 34)
-                            .foregroundStyle(settings.capability == cap.tag ? .white : .primary)
-                            .background(
-                                settings.capability == cap.tag
-                                    ? AnyShapeStyle(Color.accentColor)
-                                    : AnyShapeStyle(Color.secondary.opacity(0.15)),
-                                in: RoundedRectangle(cornerRadius: 8))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(cap.title)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.primary)
-                            Text(cap.blurb)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if settings.capability == cap.tag {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(.tint)
-                                .fontWeight(.semibold)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-        } header: {
-            Label("Capability", systemImage: "sparkles")
-        } footer: {
-            Text("Who Penpal is when it replies. Switch anytime — also from the Penpal banner on the page.\n\nAlways on, in any capability: write a calculation ending in \"=\" (like 5+5=) and the answer appears instantly — solved on device, no AI. Draw a box or circle around any problem to send exactly that to Penpal.")
-        }
-
-        if settings.capability == "companion" {
-            Section {
-                ForEach(Self.moods, id: \.tag) { mood in
-                    Button {
-                        settings.companionMood = mood.tag
-                    } label: {
-                        HStack {
-                            Label(mood.title, systemImage: mood.icon)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            if settings.companionMood == mood.tag {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.tint)
-                                    .fontWeight(.semibold)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-                if settings.companionMood == "custom" {
-                    TextField("Describe the persona — e.g. \"a wise old sailor, salty but kind\"",
-                              text: $settings.customMoodText, axis: .vertical)
-                        .lineLimit(2...4)
-                }
-            } header: {
-                Label("Mood", systemImage: "theatermasks")
-            } footer: {
-                Text(settings.companionMood == "custom"
-                     ? "Your words become Penpal's personality. Keep it short and vivid."
-                     : "How your companion talks to you.")
-            }
-        }
-
-        Section {
-            Toggle("Confirm before solving", isOn: $settings.confirmBeforeSolving)
-        } header: {
-            Label("Calculator", systemImage: "equal.circle")
-        } footer: {
-            Text(settings.confirmBeforeSolving
-                 ? "After you write an expression ending in \"=\", Penpal shows how it read your ink with a Solve button — tap the expression to correct it first. Nothing is calculated until you tap Solve."
-                 : "Expressions ending in \"=\" are solved and written immediately.")
-        }
-
-        if settings.capability == "mathematician" {
-            Section {
-                Picker("Detail", selection: $settings.mathDetail) {
-                    Text("Answer").tag("answer")
-                    Text("Compact").tag("compact")
-                    Text("Full").tag("full")
-                    Text("Proof").tag("proof")
-                }
-                .pickerStyle(.segmented)
-            } header: {
-                Label("Solution detail", systemImage: "list.number")
-            } footer: {
-                Text("Compact shows key steps ending in \"Ans:\". Full adds a reason for every step. Proof gives complete rigor ending in QED.\n\nAfter any solution, write (or tap): \"explain\" for a deeper walkthrough, \"another way\" for a second method, \"harder\" for a practice problem — or \"check\" above your own working to find your first wrong line.\n\nBehind the scenes each answer is computed with an exact math engine where possible and re-checked by an independent verifier before it's written.")
             }
         }
     }
@@ -651,6 +531,16 @@ struct PenpalSettingsView: View {
             Label("Brain", systemImage: "brain.head.profile")
         } footer: {
             Text("Penpal pen reads handwriting on-device, then sends text to Django → Gemini.\n\nLeave the token blank when running the brain locally. A deployed brain requires one (it matches PENPAL_TOKENS on the server).")
+        }
+
+        Section {
+            Toggle("Confirm before solving", isOn: $settings.confirmBeforeSolving)
+        } header: {
+            Label("Calculator", systemImage: "equal.circle")
+        } footer: {
+            Text(settings.confirmBeforeSolving
+                 ? "After you write an expression ending in \"=\", Penpal shows how it read your ink with a Solve button. Nothing is calculated until you tap Solve."
+                 : "Expressions ending in \"=\" are solved and written immediately.")
         }
 
         Section {

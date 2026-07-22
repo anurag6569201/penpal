@@ -108,6 +108,8 @@ struct ContentView: View {
     // chrome made Penpal's indigo presence read as a third-party add-on
     // inside someone else's app; now the shell and the pen are one hand.
     private let accent = Pen.inkAccent
+    private let penpalBarClearance: CGFloat = 82
+    private let stackedOverlayGap: CGFloat = 54
 
     var body: some View {
         NavigationStack {
@@ -245,14 +247,21 @@ struct ContentView: View {
                     noteSurface
 
                     if penpalOn {
-                        penpalBanner
+                        PenpalControlBar(
+                            settings: settings,
+                            activityPhase: penpalActivityPhase,
+                            statusText: penpalStatusText,
+                            onClose: {
+                                withAnimation(Pen.spring) { penpalOn = false }
+                            }
+                        )
                             .padding(.bottom, 20)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
                     if mathChipsVisible {
                         mathFollowUpBar
-                            .padding(.bottom, 76)
+                            .padding(.bottom, penpalBarClearance)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
@@ -260,13 +269,15 @@ struct ContentView: View {
                     // is nothing to interrupt.
                     if onboarding.isShowing {
                         BoxGestureHint { onboarding.dismiss() }
-                            .padding(.bottom, 120)
+                            .padding(.bottom, penpalBarClearance + stackedOverlayGap)
                             .transition(.scale(scale: 0.94).combined(with: .opacity))
                     }
 
                     if showPrefer, settings.replyStyle == "hand", !isWriting, !isThinking {
                         preferenceBar
-                            .padding(.bottom, (penpalOn ? 76 : 28) + (mathChipsVisible ? 52 : 0))
+                            .padding(.bottom,
+                                     (penpalOn ? penpalBarClearance : 28)
+                                     + (mathChipsVisible ? stackedOverlayGap : 0))
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
@@ -351,13 +362,38 @@ struct ContentView: View {
         // Center: tools that act directly on the paper.
         ToolbarItem(placement: .principal) {
             HStack(spacing: 0) {
-                Button { showPhotos = true } label: {
+                Menu {
+                    Button("Add Image Attachment", systemImage: "photo") {
+                        showPhotos = true
+                    }
+                    Divider()
+                    Button("Add Code Block", systemImage: "chevron.left.forwardslash.chevron.right") {
+                        insertPageBlock(CodedPaper.blockStarterHTML, kind: .code, height: 300)
+                    }
+                    Button("Add Mermaid Diagram", systemImage: "point.3.connected.trianglepath.dotted") {
+                        insertPageBlock(CodedPaper.mermaidBlockHTML, kind: .mermaid, height: 300)
+                    }
+                    Button("Add Text Block", systemImage: "text.quote") {
+                        insertPageBlock(CodedPaper.textBlockHTML, kind: .text, height: 180)
+                    }
+                    Button("Add Table Block", systemImage: "tablecells") {
+                        insertPageBlock(CodedPaper.tableBlockHTML, kind: .table, height: 220)
+                    }
+                    Button("Add Checklist Block", systemImage: "checklist") {
+                        insertPageBlock(CodedPaper.checklistBlockHTML, kind: .checklist, height: 210)
+                    }
+                    Divider()
+                    Button("Format Note", systemImage: "textformat.size") {
+                        showFormat = true
+                    }
+                } label: {
                     Image(systemName: "paperclip")
                         .foregroundStyle(Color.primary)
                         .frame(width: 44, height: 40)
                 }
-                .disabled(store.selectedNote == nil)
-                .accessibilityLabel("Attach Photo")
+                .disabled(store.selectedNote == nil || selectedIsCoded)
+                .menuIndicator(.hidden)
+                .accessibilityLabel("Insert on Page")
 
                 Button {
                     toolsVisible.toggle()
@@ -519,7 +555,15 @@ struct ContentView: View {
         .accessibilityHint("Asks Penpal to \(title.lowercased()) the last answer")
     }
 
-    private var penpalBannerText: String {
+    private var penpalActivityPhase: InkThinkingIndicator.Phase? {
+        if voice.isListening { return nil }
+        if isReading { return .reading }
+        if isThinking { return .thinking }
+        if isWriting { return .writing }
+        return nil
+    }
+
+    private var penpalStatusText: String? {
         if voice.isListening {
             return voice.transcript.isEmpty ? "Listening…" : voice.transcript
         }
@@ -534,77 +578,7 @@ struct ContentView: View {
                 ? "Sending \(n) saved \(n == 1 ? "note" : "notes")…"
                 : "Offline — \(n) \(n == 1 ? "note" : "notes") saved for later"
         }
-        return isMathematician
-            ? "Mathematician — write a problem, end with ="
-            : "Companion — write and it replies"
-    }
-
-    private var penpalBanner: some View {
-        HStack(spacing: 8) {
-            if isWriting || isThinking || isReading {
-                // Ink-native progress, not a UIKit spinner. A spinner announces
-                // "software is working"; this reads as a pen at work on paper.
-                InkThinkingIndicator(phase: isWriting ? .writing
-                                            : (isReading ? .reading : .thinking))
-            } else {
-                // Quick capability switcher — one tap, no settings trip.
-                Menu {
-                    ForEach(PenpalSettingsView.capabilities, id: \.tag) { cap in
-                        Button {
-                            settings.capability = cap.tag
-                        } label: {
-                            Label(cap.title, systemImage:
-                                settings.capability == cap.tag ? "checkmark" : cap.icon)
-                        }
-                    }
-                    if isMathematician {
-                        Divider()
-                        Menu {
-                            Picker("Solution detail", selection: $settings.mathDetail) {
-                                Label("Answer only", systemImage: "equal").tag("answer")
-                                Label("Compact steps", systemImage: "list.bullet").tag("compact")
-                                Label("Full working", systemImage: "list.number").tag("full")
-                                Label("Proof", systemImage: "checkmark.seal").tag("proof")
-                            }
-                        } label: {
-                            Label("Solution detail", systemImage: "list.number")
-                        }
-                    }
-                    Divider()
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Label("Capability settings…", systemImage: "slider.horizontal.3")
-                    }
-                } label: {
-                    Image(systemName: isMathematician ? "x.squareroot" : "signature")
-                        .foregroundStyle(Pen.inkAccent)
-                }
-            }
-            Text(penpalBannerText)
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
-                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-            Button {
-                penpalOn = false
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Turn off Penpal mode")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        // Warm Paper: material surface, accent border, paper shadow.
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.25), lineWidth: 1))
-        .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
-        // One element: VoiceOver reads the state as a sentence instead of
-        // walking a menu button, a label and a close button separately.
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Penpal status")
-        .accessibilityValue(penpalBannerText)
+        return nil
     }
 
     private var noteSurface: some View {
@@ -698,8 +672,6 @@ struct ContentView: View {
                 .onChange(of: bodyText) { _, value in
                     store.updateSelectedBody(value)
                 }
-
-            attachmentsStrip
         }
         .padding(14)
         .frame(width: 300, alignment: .leading)
@@ -713,35 +685,6 @@ struct ContentView: View {
                 .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
         )
         .foregroundStyle(.black)
-    }
-
-    @ViewBuilder
-    private var attachmentsStrip: some View {
-        if let note = store.selectedNote, !note.attachments.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(note.attachments) { att in
-                        if let ui = UIImage(contentsOfFile: store.attachmentURL(att).path) {
-                            ZStack(alignment: .topTrailing) {
-                                Image(uiImage: ui)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 88, height: 88)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                Button {
-                                    store.removeAttachment(att.id, from: note.id)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundStyle(.white, .black.opacity(0.55))
-                                }
-                                .offset(x: 4, y: -4)
-                            }
-                        }
-                    }
-                }
-                .padding(.vertical, 8)
-            }
-        }
     }
 
     // MARK: - Actions
@@ -867,6 +810,26 @@ struct ContentView: View {
         store.updateSelectedBody(bodyText)
     }
 
+    private func insertPageBlock(_ html: String, kind: PageBlockKind, height: CGFloat) {
+        penpalOn = false
+        toolsVisible = false
+        proxy.view?.setToolsVisible(false)
+        proxy.view?.insertCodeBlock(html: html, kind: kind, preferredHeight: height)
+        pageEditMode = true
+        bodyFocused = false
+    }
+
+    @discardableResult
+    private func insertImageAttachment(_ data: Data) -> Bool {
+        guard proxy.view?.insertImageBlock(imageData: data) == true else { return false }
+        penpalOn = false
+        toolsVisible = false
+        proxy.view?.setToolsVisible(false)
+        pageEditMode = true
+        bodyFocused = false
+        return true
+    }
+
     private func insertTable() {
         bodyFocused = true
         let table = """
@@ -939,19 +902,21 @@ struct ContentView: View {
 
     @MainActor
     private func importPhoto(_ item: PhotosPickerItem?) async {
-        guard let item, let noteID = store.selectedNoteID else { return }
+        guard let item, store.selectedNoteID != nil else { return }
         defer { photoItem = nil }
         do {
             if let data = try await item.loadTransferable(type: Data.self) {
-                _ = store.addAttachment(imageData: data, to: noteID)
-                return
+                if insertImageAttachment(data) { return }
             }
             statusMessage = "Couldn't add photo."
             showStatus = true
         } catch {
             // Fallback: try raw image data via Transferable image representation.
             if let data = try? await item.loadTransferable(type: PhotoData.self)?.data {
-                _ = store.addAttachment(imageData: data, to: noteID)
+                if !insertImageAttachment(data) {
+                    statusMessage = "Couldn't add photo."
+                    showStatus = true
+                }
             } else {
                 statusMessage = "Couldn't add photo."
                 showStatus = true
@@ -990,8 +955,7 @@ struct ContentView: View {
         }
         Button("Add Page", systemImage: "plus.rectangle.portrait") { proxy.view?.addPage() }
         Button("Insert Code Block", systemImage: "curlybraces") {
-            proxy.view?.insertCodeBlock()
-            pageEditMode = true
+            insertPageBlock(CodedPaper.blockStarterHTML, kind: .code, height: 300)
         }
         Button("Erase Penpal Replies", systemImage: "eraser") { proxy.view?.clearPenpalContent() }
         Divider()

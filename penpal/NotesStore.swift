@@ -172,9 +172,22 @@ nonisolated struct ReplyInk: Identifiable, Codable, Hashable {
 /// the ink so handwriting and Penpal replies annotate on top of it. In the
 /// page's edit mode it can be moved, resized, edited and deleted; in normal
 /// mode it has no border, background or shadow — it's just part of the page.
-nonisolated struct CodeBlock: Identifiable, Codable, Hashable {
+nonisolated enum PageBlockKind: String, Codable, Hashable {
+    case code
+    case mermaid
+    case text
+    case table
+    case checklist
+    case image
+    case web
+}
+
+nonisolated struct PageBlock: Identifiable, Codable, Hashable {
     var id: UUID
     var html: String
+    /// Optional for backward compatibility. Legacy blocks infer their kind
+    /// from their HTML and become explicitly typed the next time they change.
+    var kind: PageBlockKind?
     /// Geometry in canvas *content* coordinates (same space as ink strokes).
     var x: CGFloat
     var y: CGFloat
@@ -184,6 +197,7 @@ nonisolated struct CodeBlock: Identifiable, Codable, Hashable {
 
     init(id: UUID = UUID(),
          html: String,
+         kind: PageBlockKind? = .code,
          x: CGFloat,
          y: CGFloat,
          width: CGFloat,
@@ -191,6 +205,7 @@ nonisolated struct CodeBlock: Identifiable, Codable, Hashable {
          createdAt: Date = .now) {
         self.id = id
         self.html = html
+        self.kind = kind
         self.x = x
         self.y = y
         self.width = width
@@ -199,7 +214,28 @@ nonisolated struct CodeBlock: Identifiable, Codable, Hashable {
     }
 
     var frame: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+
+    var resolvedKind: PageBlockKind {
+        if let kind { return kind }
+        let source = html.lowercased()
+        if source.contains("data-penpal-kind=\"table\"") || source.contains("<table") {
+            return .table
+        }
+        if source.contains("data-penpal-kind=\"checklist\"") || source.contains("type=\"checkbox\"") {
+            return .checklist
+        }
+        if source.contains("data-penpal-kind=\"mermaid\"") || source.contains("class=\"mermaid\"") {
+            return .mermaid
+        }
+        if source.contains("data:image/") { return .image }
+        if source.contains("data-penpal-kind=\"text\"") { return .text }
+        return .code
+    }
 }
+
+/// Source compatibility while the rest of the editor transitions from the
+/// original code-only name to the typed page-block model.
+typealias CodeBlock = PageBlock
 
 /// What kind of paper a note is. `.ink` is the classic PencilKit canvas;
 /// `.coded` renders the note's HTML in a web view — the page IS the paper.

@@ -181,6 +181,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Embedded code-block assets on this page (behind the ink). Each view
     /// carries its own `CodeBlock` model.
     private var codeBlockViews: [CodeBlockView] = []
+    private var persistedBlockSnapshot: [CodeBlock] = []
     /// The one block currently raised above the ink and taking finger input.
     /// Set by tapping a block; cleared by a pencil stroke, a tap elsewhere,
     /// or entering page-edit mode.
@@ -464,6 +465,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // One pass, so saved blocks keep their stored order under the ink
         // (inserting each one directly above the paper would reverse them).
         restackCodeBlocks()
+        persistedBlockSnapshot = codeBlocks
 
         if resetReplyCursor {
             let inkBottom = drawing.strokes.map { $0.renderBounds.maxY }.max() ?? 0
@@ -1160,17 +1162,28 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         view.onDelete = { [weak self] v in
             self?.removeCodeBlock(v)
         }
+        view.onDuplicate = { [weak self] v in
+            self?.duplicateCodeBlock(v)
+        }
+        view.onBringForward = { [weak self] v in
+            self?.moveCodeBlockLayer(v, delta: 1)
+        }
+        view.onSendBackward = { [weak self] v in
+            self?.moveCodeBlockLayer(v, delta: -1)
+        }
         return view
     }
 
-    /// Drop a new code block near the middle of the current viewport and
+    /// Drop a new embedded block near the middle of the current viewport and
     /// enter edit mode so it can be positioned right away.
-    func insertCodeBlock() {
+    func insertCodeBlock(html: String = CodedPaper.blockStarterHTML,
+                         kind: PageBlockKind = .code,
+                         preferredHeight: CGFloat = 300) {
         let w = min(max(240, bounds.width - 48), 560)
-        let h: CGFloat = 300
+        let h = min(max(100, preferredHeight), 520)
         let x = max(leftMargin, (bounds.width - w) / 2)
         let y = max(0, canvas.contentOffset.y + max(24, (bounds.height - h) / 2))
-        let block = CodeBlock(html: CodedPaper.blockStarterHTML,
+        let block = CodeBlock(html: html, kind: kind,
                               x: x, y: y, width: w, height: h)
         let view = makeCodeBlockView(block)
         canvas.addSubview(view)
@@ -1179,6 +1192,24 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         setPageEditMode(true)
         growForCodeBlocks()
         persistCodeBlocks()
+    }
+
+    /// Images use the same embedded-asset model as code/diagram blocks, so
+    /// they live on the page and inherit Arrange mode's move/resize/delete UI.
+    @discardableResult
+    func insertImageBlock(imageData: Data) -> Bool {
+        guard let image = UIImage(data: imageData),
+              image.size.width > 0,
+              let jpeg = image.jpegData(compressionQuality: 0.88) else { return false }
+        let w = min(max(240, bounds.width - 48), 560)
+        let ratio = image.size.height / image.size.width
+        let h = min(max(140, w * ratio), 520)
+        insertCodeBlock(
+            html: CodedPaper.imageBlockHTML(base64JPEG: jpeg.base64EncodedString()),
+            kind: .image,
+            preferredHeight: h
+        )
+        return true
     }
 
     /// Make `target` the page's one interactive block: it rises above the ink
@@ -1302,8 +1333,69 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         persistCodeBlocks()
     }
 
+    private func duplicateCodeBlock(_ view: CodeBlockView) {
+        guard let index = codeBlockViews.firstIndex(where: { $0 === view }) else { return }
+        var copy = view.block
+        copy.id = UUID()
+        copy.x += 24
+        copy.y += 24
+        copy.createdAt = .now
+        let duplicate = makeCodeBlockView(copy)
+        canvas.addSubview(duplicate)
+        codeBlockViews.insert(duplicate, at: index + 1)
+        applyBlockOrder()
+        growForCodeBlocks()
+        persistCodeBlocks()
+    }
+
+    private func moveCodeBlockLayer(_ view: CodeBlockView, delta: Int) {
+        guard let index = codeBlockViews.firstIndex(where: { $0 === view }) else { return }
+        let destination = min(max(0, index + delta), codeBlockViews.count - 1)
+        guard destination != index else { return }
+        codeBlockViews.swapAt(index, destination)
+        applyBlockOrder()
+        persistCodeBlocks()
+    }
+
+    private func applyBlockOrder() {
+        if isPageEditMode {
+            canvas.bringSubviewToFront(renderer)
+            for view in codeBlockViews { canvas.bringSubviewToFront(view) }
+        } else {
+            restackCodeBlocks()
+        }
+    }
+
     private func persistCodeBlocks() {
-        onCodeBlocksChange?(currentCodeBlocks)
+        let blocks = currentCodeBlocks
+        guard blocks != persistedBlockSnapshot else { return }
+        let previous = persistedBlockSnapshot
+        canvas.undoManager?.registerUndo(withTarget: self) { target in
+            target.restoreCodeBlocks(previous)
+        }
+        canvas.undoManager?.setActionName("Edit Block")
+        persistedBlockSnapshot = blocks
+        onCodeBlocksChange?(blocks)
+        publishUndoRedo()
+    }
+
+    private func restoreCodeBlocks(_ blocks: [CodeBlock]) {
+        let redo = currentCodeBlocks
+        canvas.undoManager?.registerUndo(withTarget: self) { target in
+            target.restoreCodeBlocks(redo)
+        }
+        setActiveCodeBlock(nil)
+        codeBlockViews.forEach { $0.removeFromSuperview() }
+        codeBlockViews = blocks.map { block in
+            let view = makeCodeBlockView(block)
+            canvas.addSubview(view)
+            return view
+        }
+        persistedBlockSnapshot = blocks
+        applyBlockOrder()
+        growForCodeBlocks()
+        onCodeBlocksChange?(blocks)
+        publishUndoRedo()
     }
 
     /// Grow the paper so the lowest block always has room below it.

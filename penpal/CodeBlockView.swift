@@ -25,7 +25,8 @@ import SwiftUI
 
 // MARK: - On-page asset (UIKit)
 
-final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDelegate {
+final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDelegate,
+                           WKScriptMessageHandler {
 
     /// Documents loaded with `baseURL: nil` get a NULL origin: WebKit then
     /// refuses storage, denies resource loads ("Couldn't open … Permission
@@ -33,6 +34,175 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     /// renders a real simulation needs a real origin, and `https://localhost`
     /// gives it one without touching the network.
     static let contentBaseURL = URL(string: "https://localhost/")
+
+    private static let editingBridgeJavaScript = """
+    (() => {
+      let timer = null;
+      let selectedCell = null;
+      const editable = () => {
+        document.querySelectorAll(
+          '[data-penpal-editable], td, th, .penpal-item-text'
+        ).forEach(el => {
+          el.setAttribute('contenteditable', 'true');
+          el.style.webkitUserSelect = 'text';
+          el.style.userSelect = 'text';
+        });
+      };
+      const commit = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          window.webkit.messageHandlers.penpalBlockChanged.postMessage({
+            html: document.body.innerHTML
+          });
+        }, 180);
+      };
+      const immediateCommit = () => {
+        clearTimeout(timer);
+        window.webkit.messageHandlers.penpalBlockChanged.postMessage({
+          html: document.body.innerHTML
+        });
+      };
+      document.addEventListener('focusin', event => {
+        if (event.target.matches('td,th')) selectedCell = event.target;
+      }, true);
+      document.addEventListener('input', commit, true);
+      document.addEventListener('change', event => {
+        if (event.target.matches('input[type=checkbox]')) {
+          event.target.toggleAttribute('checked', event.target.checked);
+        }
+        immediateCommit();
+      }, true);
+
+      window.penpalBlockCommand = command => {
+        const [kind, operation] = command.split(':');
+        if (kind === 'table') {
+          const table = document.querySelector('table');
+          if (!table) return;
+          const rows = Array.from(table.rows);
+          const columnCount = Math.max(1, ...rows.map(row => row.cells.length));
+          if (operation === 'addRow') {
+            const body = table.tBodies[0] || table.createTBody();
+            const selectedRow = selectedCell?.closest('tr');
+            const insertAt = selectedRow?.parentElement === body
+              ? selectedRow.sectionRowIndex + 1 : body.rows.length;
+            const row = body.insertRow(insertAt);
+            for (let index = 0; index < columnCount; index++) {
+              row.insertCell().textContent = '';
+            }
+          } else if (operation === 'removeRow') {
+            const body = table.tBodies[0];
+            if (body && body.rows.length > 1) {
+              const selectedRow = selectedCell?.closest('tr');
+              const index = selectedRow?.parentElement === body
+                ? selectedRow.sectionRowIndex : body.rows.length - 1;
+              body.deleteRow(index);
+              selectedCell = null;
+            }
+          } else if (operation === 'addColumn') {
+            const selectedIndex = selectedCell?.cellIndex ?? columnCount - 1;
+            rows.forEach(row => {
+              const cell = row.parentElement?.tagName === 'THEAD'
+                ? document.createElement('th') : document.createElement('td');
+              cell.textContent = '';
+              row.insertBefore(cell, row.cells[selectedIndex + 1] || null);
+            });
+          } else if (operation === 'removeColumn') {
+            const selectedIndex = selectedCell?.cellIndex ?? columnCount - 1;
+            if (columnCount > 1) rows.forEach(row => {
+              if (row.cells[selectedIndex]) row.deleteCell(selectedIndex);
+            });
+            selectedCell = null;
+          } else if (operation === 'toggleHeader') {
+            let head = table.tHead;
+            if (head) {
+              const old = head.rows[0];
+              const replacement = document.createElement('tr');
+              Array.from(old.cells).forEach(cell => {
+                const next = document.createElement('td');
+                next.innerHTML = cell.innerHTML;
+                replacement.appendChild(next);
+              });
+              table.tBodies[0].insertBefore(replacement, table.tBodies[0].firstChild);
+              head.remove();
+            } else {
+              const body = table.tBodies[0];
+              const old = body?.rows[0];
+              if (old) {
+                head = table.createTHead();
+                const replacement = document.createElement('tr');
+                Array.from(old.cells).forEach(cell => {
+                  const next = document.createElement('th');
+                  next.innerHTML = cell.innerHTML;
+                  replacement.appendChild(next);
+                });
+                head.appendChild(replacement);
+                old.remove();
+              }
+            }
+          } else if (operation.startsWith('align')) {
+            const alignment = operation.replace('align', '').toLowerCase();
+            (selectedCell ? [selectedCell] : Array.from(table.querySelectorAll('td,th')))
+              .forEach(cell => cell.style.textAlign = alignment);
+          } else if (operation === 'merge' && selectedCell) {
+            const next = selectedCell.nextElementSibling;
+            if (next) {
+              selectedCell.colSpan = (selectedCell.colSpan || 1) + (next.colSpan || 1);
+              selectedCell.innerHTML += next.innerHTML ? ' ' + next.innerHTML : '';
+              next.remove();
+            }
+          } else if (operation === 'split' && selectedCell && selectedCell.colSpan > 1) {
+            selectedCell.colSpan -= 1;
+            selectedCell.parentElement.insertBefore(
+              document.createElement(selectedCell.tagName.toLowerCase()),
+              selectedCell.nextSibling
+            );
+          } else if (operation === 'clear') {
+            table.querySelectorAll('td,th').forEach(cell => cell.textContent = '');
+          }
+        } else if (kind === 'checklist') {
+          const list = document.querySelector('.list');
+          if (!list) return;
+          if (operation === 'add') {
+            const label = document.createElement('label');
+            label.innerHTML =
+              '<input type="checkbox"><span class="penpal-item-text" contenteditable="true">New item</span>';
+            list.appendChild(label);
+          } else if (operation === 'remove' && list.lastElementChild) {
+            list.lastElementChild.remove();
+          } else if (operation === 'clearCompleted') {
+            list.querySelectorAll('input:checked').forEach(input => input.closest('label')?.remove());
+          } else if (operation === 'uncheck') {
+            list.querySelectorAll('input').forEach(input => {
+              input.checked = false; input.removeAttribute('checked');
+            });
+          }
+        } else if (kind === 'text') {
+          const text = document.querySelector('[data-penpal-editable]');
+          if (!text) return;
+          if (operation === 'body') text.style.fontSize = '16px';
+          if (operation === 'heading') text.style.fontSize = '24px';
+          if (operation === 'callout') {
+            text.style.borderLeft = '4px solid #4A4E9E';
+            text.style.paddingLeft = '14px';
+          }
+          if (operation === 'left') text.style.textAlign = 'left';
+          if (operation === 'center') text.style.textAlign = 'center';
+        } else if (kind === 'image') {
+          const image = document.querySelector('img');
+          if (!image) return;
+          if (operation === 'fit') image.style.objectFit = 'contain';
+          if (operation === 'fill') image.style.objectFit = 'cover';
+          const current = Number(image.dataset.rotation || 0);
+          if (operation === 'rotateLeft') image.dataset.rotation = current - 90;
+          if (operation === 'rotateRight') image.dataset.rotation = current + 90;
+          image.style.transform = `rotate(${image.dataset.rotation || current}deg)`;
+        }
+        editable();
+        immediateCommit();
+      };
+      editable();
+    })();
+    """
 
     private(set) var block: CodeBlock
 
@@ -42,6 +212,10 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     private let activeRing = CAShapeLayer()
     private var handles: [UIView] = []
     private let toolbar = UIStackView()
+    private lazy var contextButton = makeMenuButton(
+        system: block.resolvedKind.toolbarIcon,
+        menu: makeContextMenu()
+    )
 
     /// Fired when geometry changes (move/resize finished) so the note persists.
     var onChange: ((CodeBlock) -> Void)?
@@ -49,6 +223,9 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     var onEditCode: ((CodeBlockView) -> Void)?
     /// Fired when the user taps the block's delete button.
     var onDelete: ((CodeBlockView) -> Void)?
+    var onDuplicate: ((CodeBlockView) -> Void)?
+    var onBringForward: ((CodeBlockView) -> Void)?
+    var onSendBackward: ((CodeBlockView) -> Void)?
 
     private var isEditing = false
     private let minSize = CGSize(width: 80, height: 60)
@@ -122,14 +299,25 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         // A block is meant to RUN — be explicit rather than relying on the
         // default, which has changed across WebKit versions.
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        config.userContentController.addUserScript(WKUserScript(
+            source: Self.editingBridgeJavaScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
         webView = WKWebView(frame: .zero, configuration: config)
         super.init(frame: block.frame)
+        config.userContentController.add(self, name: "penpalBlockChanged")
         setup()
         webView.navigationDelegate = self
         reload()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit {
+        webView.configuration.userContentController
+            .removeScriptMessageHandler(forName: "penpalBlockChanged")
+    }
 
     private func setup() {
         backgroundColor = .clear
@@ -198,8 +386,22 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         toolbar.layer.shadowRadius = 6
         toolbar.layer.shadowOffset = CGSize(width: 0, height: 2)
         toolbar.isHidden = true
-        toolbar.addArrangedSubview(makeToolButton(system: "chevron.left.forwardslash.chevron.right",
+        toolbar.addArrangedSubview(contextButton)
+        toolbar.addArrangedSubview(makeToolButton(system: "pencil",
                                                   action: #selector(tapEditCode)))
+        toolbar.addArrangedSubview(makeToolButton(system: "plus.square.on.square",
+                                                  action: #selector(tapDuplicate)))
+        toolbar.addArrangedSubview(makeMenuButton(
+            system: "square.2.layers.3d",
+            menu: UIMenu(children: [
+                UIAction(title: "Bring Forward", image: UIImage(systemName: "square.2.layers.3d.top.filled")) {
+                    [weak self] _ in guard let self else { return }; self.onBringForward?(self)
+                },
+                UIAction(title: "Send Backward", image: UIImage(systemName: "square.2.layers.3d.bottom.filled")) {
+                    [weak self] _ in guard let self else { return }; self.onSendBackward?(self)
+                },
+            ])
+        ))
         toolbar.addArrangedSubview(makeToolButton(system: "trash",
                                                   action: #selector(tapDelete),
                                                   destructive: true))
@@ -244,6 +446,97 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         return b
     }
 
+    private func makeMenuButton(system: String, menu: UIMenu) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: system)
+        config.baseForegroundColor = .tintColor
+        config.preferredSymbolConfigurationForImage =
+            UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        config.contentInsets = .init(top: 4, leading: 6, bottom: 4, trailing: 6)
+        let button = UIButton(configuration: config)
+        button.menu = menu
+        button.showsMenuAsPrimaryAction = true
+        return button
+    }
+
+    private func action(_ title: String, system: String,
+                        command: String) -> UIAction {
+        UIAction(title: title, image: UIImage(systemName: system)) { [weak self] _ in
+            self?.runBlockCommand(command)
+        }
+    }
+
+    private func makeContextMenu() -> UIMenu {
+        switch block.resolvedKind {
+        case .table:
+            return UIMenu(title: "Table", children: [
+                action("Add Row", system: "rectangle.split.1x2", command: "table:addRow"),
+                action("Remove Row", system: "minus.rectangle", command: "table:removeRow"),
+                action("Add Column", system: "rectangle.split.2x1", command: "table:addColumn"),
+                action("Remove Column", system: "minus.rectangle", command: "table:removeColumn"),
+                action("Toggle Header", system: "bold", command: "table:toggleHeader"),
+                UIMenu(title: "Cell Alignment", image: UIImage(systemName: "text.alignleft"),
+                       children: [
+                        action("Left", system: "text.alignleft", command: "table:alignLeft"),
+                        action("Center", system: "text.aligncenter", command: "table:alignCenter"),
+                        action("Right", system: "text.alignright", command: "table:alignRight"),
+                       ]),
+                action("Merge With Next Cell", system: "rectangle.2.swap", command: "table:merge"),
+                action("Split Cell", system: "rectangle.split.2x1", command: "table:split"),
+                action("Clear Table", system: "eraser", command: "table:clear"),
+            ])
+        case .checklist:
+            return UIMenu(title: "Checklist", children: [
+                action("Add Item", system: "plus", command: "checklist:add"),
+                action("Remove Last Item", system: "minus", command: "checklist:remove"),
+                action("Clear Completed", system: "checkmark.circle", command: "checklist:clearCompleted"),
+                action("Uncheck All", system: "circle", command: "checklist:uncheck"),
+            ])
+        case .text:
+            return UIMenu(title: "Text", children: [
+                action("Body Style", system: "textformat", command: "text:body"),
+                action("Heading Style", system: "textformat.size.larger", command: "text:heading"),
+                action("Callout Style", system: "quote.bubble", command: "text:callout"),
+                action("Align Left", system: "text.alignleft", command: "text:left"),
+                action("Align Center", system: "text.aligncenter", command: "text:center"),
+            ])
+        case .image:
+            return UIMenu(title: "Image", children: [
+                action("Fit", system: "arrow.down.right.and.arrow.up.left", command: "image:fit"),
+                action("Fill", system: "arrow.up.left.and.arrow.down.right", command: "image:fill"),
+                action("Rotate Left", system: "rotate.left", command: "image:rotateLeft"),
+                action("Rotate Right", system: "rotate.right", command: "image:rotateRight"),
+            ])
+        case .mermaid:
+            return UIMenu(title: "Diagram", children: [
+                UIAction(title: "Edit Mermaid Source", image: UIImage(systemName: "pencil")) {
+                    [weak self] _ in guard let self else { return }; self.onEditCode?(self)
+                },
+                UIAction(title: "Reload Diagram", image: UIImage(systemName: "arrow.clockwise")) {
+                    [weak self] _ in self?.reload()
+                },
+            ])
+        case .web:
+            return UIMenu(title: "Web Block", children: [
+                UIAction(title: "Edit Source", image: UIImage(systemName: "pencil")) {
+                    [weak self] _ in guard let self else { return }; self.onEditCode?(self)
+                },
+                UIAction(title: "Reload", image: UIImage(systemName: "arrow.clockwise")) {
+                    [weak self] _ in self?.reload()
+                },
+            ])
+        case .code:
+            return UIMenu(title: "Code Block", children: [
+                UIAction(title: "Edit Source", image: UIImage(systemName: "pencil")) {
+                    [weak self] _ in guard let self else { return }; self.onEditCode?(self)
+                },
+                UIAction(title: "Run / Reload", image: UIImage(systemName: "play")) {
+                    [weak self] _ in self?.reload()
+                },
+            ])
+        }
+    }
+
     // MARK: Content
 
     func reload() {
@@ -251,11 +544,35 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
                                baseURL: Self.contentBaseURL)
     }
 
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard message.name == "penpalBlockChanged",
+              let body = message.body as? [String: Any],
+              let html = body["html"] as? String,
+              !html.isEmpty,
+              html != block.html else { return }
+        block.html = html
+        if block.kind == nil { block.kind = block.resolvedKind }
+        onChange?(block)
+    }
+
+    private func runBlockCommand(_ command: String) {
+        webView.evaluateJavaScript("window.penpalBlockCommand('\(command)')") {
+            [weak self] _, error in
+            if error != nil { self?.reload() }
+        }
+    }
+
     /// Apply an edited model (new code and/or geometry) and re-render.
     func apply(_ newBlock: CodeBlock) {
         let htmlChanged = newBlock.html != block.html
+        let kindChanged = newBlock.resolvedKind != block.resolvedKind
         block = newBlock
         frame = newBlock.frame
+        if kindChanged {
+            contextButton.configuration?.image = UIImage(systemName: block.resolvedKind.toolbarIcon)
+            contextButton.menu = makeContextMenu()
+        }
         setNeedsLayout()
         if htmlChanged { reload() }
     }
@@ -437,6 +754,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     }
 
     @objc private func tapEditCode() { onEditCode?(self) }
+    @objc private func tapDuplicate() { onDuplicate?(self) }
     @objc private func tapDelete() { onDelete?(self) }
 
     // Body pan must ignore touches that land on a handle or a control, so
@@ -457,6 +775,20 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
             if v.isDescendant(of: toolbar) { return false }
         }
         return true
+    }
+}
+
+private extension PageBlockKind {
+    var toolbarIcon: String {
+        switch self {
+        case .code: "chevron.left.forwardslash.chevron.right"
+        case .mermaid: "point.3.connected.trianglepath.dotted"
+        case .text: "text.quote"
+        case .table: "tablecells"
+        case .checklist: "checklist"
+        case .image: "photo"
+        case .web: "globe"
+        }
     }
 }
 

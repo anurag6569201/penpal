@@ -104,6 +104,70 @@ enum CodedPaper {
     </script>
     """
 
+    static let mermaidBlockHTML = """
+    <style>
+      html, body { margin: 0; min-height: 100%; font-family: -apple-system, sans-serif; }
+      .mermaid { display: flex; justify-content: center; align-items: center; min-height: 100%; }
+    </style>
+    <pre class="mermaid" data-penpal-kind="mermaid">
+    flowchart LR
+      Idea[Idea] --> Build[Build]
+      Build --> Learn[Learn]
+    </pre>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+    """
+
+    static let textBlockHTML = """
+    <style>
+      html, body { margin: 0; font-family: -apple-system, sans-serif; color: #252530; }
+      .note { padding: 18px; border-radius: 14px; background: rgba(99,102,241,.08);
+              border: 1px solid rgba(99,102,241,.18); line-height: 1.45; }
+      h3 { margin: 0 0 8px; }
+    </style>
+    <section class="note" data-penpal-kind="text" data-penpal-editable="true">
+      <h3>Text block</h3><p>Tap the block, then tap this text to edit it directly.</p>
+    </section>
+    """
+
+    static let tableBlockHTML = """
+    <style>
+      html, body { margin: 0; font-family: -apple-system, sans-serif; color: #252530; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border: 1px solid rgba(80,80,95,.28); padding: 10px; text-align: left; }
+      th { background: rgba(99,102,241,.1); }
+    </style>
+    <table data-penpal-kind="table">
+      <thead><tr><th>Column 1</th><th>Column 2</th><th>Column 3</th></tr></thead>
+      <tbody><tr><td></td><td></td><td></td></tr><tr><td></td><td></td><td></td></tr></tbody>
+    </table>
+    """
+
+    static let checklistBlockHTML = """
+    <style>
+      html, body { margin: 0; font-family: -apple-system, sans-serif; color: #252530; }
+      .list { padding: 12px 16px; border-radius: 14px; background: rgba(99,102,241,.06); }
+      label { display: flex; gap: 10px; align-items: center; padding: 8px 0; font-size: 16px; }
+      input { width: 20px; height: 20px; accent-color: #4A4E9E; }
+    </style>
+    <div class="list" data-penpal-kind="checklist">
+      <label><input type="checkbox"><span class="penpal-item-text">First item</span></label>
+      <label><input type="checkbox"><span class="penpal-item-text">Second item</span></label>
+      <label><input type="checkbox"><span class="penpal-item-text">Third item</span></label>
+    </div>
+    """
+
+    static func imageBlockHTML(base64JPEG: String) -> String {
+        """
+        <style>
+          html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+          img { width: 100%; height: 100%; display: block; object-fit: contain; }
+        </style>
+        <img data-penpal-kind="image"
+             src="data:image/jpeg;base64,\(base64JPEG)" alt="Note attachment">
+        """
+    }
+
     /// Wraps a code block's source in a tight, transparent document (no page
     /// padding), so the asset fills its frame and blends into the paper.
     static func blockDocument(from source: String) -> String {
