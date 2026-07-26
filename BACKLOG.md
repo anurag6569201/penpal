@@ -437,6 +437,40 @@ curve than solving one; pointing it at a different model shouldn't touch the
 solve pipeline's routing. Defaults to empty, falling back to `GEMINI_MODEL` —
 same opt-in-only shape as `GEMINI_FAST_MODEL` (PEN-29).
 
+**The bug that ate a day, and its actual cause — sub-3pt PencilKit strokes
+render transparent but stay selectable.** Imported ink wrote, animated, then
+turned invisible the instant the animation finished. It was fully present the
+whole time: lasso Select All highlighted it, the eraser removed it, undo
+restored it — it simply wasn't *painted*. The real cause is a PencilKit
+rendering threshold: a programmatically-built `PKStroke` whose point `size` is
+below ~3 pt is kept as selectable geometry but drawn transparent (or nearly
+so). Imported prose commonly computes a tip width of 1.6–2 pt, so every glyph
+landed under the floor. Companion/Mathematician replies escaped it only by
+accident — their width is boosted to match the user's captured pen tip, which
+happens to clear 3 pt.
+
+The fix is one line in `pkStroke`: `minWidth = max(3, …)`. Everything else
+tried first was chasing the wrong layer and is recorded here so nobody repeats
+it: it is **not** a persistence bug (the strokes saved fine), **not** a
+first-responder/active-canvas bug (opening the markup tray didn't help),
+**not** a repaint bug (re-assigning `.drawing`, a clear-then-set, and a
+sub-pixel scroll nudge all failed), and **not** a reason to detour onto the
+`renderer.drawStatic` overlay (which rendered but couldn't be tray-erased).
+The diagnostic that would have found it in five minutes: log each committed
+stroke's `renderBounds` and tip width — the width printed `1.20`/`1.65` early
+and was dismissed because Companion ink used similar numbers, before the 3 pt
+threshold was known. Lesson: when ink is *selectable but invisible*, suspect
+stroke geometry (size/width) before repaint or persistence.
+
+**Decision — one bake path, selected by `purpose`.** With visibility fixed,
+import no longer needs its own writer: it flows through the same
+`renderReply(purpose: .pageImport)` Companion and Mathematician use, so
+imported ink is native canvas ink — visible, persistent, and erasable/
+selectable by the markup tray like everything else. `purpose` carries the
+import-only differences (always handwriting even when replies are configured
+as typed text; tighter line spacing via `importLineStep ≈ lineGap * 0.65`)
+without forking the pipeline.
+
 **Still open:** positional layout preservation (v2, above); an on-page entry
 point beyond the "Insert on Page" menu (camera capture directly, rather than
 picking an existing photo); telemetry for image-blocks-dropped-for-no-box, to

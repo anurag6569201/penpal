@@ -132,8 +132,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Fired whenever the typed (font-style) Penpal texts on this page change,
     /// so the store can persist them with the note.
     var onTypedTextsChange: (([TypedNoteText]) -> Void)?
-    /// Fired whenever the AI hand-written replies on this page change,
-    /// so the store can persist them with the note.
+    /// Fired whenever legacy renderer-overlay replies on this page change.
+    /// New hand-written content is stored in the PencilKit drawing instead.
     var onReplyInksChange: (([ReplyInk]) -> Void)?
     /// Fired whenever the embedded code blocks change (added/moved/resized/
     /// edited/deleted), so the store can persist them with the note.
@@ -161,9 +161,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     /// Vertical step between imported lines/blocks. A ruled reply leaves a
     /// full `lineGap` (plus a little) between lines so it sits on the ruling;
-    /// an imported page is dense prose/maths, so it reads better tightened to
-    /// roughly half that — about 55% less gap.
-    private var importLineStep: CGFloat { lineGap * 0.5 }
+    /// an imported page is dense prose/maths, so it reads better tightened —
+    /// but `0.5` felt cramped, so `0.65` keeps it snug without crowding.
+    private var importLineStep: CGFloat { lineGap * 0.70 }
 
     /// Reply writing size, derived from the RULED LINES — not from measuring
     /// the user's ink. Training guides put the ascender line at 2 x-heights,
@@ -196,7 +196,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private var typedLabels: [UILabel] = []
     /// Persisted models behind `typedLabels` (same order is not required).
     private var placedTexts: [TypedNoteText] = []
-    /// Persisted AI replies already on this page (renderer strokes).
+    /// Legacy renderer replies that could not be migrated into PencilKit.
     private var placedInks: [ReplyInk] = []
     /// Embedded code-block assets on this page (behind the ink). Each view
     /// carries its own `CodeBlock` model.
@@ -213,15 +213,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// rest of the page stays live — the focused counterpart to the page-wide
     /// Arrange button. Mutually exclusive with `isPageEditMode`.
     private weak var editingBlock: CodeBlockView?
-    /// Hand-style reply strokes currently animating; once the animation ends
-    /// (or is interrupted) they're persisted with the note as renderer ink —
-    /// never converted to PencilKit strokes, which render differently and
-    /// would visibly change the reply the moment it finished.
+    /// Hand-style reply strokes currently animating; each completed stroke is
+    /// baked into the PencilKit drawing so every markup tool can act on it.
     private var pendingBake: (strokes: [InkStroke], baseWidth: CGFloat,
                               bottomY: CGFloat, color: UIColor)?
 
-    /// Long-press deletion of Penpal content (the PencilKit eraser can't
-    /// touch it — replies aren't canvas strokes).
+    /// Long-press deletion for typed content and any unmigrated legacy reply.
     private enum PenpalHit { case reply(UUID), typed(Int) }
     private var pendingHit: PenpalHit?
     private var editMenu: UIEditMenuInteraction?
@@ -435,6 +432,39 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     var canUndo: Bool { canvas.undoManager?.canUndo ?? false }
     var canRedo: Bool { canvas.undoManager?.canRedo ?? false }
 
+    /// Converts old `ReplyInk` sidecars into native PencilKit strokes when a
+    /// note opens. Migration is all-or-nothing per reply so a malformed stroke
+    /// can never leave a duplicated half-canvas/half-overlay reply.
+    private func migrateReplyInks(_ replyInks: [ReplyInk],
+                                  into drawing: PKDrawing)
+        -> (drawing: PKDrawing, remaining: [ReplyInk], didMigrate: Bool) {
+        var drawingStrokes = drawing.strokes
+        var remaining: [ReplyInk] = []
+        var didMigrate = false
+
+        for ink in replyInks {
+            guard !ink.strokes.isEmpty else {
+                didMigrate = true
+                continue
+            }
+            let converted = ink.strokes.compactMap { persisted -> PKStroke? in
+                let smoothed = HandwritingRenderer.smoothed(
+                    persisted.inkStroke, amount: CGFloat(settings.smoothness))
+                return Self.pkStroke(from: smoothed,
+                                     baseWidth: ink.baseWidth,
+                                     color: bakedInkColor)
+            }
+            guard converted.count == ink.strokes.count else {
+                remaining.append(ink)
+                continue
+            }
+            drawingStrokes.append(contentsOf: converted)
+            didMigrate = true
+        }
+
+        return (PKDrawing(strokes: drawingStrokes), remaining, didMigrate)
+    }
+
     func loadDrawing(_ drawing: PKDrawing,
                      typedTexts: [TypedNoteText] = [],
                      replyInks: [ReplyInk] = [],
@@ -449,9 +479,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         dismissIntentChip()
         idleTimer?.invalidate()
 
+        let migration = migrateReplyInks(replyInks, into: drawing)
         suppressChanges = true
-        canvas.drawing = drawing
-        lastReplyStrokeCount = drawing.strokes.count
+        canvas.drawing = migration.drawing
+        lastReplyStrokeCount = migration.drawing.strokes.count
 
         typedLabels.forEach { $0.removeFromSuperview() }
         typedLabels.removeAll()
@@ -468,11 +499,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             typedBottom = max(typedBottom, label.frame.maxY)
         }
 
-        // Redraw saved AI replies exactly as they were written — same
-        // renderer, same layers, no animation.
-        placedInks = replyInks
+        // Only malformed legacy replies remain overlays; successfully
+        // converted replies now live in `canvas.drawing`.
+        placedInks = migration.remaining
         var replyBottom: CGFloat = 0
-        for ink in replyInks {
+        for ink in migration.remaining {
             renderer.drawStatic(ink.strokes.map(\.inkStroke), baseWidth: ink.baseWidth)
             replyBottom = max(replyBottom, ink.bottomY)
         }
@@ -501,20 +532,24 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         persistedBlockSnapshot = codeBlocks
 
         if resetReplyCursor {
-            let inkBottom = drawing.strokes.map { $0.renderBounds.maxY }.max() ?? 0
+            let inkBottom = canvas.drawing.strokes.map { $0.renderBounds.maxY }.max() ?? 0
             lastReplyBottom = max(inkBottom, max(typedBottom, replyBottom))
             if lastReplyBottom > 0 { lastReplyBottom += lineGap }
         }
         // PKDrawing().bounds is CGRect.null for an empty drawing, whose maxY
         // is +inf — that would poison contentHeight (infinite layer sizes,
         // broken canvas). Only trust bounds when there are strokes.
-        let inkMaxY = drawing.strokes.isEmpty ? 0 : drawing.bounds.maxY
+        let inkMaxY = canvas.drawing.strokes.isEmpty ? 0 : canvas.drawing.bounds.maxY
         contentHeight = max(bounds.height, inkMaxY + lineGap * 4,
                             typedBottom + lineGap * 4, replyBottom + lineGap * 4,
                             blockBottom + lineGap * 4,
                             lastReplyBottom + lineGap * 4)
         updateContentLayout()
         suppressChanges = false
+        if migration.didMigrate {
+            onDrawingChange?(canvas.drawing)
+            onReplyInksChange?(placedInks)
+        }
         publishUndoRedo()
     }
 
@@ -1035,9 +1070,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // Matched absolute widths ≈ user tip; bare baseWidth needs a bigger
         // PK compensation for the animation→canvas handoff.
         let boost: CGFloat = hasWidths ? 0.95 : 1.9
-        let minWidth: CGFloat = hasWidths
-            ? max(1.2, baseWidth * 0.78)
-            : max(1.9, baseWidth * 0.9)
+        // PencilKit's programmatic stroke renderer effectively quantizes tiny
+        // point sizes: below ~3 pt a stroke can remain lasso-selectable while
+        // rendering transparent or nearly transparent. Imported prose commonly
+        // computes to 1.6–2 pt, so enforce the same practical floor as a real
+        // PencilKit pen stroke.
+        let minWidth = max(CGFloat(3), baseWidth * (hasWidths ? 0.78 : 0.9))
 
         func point(_ location: CGPoint, _ time: TimeInterval, _ width: CGFloat) -> PKStrokePoint {
             PKStrokePoint(location: location,
@@ -2915,19 +2953,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
     }
 
-    /// Walks the imported blocks top to bottom. Text/math go through
-    /// `writeReplyText` — the *exact* path Companion and Mathematician
-    /// replies use — because that path both animates the pen AND bakes ink
-    /// that actually paints. Everything else was a detour: three custom
-    /// write paths all produced ink that committed to `canvas.drawing`
-    /// (provably: it was selectable) yet never painted, because a
-    /// PKCanvasView only repaints its ink layer when something drives
-    /// compositing, and the reply animation is what does that. So instead
-    /// of reproducing the reply pipeline, import now IS the reply pipeline.
+    /// Walks the imported blocks top to bottom. Text/math use the exact native
+    /// PencilKit bake pipeline used by Companion and Mathematician, while image
+    /// crops remain embedded page blocks.
     ///
-    /// `writeReplyText` no-ops if the pen is already writing, so blocks are
-    /// strictly serialized: the next one starts only once the pen is idle
-    /// AND `pendingBake` is clear (the whole previous block has baked).
+    /// Blocks are strictly serialized: the next one starts only once the pen
+    /// is idle and `pendingBake` is clear (the previous block has fully baked).
     /// Image blocks land instantly between text blocks, in the same flow.
     private func writeImportedBlocks(_ blocks: [PenpalAPI.ImportedBlock],
                                      sourceImage: UIImage) {
@@ -2935,12 +2966,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             onStatus?("Nothing readable was found on that page.")
             return
         }
-        // Open the markup tray (as the user asked) so the page is in its
-        // normal writing state — pen selected, canvas active — while import
-        // writes. This is no longer load-bearing for visibility (the overlay
-        // path in `writeImportedReply` renders regardless), but it keeps the
-        // experience consistent with a hand-drawn session and leaves the pen
-        // ready for the user to annotate the moment import finishes.
+        // Keep the canvas first responder while import writes and leave the
+        // markup tools ready to select, erase, or annotate the imported ink.
         setToolsVisible(true)
         onMarkupOpened?()
 
@@ -2985,23 +3012,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         writeNext()
     }
 
-    /// Writes one imported text block as renderer-overlay reply ink — the
-    /// path the app actually paints reply ink with, and the only one that's
-    /// reliably visible for a write launched from a menu.
-    ///
-    /// History that shaped this: routing import through `writeReplyText` (a
-    /// PencilKit `bakeStroke`) left ink that committed to `canvas.drawing`
-    /// (selectable, erasable) but NEVER PAINTED — a PKCanvasView won't repaint
-    /// a programmatic drawing change made from a menu action until an
-    /// interaction (Select All, scroll) forces it, and nothing I tried
-    /// (first-responder, opening the tray, re-assigning the drawing, a
-    /// scroll-nudge) forced it reliably. So import stays on the overlay: the
-    /// renderer animates the strokes and keeps its layers (no per-stroke
-    /// handler retires them), and the block is persisted as a `ReplyInk` that
-    /// `loadDrawing` redraws with `drawStatic`. Trade-off: overlay ink isn't
-    /// tray-eraser-erasable (long-press "Delete Penpal Reply" / Undo instead).
+    /// Writes one imported text/math block as native canvas ink. Import always
+    /// uses handwriting, even when conversational replies are configured as
+    /// typed text, because the imported page must remain editable by markup.
     private func writeImportedReply(_ text: String, completion: @escaping () -> Void) {
-        publishForVoiceOver(text, isAnswer: false)   // PEN-32
         let originY = max(lastReplyBottom + importLineStep, rulesTopInset + lineGap)
         let virtualBounds = CGRect(x: 0, y: 0, width: bounds.width,
                                    height: contentHeight + max(400, bounds.height))
@@ -3013,74 +3027,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                        detectedLines: [],
                                        needsNewPage: false)
 
-        if settings.replyStyle == "font" {
-            let bottom = writeTypedReply(text, placement: placement)
-            lastReplyBottom = bottom
-            ensureRoom(below: bottom + lineGap * 2)
-            completion()
-            return
-        }
-
-        PersonalFontStore.shared.clearVAECache()
-        InkUnity.shared.beginSentence()
-        let sequence = StrokeFont.layoutSequence(text: text,
-                                                 origin: placement.origin,
-                                                 xHeight: placement.xHeight,
-                                                 maxX: placement.maxX,
-                                                 lineGap: lineGap,
-                                                 maxY: placement.maxY,
-                                                 messiness: messiness,
-                                                 useUserHand: true,
-                                                 settings: settings,
-                                                 allowSynthesis: !looksLikeMath(text))
-        InkUnity.shared.endSentence()
-        if sequence.clipped {
-            addPage()
-            completion()
-            return
-        }
-
-        let baseWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
-        // Stamp constant tip width so the outline is opaque (same as replies).
-        let strokes: [InkStroke] = sequence.strokes.compactMap { s in
-            guard s.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
-            var copy = s
-            if copy.isDot {
-                copy.dotRadius = max(copy.dotRadius, baseWidth * 0.45)
-            } else if copy.points.count > 1 {
-                copy.widths = Array(repeating: baseWidth, count: copy.points.count)
-            }
-            return copy
-        }
-        guard !strokes.isEmpty else { completion(); return }
-
-        let bottomY = sequence.bottomY
-        ensureRoom(below: bottomY + lineGap * 2)
-        scrollToReveal(placement.origin.y)
-
-        // VISIBLE ROUTE (proven): animate with the renderer and KEEP its ink
-        // layers on screen (no per-stroke handler, so they're never retired),
-        // then persist as a `ReplyInk` overlay — the exact record
-        // `loadDrawing` redraws with `drawStatic` on reload. PencilKit bake was
-        // tried and is invisible for menu-launched writes no matter what forces
-        // the repaint, so import deliberately never becomes a PKStroke. The
-        // tray eraser can't touch overlay ink; long-press "Delete Penpal Reply"
-        // and Undo remove it instead — same as any Penpal reply overlay.
-        renderer.inkColor = bakedInkColor
-        let savedScale = renderer.widthScale
-        renderer.widthScale = 1
-        onWritingStateChange?(true)
-        renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: nil) { [weak self] in
-            guard let self else { return }
-            self.renderer.widthScale = savedScale
-            let persisted = strokes.map { PersistedInkStroke(from: $0) }
-            let reply = ReplyInk(baseWidth: baseWidth, strokes: persisted)
-            self.placedInks.append(reply)
-            self.onReplyInksChange?(self.placedInks)
-            self.lastReplyBottom = bottomY
-            self.onWritingStateChange?(false)
-            completion()
-        }
+        renderReply(text, placement: placement, purpose: .pageImport,
+                    completion: completion)
     }
 
 
@@ -3197,6 +3145,20 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     // MARK: - Reply rendering (shared by pencil + local paths)
 
+    private enum ReplyRenderPurpose {
+        case assistant
+        case pageImport
+
+        var forcesCanvasInk: Bool { self == .pageImport }
+        var isVoiceOverAnswer: Bool { self == .assistant }
+        var undoName: String {
+            switch self {
+            case .assistant: "Penpal Reply"
+            case .pageImport: "Import Page Ink"
+            }
+        }
+    }
+
     /// Picks a local canned line for the new ink and renders it.
     private func renderLocalReply(placement: ReplyPlacement, newStrokes: [PKStroke]) {
         guard case .text(let text) = provider.reply(toNewInk: newStrokes) else { return }
@@ -3219,11 +3181,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private func renderReply(_ text: String, placement: ReplyPlacement,
                              celebrate: Bool = false,
                              matchStrokes: [PKStroke] = [],
+                             purpose: ReplyRenderPurpose = .assistant,
                              completion: (() -> Void)? = nil) {
         // PEN-32: publish before drawing. Every reply reaches VoiceOver
         // regardless of which path produced it, and regardless of whether the
         // ink pipeline later clips or re-pages.
-        publishForVoiceOver(text, isAnswer: true)
+        publishForVoiceOver(text, isAnswer: purpose.isVoiceOverAnswer)
         let matched = Self.sampleUserInk(from: matchStrokes)
         let formulaWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
         // Tip tracks their Pencil width (slightly lighter); glyph height comes
@@ -3233,7 +3196,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let bakeColor = matched?.color ?? bakedInkColor
 
         // Typed-font replies bypass the stroke pipeline entirely.
-        if settings.replyStyle == "font" {
+        if settings.replyStyle == "font", !purpose.forcesCanvasInk {
             let bottom = writeTypedReply(text, placement: placement, color: bakeColor)
             lastReplyBottom = bottom
             ensureRoom(below: bottom + lineGap * 2)
@@ -3361,7 +3324,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             self.renderer.widthScale = 1
             // PEN-14: open one action around the whole reply. Fifty baked
             // strokes collapse to a single undo the user would call "the reply".
-            self.beginUndoableAction("Penpal Reply")
+            self.beginUndoableAction(purpose.undoName)
             self.renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
                 guard let self, let pending = self.pendingBake,
                       i < pending.strokes.count else { return }
@@ -3389,7 +3352,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     self.renderer.celebrateAnswer(in: celebrateRect)
                 }
                 completion?()
-                if self.autoReply, self.canvas.drawing.strokes.count > self.lastReplyStrokeCount {
+                if self.autoReply,
+                   self.canvas.drawing.strokes.count > self.lastReplyStrokeCount {
                     self.canvasViewDrawingDidChange(self.canvas)
                 }
             }

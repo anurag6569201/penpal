@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import PencilKit
 @testable import penpal
 
 @MainActor
@@ -9,6 +10,47 @@ final class HandwritingCoreTests: XCTestCase {
                       widths: [Array(repeating: 0.1, count: points.count)],
                       durations: [0.4], gaps: [0], refSize: 20,
                       pointTimes: [[0, 0.2, 0.4]])
+    }
+
+    func testLegacyReplyInkMigratesIntoCanvasDrawing() {
+        let view = MagicPaperView(frame: CGRect(x: 0, y: 0, width: 768, height: 1024))
+        let stroke = InkStroke(
+            points: [CGPoint(x: 64, y: 80), CGPoint(x: 80, y: 96), CGPoint(x: 96, y: 82)],
+            widths: [2, 2, 2],
+            confidence: 1
+        )
+        let legacy = ReplyInk(baseWidth: 2, strokes: [PersistedInkStroke(from: stroke)])
+        var persistedDrawing: PKDrawing?
+        var persistedInks: [ReplyInk]?
+        view.onDrawingChange = { persistedDrawing = $0 }
+        view.onReplyInksChange = { persistedInks = $0 }
+
+        view.loadDrawing(PKDrawing(), replyInks: [legacy])
+
+        XCTAssertEqual(view.currentDrawing.strokes.count, 1)
+        let bakedWidths = view.currentDrawing.strokes[0].path.map(\.size.width)
+        XCTAssertGreaterThanOrEqual(bakedWidths.min() ?? 0, 3)
+        XCTAssertTrue(view.currentReplyInks.isEmpty)
+        XCTAssertEqual(persistedDrawing?.strokes.count, 1)
+        XCTAssertEqual(persistedInks, [])
+    }
+
+    func testMalformedLegacyReplyRemainsOverlayWithoutPartialMigration() {
+        let view = MagicPaperView(frame: CGRect(x: 0, y: 0, width: 768, height: 1024))
+        let valid = InkStroke(
+            points: [CGPoint(x: 64, y: 80), CGPoint(x: 96, y: 82)],
+            widths: [2, 2]
+        )
+        let malformed = InkStroke(points: [CGPoint(x: 100, y: 100)])
+        let legacy = ReplyInk(baseWidth: 2, strokes: [
+            PersistedInkStroke(from: valid),
+            PersistedInkStroke(from: malformed),
+        ])
+
+        view.loadDrawing(PKDrawing(), replyInks: [legacy])
+
+        XCTAssertTrue(view.currentDrawing.strokes.isEmpty)
+        XCTAssertEqual(view.currentReplyInks, [legacy])
     }
 
     func testGlyphValidationRejectsMalformedData() {
