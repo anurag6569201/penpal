@@ -14,6 +14,7 @@ from google.genai import types
 from . import mathengine, routing, telemetry
 from .prompts import (
     GRADER_SYSTEM_PROMPT,
+    IMPORT_SYSTEM_PROMPT,
     MATH_CORRECTOR_NOTE,
     MATH_DETAIL,
     PRACTICE_SYSTEM_PROMPT,
@@ -610,6 +611,95 @@ def solve_worksheet(
                                  system_prompt, contents, problems)
     telemetry.record(telemetry.SOLVE_COMPLETED)
     return problems
+
+
+def _clean_blocks(raw: Any) -> list[dict[str, Any]]:
+    """Validate and normalise the model's block list for photo import."""
+    if isinstance(raw, dict):
+        raw = raw.get("blocks", [])
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in raw[:80]:                 # a page has a bounded amount of content
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        if kind not in ("text", "math", "image"):
+            continue
+        if kind == "image":
+            box = _clean_box(item.get("box"))
+            if box is None:
+                # No box means nothing to crop — an undroppable block is
+                # worse than a dropped one, so it does not survive.
+                continue
+            label = str(item.get("label") or "").strip()[:120]
+            out.append({"type": "image", "label": label, "box": box})
+            continue
+        content = str(item.get("content") or "").strip()[:600]
+        if not content:
+            continue
+        out.append({"type": kind, "content": content})
+    return out
+
+
+def import_page(image_bytes: bytes, mime_type: str = "image/png") -> list[dict[str, Any]]:
+    """
+    Photo import — read an existing paper page and return it as an ordered
+    list of blocks the app can rebuild on a live Penpal page.
+
+    Returns [{"type": "text"|"math", "content": "..."}
+             | {"type": "image", "label": "...", "box": {x,y,width,height}}, ...]
+
+    Deliberately NOT run through the solve→verify→correct pipeline: this is a
+    transcription of what is already on the page, not a computed answer for
+    the model to get right or wrong. The equivalent of "verification" here is
+    the same one `transcribe_math` relies on — read faithfully, don't invent.
+    Content that cannot be faithfully reconstructed as text or math (a
+    diagram, a photo, a table) is never forced into fake ink; it comes back
+    as an "image" block with a crop box, so the app keeps the real pixels
+    instead of a hallucinated re-drawing.
+
+    Uses GEMINI_IMPORT_MODEL when set, so this can be pointed at a different
+    model than solving without touching the rest of the pipeline.
+    """
+    if not image_bytes:
+        raise GeminiError("No image supplied.")
+
+    model = (getattr(settings, "GEMINI_IMPORT_MODEL", "") or "").strip() \
+        or settings.GEMINI_MODEL
+
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    prompt_part = types.Part.from_text(
+        text="Read this page and return it as ordered blocks.")
+    contents = [types.Content(role="user", parts=[image_part, prompt_part])]
+
+    client = _client()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=IMPORT_SYSTEM_PROMPT,
+                temperature=0.0,
+                top_p=0.95,
+                max_output_tokens=8000,
+                response_mime_type="application/json",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Photo import failed")
+        raise GeminiError(str(exc)) from exc
+
+    _account(model, response)
+
+    try:
+        blocks = _clean_blocks(_parse_json_block(_extract_text(response)))
+    except ValueError as exc:
+        raise GeminiError(f"Could not read that page: {exc}") from exc
+    if not blocks:
+        raise GeminiError("Nothing readable was found on that page.")
+    return blocks
 
 
 def _verify_worksheet(client, image_part, prompt_part, system_prompt,

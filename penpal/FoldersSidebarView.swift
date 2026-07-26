@@ -54,10 +54,15 @@ struct FoldersSidebarView: View {
                     row(kind: .recentlyDeleted, icon: "trash", tint: accent)
                 }
             }
-            .listStyle(.sidebar)
+            // .sidebar style bakes in its own translucent vibrancy chrome that
+            // resists a custom background — .plain actually goes transparent
+            // and lets the drawer's solid Pen.paperRaised show through.
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
         }
-        .background(.regularMaterial)
+        // The enclosing NavigationDrawerView already supplies a solid
+        // Pen.paperRaised backing — no separate material layer here, so it
+        // doesn't stack into a greyer blur over true black in dark mode.
         .tint(accent)
         .alert("Rename Folder", isPresented: Binding(
             get: { renameTarget != nil },
@@ -142,7 +147,7 @@ struct FoldersSidebarView: View {
             } label: {
                 Label("Rename", systemImage: "pencil")
             }
-            .tint(.orange)
+            .tint(Pen.inkAccent)
         }
     }
 

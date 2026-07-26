@@ -79,13 +79,13 @@ struct PenpalControlBar: View {
                     .frame(width: 30, height: 30)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Pen.inkFaded)
             .accessibilityLabel("Turn off Penpal mode")
         }
         .font(.footnote.weight(.medium))
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Pen.paperRaised, in: Capsule())
         .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.25), lineWidth: 1))
         .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
         .alert("Custom Companion Mood", isPresented: $showCustomMoodEditor) {
@@ -110,7 +110,7 @@ struct PenpalControlBar: View {
             }
             if let statusText {
                 Text(statusText)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Pen.inkFaded)
                     .lineLimit(1)
                     .frame(maxWidth: 220, alignment: .leading)
                     .dynamicTypeSize(...DynamicTypeSize.accessibility2)
@@ -129,7 +129,7 @@ struct PenpalControlBar: View {
             Label(title, systemImage: icon)
                 .padding(.horizontal, 10)
                 .frame(height: 32)
-                .foregroundStyle(selected ? Color.white : Color.primary)
+                .foregroundStyle(selected ? Color.white : Pen.inkPrimary)
                 .background(selected ? Pen.inkAccent : Color.clear, in: Capsule())
         }
         .buttonStyle(.plain)

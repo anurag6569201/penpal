@@ -47,8 +47,8 @@ Semantic tokens only — components never reference raw colours.
 
 | Token          | Light                  | Dark                   | Use |
 |----------------|------------------------|------------------------|-----|
-| `paper`        | warm cream `#FAF7F0`   | warm charcoal `#1C1B20`| canvases, landing |
-| `paperRaised`  | `#FFFFFF`              | `#26252B`              | cards, sheets |
+| `paper`        | warm cream `#FAF7F0`   | AMOLED black `#000000` | canvases, landing |
+| `paperRaised`  | soft white `#FDFBF7`   | lifted black `#0E0D10` | cards, sheets, toolbars |
 | `inkPrimary`   | near-black `#2B2A33`   | warm white `#ECEAE4`   | text, drawn ink |
 | `inkAccent`    | ink indigo `#4A4E9E`   | lifted indigo `#8B8FD9`| actions, Penpal's presence |
 | `inkFaded`     | 55 % inkPrimary        | 55 % inkPrimary        | secondary text |
@@ -57,8 +57,16 @@ Semantic tokens only — components never reference raw colours.
 | `rule`         | 12 % inkPrimary        | 14 % inkPrimary        | ruled lines, separators |
 
 Rules: one accent per screen; success/caution appear only as *meaning*, never
-decoration; dark mode is **dark paper**, not OLED black — pure black kills the
-paper metaphor.
+decoration; dark mode is **AMOLED black, not grey** — the canvas (`paper`) is
+true `#000000`, and raised surfaces (`paperRaised`) are a bare lift off
+black, just enough to read as a distinct surface at a glance without ever
+turning into a neutral grey card. Never a translucent system material for
+a surface fill — blur over true black still shows as grey haze, which is
+the opposite of the theme. Light mode keeps its soft cream `paper`; the
+`paperRaised` white is pulled back a touch from pure `#FFFFFF` so cards
+don't glare against it. (Earlier revisions of this doc specified "dark
+paper, not OLED black", then briefly "both pure black" — superseded by the
+above.)
 
 ### Typography
 

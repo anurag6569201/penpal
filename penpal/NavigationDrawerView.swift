@@ -52,11 +52,14 @@ struct NavigationDrawerView: View {
                 .transition(pageTransition)
             }
         }
-        .background(.regularMaterial)
+        // Solid paper, not a translucent material — a blur over true AMOLED
+        // black in dark mode still shows as a lighter grey haze, which broke
+        // the "actually black" look the sidebar is meant to have.
+        .background(Pen.paperRaised)
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+                .strokeBorder(Pen.inkPrimary.opacity(0.1), lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.18), radius: 24, x: 8, y: 8)
         .accessibilityAddTraits(.isModal)
@@ -73,13 +76,13 @@ struct NavigationDrawerView: View {
     }
 
     private func showFolders() {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+        withAnimation(reduceMotion ? nil : Pen.spring) {
             page = .folders
         }
     }
 
     private func showNotes() {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+        withAnimation(reduceMotion ? nil : Pen.spring) {
             page = .notes
         }
     }

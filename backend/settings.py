@@ -166,6 +166,13 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # opt-in, so nobody gets a quietly weaker answer without choosing it.
 GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "")
 
+# Photo import (PEN-35) reads a photographed page rather than solving a
+# problem, which is a different job with different accuracy/cost trade-offs
+# than the solve pipeline. Independently configurable so it can be pointed at
+# a different model without touching GEMINI_MODEL. Defaults to empty, which
+# falls back to GEMINI_MODEL.
+GEMINI_IMPORT_MODEL = os.getenv("GEMINI_IMPORT_MODEL", "")
+
 # PEN-26 — access control.
 #
 # Comma-separated shared tokens. When empty AND dev mode is on, the API stays

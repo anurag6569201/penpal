@@ -259,6 +259,73 @@ enum PenpalAPI {
         return problems
     }
 
+    // MARK: - Photo import (PEN-35)
+
+    /// One piece of a photographed page. "text"/"math" carry transcribed
+    /// content to be written as real ink; "image" carries a crop box for
+    /// content that can't honestly become handwriting (a diagram, a table,
+    /// a photo) — the app crops the ORIGINAL photo itself rather than
+    /// trusting a server-side re-render, so what lands on the page is the
+    /// real pixels the user photographed.
+    struct ImportedBlock: Decodable {
+        let type: String
+        let content: String?
+        let label: String?
+        let box: WorksheetProblem.Box?
+
+        var isText: Bool { type == "text" || type == "math" }
+        var isImage: Bool { type == "image" }
+    }
+
+    private struct ImportPageResponse: Decodable {
+        let blocks: [ImportedBlock]?
+        let count: Int?
+        let error: String?
+    }
+
+    /// Read an existing paper page and return it as ordered blocks.
+    static func importPage(
+        pngData: Data,
+        baseURL: String
+    ) async throws -> [ImportedBlock] {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/import-page/") else {
+            throw APIError.badURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        // A full page read is comparable in cost to worksheet solving.
+        request.timeoutInterval = 180
+
+        struct Body: Encodable { let image: String }
+        request.httpBody = try JSONEncoder().encode(
+            Body(image: pngData.base64EncodedString()))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let parsed = try? JSONDecoder().decode(ImportPageResponse.self, from: data)
+        if !(200...299).contains(code) {
+            if let err = parsed?.error, !err.isEmpty {
+                throw APIError.http(code, err)
+            }
+            throw APIError.http(code, String(data: data, encoding: .utf8) ?? "no body")
+        }
+        guard let blocks = parsed?.blocks, !blocks.isEmpty else {
+            throw APIError.emptyReply
+        }
+        return blocks
+    }
+
     // MARK: - Show-your-work grading (PEN-16)
 
     /// The result of marking a student's own working.

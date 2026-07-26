@@ -324,7 +324,7 @@ struct CodedPaperView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Color(.systemBackground).ignoresSafeArea()
+            Pen.paper.ignoresSafeArea()
 
             switch mode {
             case .paper:
@@ -360,7 +360,7 @@ struct CodedPaperView: View {
         .pickerStyle(.segmented)
         .frame(width: 130)
         .padding(4)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Pen.paperRaised, in: Capsule())
         .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
     }
 
@@ -373,7 +373,7 @@ struct CodedPaperView: View {
             .scrollContentBackground(.hidden)
             .padding(.horizontal, 12)
             .padding(.top, 52)   // clear the floating toggle
-            .background(Color(.secondarySystemBackground).ignoresSafeArea())
+            .background(Pen.paperRaised.ignoresSafeArea())
     }
 
     // MARK: Sync

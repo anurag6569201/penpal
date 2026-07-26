@@ -17,16 +17,21 @@ import UIKit
 
 enum Pen {
 
-    /// Warm cream / warm charcoal. Dark mode is dark PAPER, not OLED black —
-    /// pure black would kill the paper metaphor the whole app rests on.
+    /// Warm cream in light mode, true AMOLED black in dark mode — the
+    /// deepest layer, the canvas itself.
     static let paper = Color(
         light: Color(red: 0.980, green: 0.969, blue: 0.941),
-        dark: Color(red: 0.110, green: 0.106, blue: 0.125))
+        dark: .black)
 
-    /// Cards and sheets sitting on the paper.
+    /// Cards, sheets, toolbars — sits ON the paper, so it needs to read as
+    /// a distinct surface, not vanish into it.
+    /// Light: a hair below pure white, so raised surfaces don't glare next
+    /// to the soft cream page. Dark: a bare lift off true black (not grey —
+    /// still reads as black at a glance) so elevation comes from the
+    /// surface itself, not only from a shadow that barely shows on OLED.
     static let paperRaised = Color(
-        light: .white,
-        dark: Color(red: 0.149, green: 0.145, blue: 0.169))
+        light: Color(red: 0.992, green: 0.986, blue: 0.970),
+        dark: Color(red: 0.055, green: 0.052, blue: 0.062))
 
     /// Text and drawn ink.
     static let inkPrimary = Color(

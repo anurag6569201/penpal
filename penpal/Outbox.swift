@@ -80,8 +80,13 @@ final class Outbox: ObservableObject {
     private init() {
         load()
         monitor.pathUpdateHandler = { [weak self] path in
+            // Unwrap once, outside the Task: a weak reference captured into a
+            // nested closure reads as a mutable capture under strict
+            // concurrency checking, even though it's only ever read. Binding
+            // it to a plain `let` here, then handing that into the hop to
+            // MainActor, is the pattern Swift 6 wants.
+            guard let self else { return }
             Task { @MainActor in
-                guard let self else { return }
                 let online = path.status == .satisfied
                 let cameBack = online && !self.isOnline
                 self.isOnline = online
@@ -122,7 +127,14 @@ final class Outbox: ObservableObject {
     // MARK: - Draining
 
     /// Try everything waiting, oldest first, one at a time.
-    func drain(settings: HandwritingSettings = .shared) {
+    ///
+    /// `settings` defaults to `nil` rather than `= .shared` directly: a
+    /// MainActor-isolated static used as a default-argument expression is
+    /// evaluated as if from a nonisolated context under Swift 6, even though
+    /// this whole method is MainActor-isolated. Resolving it in the body
+    /// sidesteps that.
+    func drain(settings: HandwritingSettings? = nil) {
+        let settings = settings ?? .shared
         guard !isDraining, isOnline, !pending.isEmpty else { return }
         isDraining = true
 

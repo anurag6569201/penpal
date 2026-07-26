@@ -10,10 +10,11 @@
 
 import UIKit
 import PencilKit
+import SwiftUI
 
 final class HandwritingRenderer: UIView {
 
-    var inkColor: UIColor = .systemIndigo
+    var inkColor: UIColor = UIColor(Pen.inkAccent)
     /// Pen speed in points per second.
     var speed: CGFloat = 320
     var widthScale: CGFloat = 1
@@ -54,7 +55,7 @@ final class HandwritingRenderer: UIView {
 
     private func setupPen() {
         penDot.path = UIBezierPath(ovalIn: CGRect(x: -2, y: -2, width: 4, height: 4)).cgPath
-        penDot.fillColor = UIColor.systemIndigo.cgColor
+        penDot.fillColor = UIColor(Pen.inkAccent).cgColor
         let nib = UIBezierPath()
         nib.move(to: CGPoint(x: 2, y: -3))
         nib.addLine(to: CGPoint(x: 12, y: -18))

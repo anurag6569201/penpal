@@ -47,7 +47,9 @@ struct NotesListView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .background(.regularMaterial)
+        // The enclosing NavigationDrawerView already supplies a solid
+        // Pen.paperRaised backing — a translucent material here would stack
+        // into a greyer blur over true black in dark mode.
         .overlay(alignment: .bottom) {
             if selecting { selectionBar } else { newNoteBar }
         }
@@ -70,6 +72,7 @@ struct NotesListView: View {
         }
         .sheet(isPresented: $showMoveSheet) {
             moveSheet
+                .presentationBackground(Pen.paper)
         }
         .confirmationDialog("Delete all notes in Recently Deleted? This can't be undone.",
                             isPresented: $confirmEmptyTrash, titleVisibility: .visible) {
@@ -130,7 +133,7 @@ struct NotesListView: View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Pen.inkFaded)
                 TextField("Search", text: $store.searchQuery)
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
@@ -139,14 +142,14 @@ struct NotesListView: View {
                         store.searchQuery = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Pen.inkFaded)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Color.primary.opacity(0.06),
+            .background(Pen.inkPrimary.opacity(0.06),
                         in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             Menu {
@@ -174,7 +177,7 @@ struct NotesListView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.title3)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Pen.inkPrimary)
             }
         }
         .padding(.horizontal, 14)
@@ -209,7 +212,7 @@ struct NotesListView: View {
                 } header: {
                     Text(group.title)
                         .font(.title3.weight(.bold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                         .textCase(nil)
                 }
             }
@@ -225,7 +228,7 @@ struct NotesListView: View {
             if selecting {
                 Image(systemName: selectedIDs.contains(note.id) ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(selectedIDs.contains(note.id) ? selectionYellow : .secondary)
+                    .foregroundStyle(selectedIDs.contains(note.id) ? selectionYellow : Pen.inkFaded)
             }
             rowContent(note)
         }
@@ -251,11 +254,11 @@ struct NotesListView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(note.displayTitle)
                     .font(.headline)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Pen.inkPrimary)
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(dateLabel(note)).foregroundStyle(.secondary)
-                    Text(note.preview).foregroundStyle(.secondary).lineLimit(1)
+                    Text(dateLabel(note)).foregroundStyle(Pen.inkFaded)
+                    Text(note.preview).foregroundStyle(Pen.inkFaded).lineLimit(1)
                 }
                 .font(.subheadline)
             }
@@ -266,7 +269,7 @@ struct NotesListView: View {
                     .frame(width: 46, height: 46)
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+                        .strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
             }
         }
     }
@@ -289,7 +292,7 @@ struct NotesListView: View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .topTrailing) {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(.secondarySystemBackground))
+                    .fill(Pen.paperRaised)
                     .aspectRatio(0.78, contentMode: .fit)
                     .overlay {
                         if let thumb = note.thumbnail {
@@ -298,7 +301,7 @@ struct NotesListView: View {
                         } else {
                             Text(note.preview)
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Pen.inkFaded)
                                 .padding(8)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
@@ -307,7 +310,7 @@ struct NotesListView: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .strokeBorder(store.selectedNoteID == note.id && !selecting
-                                          ? selectionYellow : Color.primary.opacity(0.08),
+                                          ? selectionYellow : Pen.inkPrimary.opacity(0.08),
                                           lineWidth: store.selectedNoteID == note.id && !selecting ? 3 : 1)
                     )
 
@@ -324,7 +327,7 @@ struct NotesListView: View {
                 .lineLimit(1)
             Text(dateLabel(note))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Pen.inkFaded)
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -366,7 +369,7 @@ struct NotesListView: View {
             Button {
                 store.restoreNote(note.id)
             } label: { Label("Recover", systemImage: "arrow.uturn.backward") }
-                .tint(.blue)
+                .tint(Pen.inkPositive)
         } else {
             Button(role: .destructive) {
                 store.deleteNote(note.id)
@@ -375,7 +378,7 @@ struct NotesListView: View {
                 renameTarget = note
                 renameText = note.title.isEmpty ? note.displayTitle : note.title
             } label: { Label("Rename", systemImage: "pencil") }
-                .tint(.orange)
+                .tint(Pen.inkAccent)
         }
     }
 
@@ -385,11 +388,11 @@ struct NotesListView: View {
         HStack {
             Spacer()
             Text("\(store.visibleNotes().count) Notes")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Pen.inkFaded)
             Spacer()
         }
         .padding(.vertical, 10)
-        .background(.bar)
+        .background(Pen.paperRaised)
     }
 
     private var selectionBar: some View {
@@ -406,7 +409,7 @@ struct NotesListView: View {
             }
             Spacer()
             Text(selectedIDs.isEmpty ? "Select Notes" : "\(selectedIDs.count) Selected")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Pen.inkFaded)
             Spacer()
             Button(isTrash ? "Delete" : "Delete", role: .destructive) {
                 confirmDeleteSelected = true
@@ -415,7 +418,7 @@ struct NotesListView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(.bar)
+        .background(Pen.paperRaised)
     }
 
     // MARK: Move sheet
@@ -433,8 +436,13 @@ struct NotesListView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Pen.paper.ignoresSafeArea())
+            .tint(Pen.inkAccent)
             .navigationTitle("Move \(selectedIDs.count) Note\(selectedIDs.count == 1 ? "" : "s")")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Pen.paper, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { showMoveSheet = false }
@@ -451,13 +459,13 @@ struct NotesListView: View {
             Image(systemName: isTrash ? "trash" : "note.text")
                 .font(.system(size: 44)).foregroundStyle(.tertiary)
             Text(isTrash ? "No Deleted Notes" : "No Notes")
-                .font(.title3.weight(.semibold)).foregroundStyle(.secondary)
+                .font(.title3.weight(.semibold)).foregroundStyle(Pen.inkFaded)
             if !isTrash {
                 Button("Create Note", action: onNewNote).buttonStyle(.bordered)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemGroupedBackground))
+        .background(Pen.paper)
     }
 
     // MARK: Grouping

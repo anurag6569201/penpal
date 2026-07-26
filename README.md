@@ -38,6 +38,11 @@ Always on, in any capability:
   states its reading ("Reading as: ..."), and writes the verified answer
   below the box. Math inside a box goes to the Mathematician even in
   Companion mode.
+- **Import a photo** — Insert on Page → Import Page, pick a photo of an
+  existing worksheet or notebook page, and Penpal rebuilds it: text and math
+  come back as real ink in your own hand, top to bottom; anything that can't
+  honestly become handwriting (a diagram, a table, a photo) is kept as a real
+  image crop instead of a fake redrawing.
 
 ## Quick start (brain)
 

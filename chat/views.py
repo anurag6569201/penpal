@@ -16,6 +16,7 @@ from .gemini import (
     GeminiError,
     generate_reply,
     grade_working,
+    import_page as gemini_import_page,
     practice_problem,
     stream_math_reply,
     solve_math_image,
@@ -197,6 +198,42 @@ def worksheet(request):
         "problems": problems,
         "count": len(problems),
         "model": settings.GEMINI_MODEL,
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def import_page(request):
+    """
+    PEN-35 — photo import. Read an existing paper page and return it as an
+    ordered list of blocks the app rebuilds on a live page: "text"/"math"
+    blocks are written as real ink, "image" blocks (diagrams, tables, photos
+    — anything that can't honestly become handwriting) keep a crop box so
+    the app drops in the real pixels instead of a fake reconstruction.
+
+    Body: {"image": "<base64 png/jpeg>"}
+    Returns: {"blocks": [...], "count": N}
+    """
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    image_bytes, err = _decode_image(data)
+    if err is not None:
+        return err
+
+    try:
+        blocks = gemini_import_page(image_bytes)
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({
+        "blocks": blocks,
+        "count": len(blocks),
+        "model": settings.GEMINI_IMPORT_MODEL or settings.GEMINI_MODEL,
     })
 
 

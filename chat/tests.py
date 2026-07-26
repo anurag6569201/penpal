@@ -934,6 +934,178 @@ class WorksheetEndpointTests(GeminiTestCase):
 
 
 # --------------------------------------------------------------------------
+# photo import (PEN-35)
+# --------------------------------------------------------------------------
+
+PAGE = ('{"blocks": ['
+        '{"type": "text", "content": "Homework 4 - Fractions"},'
+        '{"type": "math", "content": "1/2 + 1/3 ="},'
+        '{"type": "image", "label": "diagram of a pie split into thirds",'
+        ' "box": [200, 50, 500, 450]}'
+        ']}')
+
+
+class ImportPageTests(GeminiTestCase):
+    """
+    PEN-35. Photo import is a transcription, not a computed answer — the
+    correctness property that matters is that content the model cannot
+    honestly turn into text or math survives as a real image crop rather
+    than a hallucinated re-drawing.
+    """
+
+    def install(self, **kwargs) -> FakeModels:
+        models = FakeModels(**kwargs)
+        patcher = patch.object(gemini, "_client", lambda: FakeClient(models))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return models
+
+    def test_returns_ordered_blocks(self):
+        self.install(solver=PAGE)
+        blocks = gemini.import_page(PNG)
+        self.assertEqual([b["type"] for b in blocks], ["text", "math", "image"])
+        self.assertEqual(blocks[1]["content"], "1/2 + 1/3 =")
+
+    def test_solver_receives_the_image(self):
+        models = self.install(solver=PAGE)
+        gemini.import_page(PNG)
+        self.assertIn("image", models.part_kinds(models.last_parts("solver")))
+
+    def test_no_referee_pass_is_made(self):
+        # Unlike solve/worksheet, import is read-and-reproduce: there is no
+        # computed answer to re-derive, so only one call should happen.
+        models = self.install(solver=PAGE)
+        gemini.import_page(PNG)
+        self.assertEqual(len(models.calls), 1)
+
+    def test_image_block_box_is_normalised_to_fractions(self):
+        self.install(solver=PAGE)
+        block = gemini.import_page(PNG)[2]
+        self.assertEqual(block["type"], "image")
+        self.assertAlmostEqual(block["box"]["y"], 0.20)
+        self.assertAlmostEqual(block["box"]["x"], 0.05)
+        self.assertAlmostEqual(block["box"]["height"], 0.30)
+        self.assertAlmostEqual(block["box"]["width"], 0.40)
+
+    def test_image_block_without_a_box_is_dropped(self):
+        # A box-less image block can't be cropped, so keeping it would be a
+        # promise the app cannot honour.
+        self.install(solver='{"blocks": ['
+                            '{"type": "text", "content": "hello"},'
+                            '{"type": "image", "label": "a sketch"}'
+                            ']}')
+        blocks = gemini.import_page(PNG)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["type"], "text")
+
+    def test_unknown_block_types_are_dropped(self):
+        self.install(solver='{"blocks": ['
+                            '{"type": "text", "content": "hi"},'
+                            '{"type": "table", "content": "junk"}'
+                            ']}')
+        blocks = gemini.import_page(PNG)
+        self.assertEqual(len(blocks), 1)
+
+    def test_empty_content_text_blocks_are_dropped(self):
+        self.install(solver='{"blocks": ['
+                            '{"type": "text", "content": ""},'
+                            '{"type": "text", "content": "hi"}'
+                            ']}')
+        self.assertEqual(len(gemini.import_page(PNG)), 1)
+
+    def test_markdown_fenced_json_is_parsed(self):
+        self.install(solver=f"```json\n{PAGE}\n```")
+        self.assertEqual(len(gemini.import_page(PNG)), 3)
+
+    def test_unparseable_output_is_a_clear_error(self):
+        self.install(solver="I couldn't make out this page")
+        with self.assertRaises(gemini.GeminiError):
+            gemini.import_page(PNG)
+
+    def test_empty_page_is_an_error_not_an_empty_success(self):
+        self.install(solver='{"blocks": []}')
+        with self.assertRaises(gemini.GeminiError):
+            gemini.import_page(PNG)
+
+    def test_empty_image_is_rejected(self):
+        self.install()
+        with self.assertRaises(gemini.GeminiError):
+            gemini.import_page(b"")
+
+    def test_block_count_and_field_sizes_are_bounded(self):
+        many = ('{"blocks": ['
+                + ",".join('{"type": "text", "content": "' + ("x" * 900) + '"}'
+                           for _ in range(120))
+                + "]}")
+        self.install(solver=many)
+        blocks = gemini.import_page(PNG)
+        self.assertLessEqual(len(blocks), 80)
+        self.assertLessEqual(len(blocks[0]["content"]), 600)
+
+    def _capture_model(self, **kwargs) -> dict:
+        """Installs a fake client and returns a dict that records the model
+        name `generate_content` was actually called with."""
+        captured: dict = {}
+        models = FakeModels(**kwargs)
+        real_generate = models.generate_content
+
+        def spy(model, contents, config):
+            captured["model"] = model
+            return real_generate(model, contents, config)
+
+        models.generate_content = spy
+        patcher = patch.object(gemini, "_client", lambda: FakeClient(models))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return captured
+
+    @override_settings(GEMINI_MODEL="fake-model", GEMINI_IMPORT_MODEL="import-model")
+    def test_import_model_setting_is_used_when_set(self):
+        captured = self._capture_model(solver=PAGE)
+        gemini.import_page(PNG)
+        self.assertEqual(captured["model"], "import-model")
+
+    @override_settings(GEMINI_MODEL="fake-model", GEMINI_IMPORT_MODEL="")
+    def test_import_model_falls_back_to_gemini_model_when_unset(self):
+        captured = self._capture_model(solver=PAGE)
+        gemini.import_page(PNG)
+        self.assertEqual(captured["model"], "fake-model")
+
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model")
+class ImportPageEndpointTests(GeminiTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+
+    def test_returns_structured_blocks(self):
+        models = FakeModels(solver=PAGE)
+        patcher = patch.object(gemini, "_client", lambda: FakeClient(models))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        response = self.api.post("/api/import-page/", {"image": _b64(PNG)},
+                                 format="json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(payload["blocks"][2]["type"], "image")
+
+    def test_requires_an_image(self):
+        self.assertEqual(
+            self.api.post("/api/import-page/", {}, format="json").status_code, 400)
+
+    def test_brain_failure_is_a_503(self):
+        models = FakeModels(solver='{"blocks": []}')
+        patcher = patch.object(gemini, "_client", lambda: FakeClient(models))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertEqual(
+            self.api.post("/api/import-page/", {"image": _b64(PNG)},
+                          format="json").status_code, 503)
+
+
+# --------------------------------------------------------------------------
 # show-your-work grading (PEN-16)
 # --------------------------------------------------------------------------
 

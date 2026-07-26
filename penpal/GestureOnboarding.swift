@@ -94,7 +94,7 @@ struct BoxGestureHint: View {
             ZStack {
                 Text("3x + 5 = 17")
                     .font(.system(size: 22, weight: .regular, design: .serif))
-                    .foregroundStyle(.primary.opacity(0.75))
+                    .foregroundStyle(Pen.inkPrimary.opacity(0.75))
                     .padding(.horizontal, 22)
                     .padding(.vertical, 12)
 
@@ -109,7 +109,7 @@ struct BoxGestureHint: View {
             Text("Draw a box around any problem\nand Penpal solves it.")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Pen.inkFaded)
 
             Button("Got it", action: onDismiss)
                 .font(.footnote.weight(.medium))
@@ -119,7 +119,7 @@ struct BoxGestureHint: View {
                 .tint(Pen.inkAccent)
         }
         .padding(20)
-        .background(.ultraThinMaterial,
+        .background(Pen.paperRaised,
                     in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 14, y: 6)
         .onAppear {

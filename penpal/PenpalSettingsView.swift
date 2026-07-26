@@ -76,9 +76,17 @@ struct PenpalSettingsView: View {
                 }
                 .scrollContentBackground(.hidden)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Pen.paper.ignoresSafeArea())
+            // Sheets don't reliably inherit the app-root .tint() — without
+            // this, every native control (segmented picker, sliders,
+            // toggles) falls back to a default grey/white selection instead
+            // of the app's own indigo, which is the "random white patch"
+            // the settings sheet was showing.
+            .tint(Pen.inkAccent)
             .navigationTitle("Penpal Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Pen.paper, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -155,7 +163,7 @@ struct PenpalSettingsView: View {
                 } label: {
                     HStack {
                         Label(profile.name, systemImage: "hand.draw")
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Pen.inkPrimary)
                         Spacer()
                         if hands.active?.id == profile.id {
                             Image(systemName: "checkmark")
@@ -210,7 +218,7 @@ struct PenpalSettingsView: View {
                                     .font(.subheadline.weight(.medium))
                                 Text(insight.detail)
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Pen.inkFaded)
                             }
                         }
                         .padding(.vertical, 3)
@@ -218,7 +226,7 @@ struct PenpalSettingsView: View {
                 } else {
                     Text(HandwritingInsights.notEnoughDataMessage)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Pen.inkFaded)
                 }
             }
         } footer: {
@@ -264,7 +272,7 @@ struct PenpalSettingsView: View {
                         .overlay {
                             Circle().stroke(
                                 settings.inkColorName == "active"
-                                    ? Color.accentColor : .clear, lineWidth: 2.5)
+                                    ? Pen.inkAccent : .clear, lineWidth: 2.5)
                                 .padding(-4)
                         }
                 }
@@ -284,7 +292,7 @@ struct PenpalSettingsView: View {
                 .overlay {
                     Circle().stroke(
                         settings.inkColorName == "custom"
-                            ? Color.accentColor : .clear, lineWidth: 2.5)
+                            ? Pen.inkAccent : .clear, lineWidth: 2.5)
                         .padding(-4)
                         .allowsHitTesting(false)
                 }
@@ -296,7 +304,7 @@ struct PenpalSettingsView: View {
             if settings.inkColorName == "active" {
                 Text("Replies write in whatever color your pen is currently set to.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Pen.inkFaded)
             }
 
             LabeledContent("Pen width",
@@ -314,7 +322,7 @@ struct PenpalSettingsView: View {
             if settings.pencilOnly {
                 Text("Your finger scrolls the page and works the controls inside a code block. Turn this off to draw with a finger too — the blocks then stop taking finger taps.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Pen.inkFaded)
             }
         } header: {
             Label("Pen & ink", systemImage: "applepencil.tip")
@@ -338,7 +346,7 @@ struct PenpalSettingsView: View {
                 .overlay {
                     Circle().stroke(
                         settings.inkColorName == name
-                            ? Color.accentColor : .clear, lineWidth: 2.5)
+                            ? Pen.inkAccent : .clear, lineWidth: 2.5)
                         .padding(-4)
                 }
         }
@@ -353,11 +361,11 @@ struct PenpalSettingsView: View {
                 if tag == "hand" {
                     Label(title, systemImage: "signature")
                         .font(.body.weight(.medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                 } else {
                     Text(title)
                         .font(preview ?? .body)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                         .lineLimit(1)
                 }
                 Spacer()
@@ -386,13 +394,13 @@ struct PenpalSettingsView: View {
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 8)
                                         .stroke(settings.paperStyle == tag
-                                                ? Color.accentColor : Color.secondary.opacity(0.25),
+                                                ? Pen.inkAccent : Pen.inkFaded.opacity(0.25),
                                                 lineWidth: settings.paperStyle == tag ? 2.5 : 1)
                                 }
                             Text(name)
                                 .font(.caption)
                                 .foregroundStyle(settings.paperStyle == tag
-                                                 ? .primary : .secondary)
+                                                 ? Pen.inkPrimary : Pen.inkFaded)
                         }
                     }
                     .buttonStyle(.plain)
@@ -436,8 +444,8 @@ struct PenpalSettingsView: View {
     private func paperPreview(_ style: String) -> some View {
         Canvas { ctx, size in
             ctx.fill(Path(CGRect(origin: .zero, size: size)),
-                     with: .color(Color(.secondarySystemGroupedBackground)))
-            let line = Color.secondary.opacity(0.45)
+                     with: .color(Pen.paper))
+            let line = Pen.inkFaded.opacity(0.45)
             switch style {
             case "grid":
                 var x: CGFloat = 8
@@ -488,8 +496,8 @@ struct PenpalSettingsView: View {
                 Image(systemName: health.map { $0.isHealthy ? "checkmark.seal.fill"
                                                             : "exclamationmark.triangle.fill" }
                       ?? "questionmark.circle")
-                    .foregroundStyle(health.map { $0.isHealthy ? Color.green : Color.orange }
-                                     ?? .secondary)
+                    .foregroundStyle(health.map { $0.isHealthy ? Pen.inkPositive : Pen.inkCaution }
+                                     ?? Pen.inkFaded)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(health?.summary ?? "Checking…")
                         .font(.subheadline)
@@ -498,7 +506,7 @@ struct PenpalSettingsView: View {
                              + (health.corrections_applied > 0
                                 ? " · \(health.corrections_applied) rewritten" : ""))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Pen.inkFaded)
                     }
                 }
                 Spacer()

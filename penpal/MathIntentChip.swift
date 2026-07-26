@@ -12,6 +12,7 @@
 //
 
 import UIKit
+import SwiftUI
 
 final class MathIntentChip: UIView {
 
@@ -29,22 +30,13 @@ final class MathIntentChip: UIView {
     private var expression: String
     private let needsReview: Bool
 
-    /// Paper-like graphite — adapts to light/dark instead of system indigo chrome.
-    private static var graphite: UIColor {
-        UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor(white: 0.9, alpha: 1)
-                : UIColor(red: 0.18, green: 0.17, blue: 0.16, alpha: 1)
-        }
-    }
+    /// Same tokens as everywhere else — this used to hand-roll its own near
+    /// duplicates of `Pen.inkPrimary` / `Pen.inkCaution`, which is exactly the
+    /// "three slightly different indigos" drift the design system exists to
+    /// prevent. Now it just asks DesignSystem for the real thing.
+    private static var graphite: UIColor { UIColor(Pen.inkPrimary) }
 
-    private static var reviewAmber: UIColor {
-        UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor(red: 1.0, green: 0.78, blue: 0.35, alpha: 1)
-                : UIColor(red: 0.72, green: 0.45, blue: 0.05, alpha: 1)
-        }
-    }
+    private static var reviewAmber: UIColor { UIColor(Pen.inkCaution) }
 
     /// Pretty display form: 5*5 → "5 × 5", sqrt(2) → "√(2)", pi → "π".
     ///

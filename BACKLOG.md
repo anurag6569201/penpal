@@ -398,6 +398,161 @@ consistency feedback over time — letter-form drift, slant variance, spacing.
 critiques your handwriting unprompted is unpleasant; one that shows you your own
 patterns when asked is delightful.
 
+### PEN-35 · Photo import — **SHIPPED (v1)**
+Photograph an existing paper page — a worksheet, a notebook page, a printed
+handout — and Penpal reads it and rebuilds it on a live page: text and math
+come back as real ink in the user's hand, top to bottom in reading order.
+
+**Decision — reconstruction, not a computed answer, so no referee.** Every
+other image endpoint (`solve-math`, `worksheet`) runs solve → verify →
+correct because the model is computing something that can be right or wrong.
+Import isn't computing anything — it's transcription, the same job
+`transcribe_math` already does without a referee pass. Doubling cost with a
+verification call here would be paying for a correctness guarantee this
+endpoint doesn't need.
+
+**Decision — content that can't honestly become ink stays a real photo, not
+fake ink.** A diagram, a table, a photo-within-the-photo: forcing these into
+handwritten glyphs would be exactly the "confident and wrong" failure this
+whole backlog exists to prevent (see the product thesis at the top of this
+file). Instead the model returns a crop box for anything it can't
+faithfully transcribe, and the app crops the box from the **original**
+photo — never a server-side re-render — and drops it in as a page block,
+reusing the embedded-asset model `insertImageBlock`/`CodeBlockView` already
+built for attachments. One endpoint, two honest outcomes: real ink or real
+pixels, never a guess dressed up as either.
+
+**Decision — linear layout, not positional reconstruction.** Text/math blocks
+are written top to bottom in reading order (the same placement a Companion
+or Mathematician reply uses), not placed at the page's original 2-D
+coordinates. Exact layout preservation would need the same box/collision
+placement machinery `worksheet` uses per-problem, generalized to arbitrary
+content — a real v2, not a first pass. Image blocks are the one exception:
+their box IS how they get cropped, not just where they'd be placed, so it's
+load-bearing there in a way it isn't for ink.
+
+**Decision — independently configurable model (`GEMINI_IMPORT_MODEL`).**
+Reading a photographed page is a different job with a different cost/accuracy
+curve than solving one; pointing it at a different model shouldn't touch the
+solve pipeline's routing. Defaults to empty, falling back to `GEMINI_MODEL` —
+same opt-in-only shape as `GEMINI_FAST_MODEL` (PEN-29).
+
+**Still open:** positional layout preservation (v2, above); an on-page entry
+point beyond the "Insert on Page" menu (camera capture directly, rather than
+picking an existing photo); telemetry for image-blocks-dropped-for-no-box, to
+see in practice how often the model can't produce a usable crop.
+
+### PEN-36 · Illustrator capability — traced, not pasted
+A third capability alongside Companion and Mathematician. Ask for a diagram —
+a cell, a circuit, a map, a dragon, whatever — and watch Penpal **draw** it,
+stroke by stroke, in the same pen it writes everything else with. Never a
+pasted image.
+
+**The reference point is a specific childhood memory, and it's the right
+one:** tracing paper laid over a picture with a light underneath, following
+the glowing outline with a pencil. That's the effect to build toward — not
+"an image appears," but "a hand is visibly tracing something," which is the
+same promise the rest of the product already makes about text.
+
+**How it actually works:** get a reference image (source depends on the
+decision below), run edge/contour detection and path simplification on it to
+produce an **ordered stroke list** — outline first, then interior detail, the
+order a hand would actually draw in, not a raster scan — and feed that list
+into the *same* `HandwritingRenderer` stroke-reveal pipeline (`strokeEnd`
+animation, travelling pen-tip dot, per-stroke pacing) already used for ink.
+The sketch gets the same hand-drawn imprecision PEN-17 gives graphed curves,
+so it reads as the same hand, not an imported asset.
+
+**Decision — two source paths, chosen by whether accuracy matters.** A
+labeled diagram of mitosis or a circuit schematic can be *wrong*, and a wrong
+diagram traced confidently is the same "confident and wrong" failure this
+whole backlog exists to prevent — so factual content traces a **real**
+reference image (vetted source / image search), never a generative guess.
+Purely imaginative requests ("sketch a dragon", "draw what you're picturing")
+have no fact to get wrong and can go through a generative image model
+instead. This is the Illustrator equivalent of Mathematician's CAS
+verification: right by construction where correctness is possible, honestly
+generative only where it isn't.
+
+**Decision — draw it, don't load it.** The trace has to happen at a pace that
+reads as *drawing*, not a spinner with extra steps (PEN-08's whole point).
+Long or detailed sketches may need to accelerate rather than fully real-time
+— still visibly hand-drawn, just faster than realtime, the way a time-lapse
+of a real sketch still reads as sketching.
+
+**Still open:** cost/latency of vectorizing an image into strokes server-side
+vs on-device; where this sits in PEN-29's model routing; how a sketch is
+undone as one action (PEN-14) rather than hundreds of tiny strokes.
+
+### PEN-37 · Language partner capability
+Write — or speak, via PEN-23 — in the language you're learning. Penpal
+replies in that language, and corrects gently in the margin rather than
+rewriting your sentence.
+
+**Decision — correct the ink, never overwrite it.** Your sentence stays
+exactly as you wrote it; the correction is a small note beside it, the same
+"pencil underline, not a red cross" discipline PEN-16 established for math.
+A language learner who feels corrected-over stops writing in the language,
+which defeats the feature the same way an intimidating math mark stops a
+student showing their working.
+
+**Reuses, doesn't duplicate:** PEN-19's spaced-repetition engine takes missed
+vocabulary and grammar as its mistake queue instead of missed math steps —
+same scheduler, same "no streaks, no points" honesty, new mistake type.
+
+**Open question, worth an eval before real engineering time:** does grammar
+correction need a translation-tuned model rather than the general chat model,
+or is a well-built prompt enough? Decide with a small accuracy check, not by
+assumption.
+
+### PEN-38 · Debate / devil's advocate capability
+Write an argument or an essay position. Penpal writes back the strongest
+good-faith counter-argument, in the margin — not a verdict on whether you're
+right.
+
+**Why this is a real gap, not a nice-to-have:** every other capability is
+STEM-shaped (solve, check, graph, practice). This is the first thing in the
+app for essay and critical-thinking homework, which is most of what
+humanities subjects actually assign.
+
+**Decision — argue the position, never grade the person.** Same tone rule as
+PEN-16, aimed at a different target: the counter-argument attacks the *claim*
+("this assumes X, but Y complicates it"), never the writer. No score, no
+"weak argument" — that's a verdict, and this capability doesn't deliver
+verdicts.
+
+**Decision — labelled as a lower trust tier than Mathematician or
+Scientist-if-built.** A counter-argument is useful even when it isn't
+independently verified — the point is exposure to a real opposing view, not
+a checked fact. It should never be dressed up with the same "verified"
+visual language (PEN-04's honest-degradation line) that math and CAS-backed
+answers get, because it isn't the same kind of claim.
+
+### PEN-39 · Vision capability — reading what the camera sees
+Point the camera at something that **isn't your own page** — a textbook
+diagram, a whiteboard, a friend's handwritten problem — and Penpal reads it
+and responds directly onto *your* page, in your hand.
+
+**Not the same job as PEN-35 Photo Import — worth keeping distinct.** Photo
+Import reconstructs a page of your *own* prior work: transcription, no
+referee, because there's nothing to compute. Vision capability looks at
+something external and *responds* to it — explains a diagram, solves a
+problem someone else wrote, answers "what is this" — which is computing a
+claim about content the app didn't produce. That routes through the same
+solve → verify → correct discipline as everything else that can be right or
+wrong (PEN-01/PEN-16's territory), not the transcription path. A hallucinated
+reading of someone else's diagram, written confidently in your own hand, is
+exactly the failure mode this backlog is built to prevent — arguably a worse
+one than usual, since the source material isn't even yours to double-check
+against memory.
+
+**Open question, flagged rather than decided:** this is closer to an *input
+modality* than a `capability` string like Companion/Mathematician — a photo
+of someone else's whiteboard could reasonably get a Companion-toned reply or
+a Mathematician-toned solve depending on content. Worth deciding whether
+Vision is its own capability tab or a camera affordance available *within*
+the existing ones before writing any UI for it.
+
 ---
 
 ## Platform and release (P3)

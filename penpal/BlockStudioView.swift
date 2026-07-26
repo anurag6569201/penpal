@@ -73,9 +73,9 @@ struct BlockStudioView: View {
                 switch mode {
                 case .design:
                     LiveBlockEditor(html: $html)
-                        .background(Color(.systemBackground))
                 case .source:
                     TextEditor(text: $html)
+                        .scrollContentBackground(.hidden)
                         .font(.system(.footnote, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -83,8 +83,12 @@ struct BlockStudioView: View {
                         .padding(.horizontal, 8)
                 }
             }
+            .background(Pen.paper.ignoresSafeArea())
+            .tint(Pen.inkAccent)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Pen.paper, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .onChange(of: html) { _, value in scheduleAutosave(value) }
             .toolbar {
                 ToolbarItem(placement: .principal) {

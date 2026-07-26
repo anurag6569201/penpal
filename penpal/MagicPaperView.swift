@@ -14,6 +14,7 @@
 
 import UIKit
 import PencilKit
+import SwiftUI
 
 // MARK: - Paper background
 
@@ -51,8 +52,13 @@ final class PaperBackgroundView: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        let rule = UIColor.separator.withAlphaComponent(0.5)
-        let faint = UIColor.separator.withAlphaComponent(0.28)
+        // Warm-ink-tinted ruling — the same Pen.rule weight (12% inkPrimary)
+        // the landing page's ruled paper uses, not a system gray separator.
+        // Grid/dot variants keep the same relative weighting the original
+        // separator-based alphas had (faint ≈ 0.56x, dots ≈ 1.1x the base).
+        let inkBase = UIColor(Pen.inkPrimary)
+        let rule = inkBase.withAlphaComponent(0.12)
+        let faint = inkBase.withAlphaComponent(0.067)
 
         switch style {
         case "grid":
@@ -74,7 +80,7 @@ final class PaperBackgroundView: UIView {
             ctx.strokePath()
 
         case "dots":
-            ctx.setFillColor(UIColor.separator.withAlphaComponent(0.55).cgColor)
+            ctx.setFillColor(inkBase.withAlphaComponent(0.132).cgColor)
             let cell = lineGap / 2
             var y = firstRulingY(start: topInset, gap: cell)
             while y < bounds.height {
@@ -139,6 +145,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// canvas — e.g. a long-press on a block — so the toolbar button stays in
     /// sync with the actual state.
     var onPageEditModeChange: ((Bool) -> Void)?
+    /// Fired when the canvas opens the markup tray itself (photo import needs
+    /// the canvas live to paint its ink), so the toolbar's Markup button
+    /// reflects that the tools are now showing.
+    var onMarkupOpened: (() -> Void)?
     /// PEN-19 — set while a practice problem is on the page. Receives whether
     /// the student's working was correct, so the schedule can be updated.
     var onWorkMarked: ((Bool) -> Void)?
@@ -148,6 +158,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private let lineGap: CGFloat = 44
     private let rulesTopInset: CGFloat = 40
     private let leftMargin: CGFloat = 64
+
+    /// Vertical step between imported lines/blocks. A ruled reply leaves a
+    /// full `lineGap` (plus a little) between lines so it sits on the ruling;
+    /// an imported page is dense prose/maths, so it reads better tightened to
+    /// roughly half that — about 55% less gap.
+    private var importLineStep: CGFloat { lineGap * 0.5 }
 
     /// Reply writing size, derived from the RULED LINES — not from measuring
     /// the user's ink. Training guides put the ascender line at 2 x-heights,
@@ -213,6 +229,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Scrollable paper height; grows as needed (infinite pages).
     private var contentHeight: CGFloat = 0
 
+    /// Pull-to-extend: how far past the bottom (already resisted by the
+    /// scroll view's own elastic bounce) counts as "the user means it".
+    /// A screen-relative distance so it feels the same on every device.
+    private var pageAddThreshold: CGFloat { max(64, bounds.height * 0.1) }
+    /// True once the current overscroll has crossed the threshold, so we
+    /// only fire the haptic once per pull and can act on release.
+    private var isPrimedToAddPage = false
+
     // MARK: Init
 
     override init(frame: CGRect) {
@@ -226,14 +250,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     private func setup() {
-        backgroundColor = .systemBackground
+        backgroundColor = UIColor(Pen.paper)
 
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         // .default (not .anyInput): only the default policy respects the
         // system "Draw with Finger" toggle in the tool picker's ⋯ menu.
         canvas.drawingPolicy = settings.pencilOnly ? .pencilOnly : .default
-        canvas.tool = PKInkingTool(.pen, color: .label, width: 3)
+        canvas.tool = PKInkingTool(.pen, color: UIColor(Pen.inkPrimary), width: 3)
         canvas.delegate = self
         canvas.alwaysBounceVertical = true
         addSubview(canvas)
@@ -539,8 +563,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     private func syncActiveToolColor() {
-        if let inking = toolPicker.selectedTool as? PKInkingTool {
-            settings.activeToolColor = inking.color
+        if let inkingItem = toolPicker.selectedToolItem as? PKToolPickerInkingItem {
+            settings.activeToolColor = inkingItem.inkingTool.color
         }
     }
 
@@ -1531,6 +1555,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // The confirmation chip is anchored in view space, so scrolling
         // would drift it away from its expression — retire it instead.
         dismissIntentChip()
+        updatePageAddPriming()
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard isPrimedToAddPage else { return }
+        isPrimedToAddPage = false
+        addPage()
     }
 
     // MARK: Infinite pages
@@ -1540,6 +1571,24 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let page = max(400, bounds.height)
         contentHeight += lineGap * ceil(page / lineGap)
         updateContentLayout()
+    }
+
+    /// Fingertip is dragging past the last page. The scroll view's own
+    /// `alwaysBounceVertical` already supplies the stretchy, harder-to-pull
+    /// resistance — this just watches that overscroll and arms a haptic
+    /// "click" the moment it passes the threshold, so lifting your finger
+    /// here reads as a deliberate gesture rather than an accidental flick.
+    /// The actual page gets added in `scrollViewDidEndDragging`, once the
+    /// pull is released — same shape as pull-to-refresh.
+    private func updatePageAddPriming() {
+        guard canvas.isDragging else { return }
+        let overscroll = canvas.contentOffset.y + canvas.bounds.height - canvas.contentSize.height
+        let primed = overscroll > pageAddThreshold
+        guard primed != isPrimedToAddPage else { return }
+        isPrimedToAddPage = primed
+        if primed {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
     }
 
     /// Make sure there's paper below `y`; grow if the pen is running out.
@@ -2014,7 +2063,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             // Companion (and other non-mathematician Penpal) below.
             guard self.penpalEnabled else { return }
 
-            var bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+            let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
 
             if bestText.hasSuffix("="), self.looksLikeMath(bestText),
                self.settings.useBrain {
@@ -2807,6 +2856,291 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                               needsNewPage: false)
     }
 
+    // MARK: - Photo import (PEN-35)
+
+    /// Read an existing paper page from a photo and rebuild it on this page:
+    /// text and math come back as real ink, in the user's hand; anything
+    /// that can't honestly become handwriting (a diagram, a table, a photo
+    /// within the photo) is cropped from the ORIGINAL image and dropped in
+    /// as a page block instead — the same embedded-asset model images and
+    /// code blocks already use. Nothing is drawn that wasn't safely
+    /// reconstructable; content that can't become ink never gets faked.
+    ///
+    /// Deliberately linear rather than positionally exact: blocks are
+    /// written top to bottom in reading order (like a reply), not placed at
+    /// the page's original 2-D layout — that would need the same box/collision
+    /// placement machinery worksheet answers use, per problem, which is a much
+    /// bigger lift for a first pass. Image blocks are the exception, since
+    /// their box IS how they get cropped, not just where they'd be placed.
+    func importPhotoPage(_ rawImage: UIImage) {
+        guard settings.useBrain else {
+            onStatus?("Photo import needs the brain — enable it in Settings → Behavior.")
+            return
+        }
+        // A camera photo's backing CGImage is frequently stored rotated, with
+        // `imageOrientation` metadata describing how to display it upright.
+        // `pngData()`/`jpegData()` bake that rotation in when encoding for
+        // upload, but `Self.crop` below reads `cgImage` directly — the RAW,
+        // unrotated pixels. Left alone, the model's box coordinates (measured
+        // against the upright image it was sent) would land on the wrong
+        // pixels for any photo that isn't already stored upright. Normalizing
+        // once here means the upload and the later crop agree on what "the
+        // image" is.
+        let image = Self.normalizedUp(rawImage)
+        guard let pngData = image.pngData() ?? image.jpegData(compressionQuality: 0.92) else {
+            onStatus?("Couldn't read that photo.")
+            return
+        }
+
+        // The reading banner + ink thinking indicator carry the wait. NOT
+        // onStatus: that presents a modal alert in ContentView, and a dialog
+        // demanding OK mid-import is exactly the interruption DESIGN.md bans.
+        setReadingBanner(true)
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+
+        Task { @MainActor in
+            defer { self.setReadingBanner(false) }
+            do {
+                let blocks = try await PenpalAPI.importPage(
+                    pngData: pngData, baseURL: self.settings.apiBaseURL)
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.writeImportedBlocks(blocks, sourceImage: image)
+            } catch {
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(PenpalError.message(for: error))
+            }
+        }
+    }
+
+    /// Walks the imported blocks top to bottom. Text/math go through
+    /// `writeReplyText` — the *exact* path Companion and Mathematician
+    /// replies use — because that path both animates the pen AND bakes ink
+    /// that actually paints. Everything else was a detour: three custom
+    /// write paths all produced ink that committed to `canvas.drawing`
+    /// (provably: it was selectable) yet never painted, because a
+    /// PKCanvasView only repaints its ink layer when something drives
+    /// compositing, and the reply animation is what does that. So instead
+    /// of reproducing the reply pipeline, import now IS the reply pipeline.
+    ///
+    /// `writeReplyText` no-ops if the pen is already writing, so blocks are
+    /// strictly serialized: the next one starts only once the pen is idle
+    /// AND `pendingBake` is clear (the whole previous block has baked).
+    /// Image blocks land instantly between text blocks, in the same flow.
+    private func writeImportedBlocks(_ blocks: [PenpalAPI.ImportedBlock],
+                                     sourceImage: UIImage) {
+        guard !blocks.isEmpty else {
+            onStatus?("Nothing readable was found on that page.")
+            return
+        }
+        // Open the markup tray (as the user asked) so the page is in its
+        // normal writing state — pen selected, canvas active — while import
+        // writes. This is no longer load-bearing for visibility (the overlay
+        // path in `writeImportedReply` renders regardless), but it keeps the
+        // experience consistent with a hand-drawn session and leaves the pen
+        // ready for the user to annotate the moment import finishes.
+        setToolsVisible(true)
+        onMarkupOpened?()
+
+        var skippedImages = 0
+        var queue = blocks[...]
+        func writeNext() {
+            guard let block = queue.first else {
+                if skippedImages > 0 {
+                    onStatus?("Imported the page — \(skippedImages) image region\(skippedImages == 1 ? "" : "s") couldn't be cropped.")
+                }
+                return
+            }
+            queue = queue.dropFirst()
+
+            if block.isImage {
+                if let box = block.box, let cropped = Self.crop(sourceImage, to: box) {
+                    let y = max(lastReplyBottom + importLineStep, rulesTopInset + lineGap)
+                    if let bottom = insertImportedImageBlock(cropped, atY: y) {
+                        lastReplyBottom = bottom + importLineStep * 0.5
+                        ensureRoom(below: lastReplyBottom + lineGap)
+                    } else {
+                        skippedImages += 1
+                    }
+                } else {
+                    skippedImages += 1
+                }
+                writeNext()   // instant — no pen to wait on
+                return
+            }
+
+            guard let text = block.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else {
+                writeNext()
+                return
+            }
+            writeImportedReply(text) {
+                // A short beat between blocks so the page reads as being
+                // worked down by a hand, not dumped (PEN-09).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { writeNext() }
+            }
+        }
+        writeNext()
+    }
+
+    /// Writes one imported text block as renderer-overlay reply ink — the
+    /// path the app actually paints reply ink with, and the only one that's
+    /// reliably visible for a write launched from a menu.
+    ///
+    /// History that shaped this: routing import through `writeReplyText` (a
+    /// PencilKit `bakeStroke`) left ink that committed to `canvas.drawing`
+    /// (selectable, erasable) but NEVER PAINTED — a PKCanvasView won't repaint
+    /// a programmatic drawing change made from a menu action until an
+    /// interaction (Select All, scroll) forces it, and nothing I tried
+    /// (first-responder, opening the tray, re-assigning the drawing, a
+    /// scroll-nudge) forced it reliably. So import stays on the overlay: the
+    /// renderer animates the strokes and keeps its layers (no per-stroke
+    /// handler retires them), and the block is persisted as a `ReplyInk` that
+    /// `loadDrawing` redraws with `drawStatic`. Trade-off: overlay ink isn't
+    /// tray-eraser-erasable (long-press "Delete Penpal Reply" / Undo instead).
+    private func writeImportedReply(_ text: String, completion: @escaping () -> Void) {
+        publishForVoiceOver(text, isAnswer: false)   // PEN-32
+        let originY = max(lastReplyBottom + importLineStep, rulesTopInset + lineGap)
+        let virtualBounds = CGRect(x: 0, y: 0, width: bounds.width,
+                                   height: contentHeight + max(400, bounds.height))
+        let placement = ReplyPlacement(origin: CGPoint(x: leftMargin, y: originY),
+                                       xHeight: lineRelativeXHeight,
+                                       maxX: bounds.width - 24,
+                                       maxY: virtualBounds.maxY,
+                                       newInkBounds: .zero,
+                                       detectedLines: [],
+                                       needsNewPage: false)
+
+        if settings.replyStyle == "font" {
+            let bottom = writeTypedReply(text, placement: placement)
+            lastReplyBottom = bottom
+            ensureRoom(below: bottom + lineGap * 2)
+            completion()
+            return
+        }
+
+        PersonalFontStore.shared.clearVAECache()
+        InkUnity.shared.beginSentence()
+        let sequence = StrokeFont.layoutSequence(text: text,
+                                                 origin: placement.origin,
+                                                 xHeight: placement.xHeight,
+                                                 maxX: placement.maxX,
+                                                 lineGap: lineGap,
+                                                 maxY: placement.maxY,
+                                                 messiness: messiness,
+                                                 useUserHand: true,
+                                                 settings: settings,
+                                                 allowSynthesis: !looksLikeMath(text))
+        InkUnity.shared.endSentence()
+        if sequence.clipped {
+            addPage()
+            completion()
+            return
+        }
+
+        let baseWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
+        // Stamp constant tip width so the outline is opaque (same as replies).
+        let strokes: [InkStroke] = sequence.strokes.compactMap { s in
+            guard s.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
+            var copy = s
+            if copy.isDot {
+                copy.dotRadius = max(copy.dotRadius, baseWidth * 0.45)
+            } else if copy.points.count > 1 {
+                copy.widths = Array(repeating: baseWidth, count: copy.points.count)
+            }
+            return copy
+        }
+        guard !strokes.isEmpty else { completion(); return }
+
+        let bottomY = sequence.bottomY
+        ensureRoom(below: bottomY + lineGap * 2)
+        scrollToReveal(placement.origin.y)
+
+        // VISIBLE ROUTE (proven): animate with the renderer and KEEP its ink
+        // layers on screen (no per-stroke handler, so they're never retired),
+        // then persist as a `ReplyInk` overlay — the exact record
+        // `loadDrawing` redraws with `drawStatic` on reload. PencilKit bake was
+        // tried and is invisible for menu-launched writes no matter what forces
+        // the repaint, so import deliberately never becomes a PKStroke. The
+        // tray eraser can't touch overlay ink; long-press "Delete Penpal Reply"
+        // and Undo remove it instead — same as any Penpal reply overlay.
+        renderer.inkColor = bakedInkColor
+        let savedScale = renderer.widthScale
+        renderer.widthScale = 1
+        onWritingStateChange?(true)
+        renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: nil) { [weak self] in
+            guard let self else { return }
+            self.renderer.widthScale = savedScale
+            let persisted = strokes.map { PersistedInkStroke(from: $0) }
+            let reply = ReplyInk(baseWidth: baseWidth, strokes: persisted)
+            self.placedInks.append(reply)
+            self.onReplyInksChange?(self.placedInks)
+            self.lastReplyBottom = bottomY
+            self.onWritingStateChange?(false)
+            completion()
+        }
+    }
+
+
+    /// Drops an imported figure in at an explicit page position — same left
+    /// margin and vertical progression the surrounding written blocks use —
+    /// instead of `insertImageBlock`'s centered-in-viewport placement, which
+    /// would scatter every diagram in the middle of the screen regardless of
+    /// what's around it. Deliberately skips `setPageEditMode`/`restackCodeBlocks`:
+    /// those are for a single user-initiated "add a block" action, and
+    /// flipping the toolbar into Arrange mode once per figure while a page is
+    /// still being imported would be disruptive rather than helpful.
+    /// Returns the block's bottom Y so the caller can continue the flow
+    /// below it, or nil if the crop couldn't be encoded.
+    @discardableResult
+    private func insertImportedImageBlock(_ image: UIImage, atY y: CGFloat) -> CGFloat? {
+        guard image.size.width > 0, image.size.height > 0,
+              let jpeg = image.jpegData(compressionQuality: 0.88) else { return nil }
+        let w = min(max(240, bounds.width - leftMargin - 24), 560)
+        let ratio = image.size.height / image.size.width
+        let h = min(max(140, w * ratio), 520)
+        let block = CodeBlock(html: CodedPaper.imageBlockHTML(base64JPEG: jpeg.base64EncodedString()),
+                              kind: .image, x: leftMargin, y: y, width: w, height: h)
+        let view = makeCodeBlockView(block)
+        canvas.addSubview(view)
+        codeBlockViews.append(view)
+        restackCodeBlocks()
+        growForCodeBlocks()
+        persistCodeBlocks()
+        return y + h
+    }
+
+    /// Redraws the image so its backing pixels match `imageOrientation` —
+    /// i.e. `.cgImage` and the encoded PNG/JPEG agree on what "up" is. See
+    /// the comment in `importPhotoPage` for why this has to happen once,
+    /// before either the upload or the later crop.
+    private static func normalizedUp(_ image: UIImage) -> UIImage {
+        guard image.imageOrientation != .up else { return image }
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.scale = image.scale
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+    }
+
+    /// Crops the ORIGINAL photographed image to a block's normalised box —
+    /// the app keeps the user's real pixels rather than trusting a
+    /// server-side re-render of content it was told not to try to draw.
+    private static func crop(_ image: UIImage, to box: PenpalAPI.WorksheetProblem.Box) -> UIImage? {
+        guard let cgImage = image.cgImage else { return nil }
+        let w = CGFloat(cgImage.width)
+        let h = CGFloat(cgImage.height)
+        let rect = CGRect(x: box.x * w, y: box.y * h,
+                          width: box.width * w, height: box.height * h)
+            .intersection(CGRect(x: 0, y: 0, width: w, height: h))
+        guard rect.width > 1, rect.height > 1,
+              let cropped = cgImage.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
+    }
+
     /// Removes the box gesture stroke(s) from the canvas while the renderer
     /// fades ghosts of them — the gesture served its purpose; the page keeps
     /// only actual work. Handles boxes drawn as one loop or several segments.
@@ -2874,9 +3208,18 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// `celebrate` adds a soft wash under the finished ink (instant math).
     /// `matchStrokes` — when set, answer width/color track the user's ink so
     /// the bake into PencilKit doesn't look thinner/fainter than what they wrote.
+    /// `completion` fires when the write has genuinely finished (or exited
+    /// early — clipped page, empty strokes, font path), so callers that
+    /// sequence multiple writes (photo import) can chain on REAL completion.
+    /// Timing-based chaining was tried first and produced the worst bug this
+    /// pipeline has had: a second write starting during the first one's
+    /// preroll steals `pendingBake`, and the first write's animated strokes
+    /// are then discarded un-baked as the pen finishes them — ink that
+    /// visibly writes and then vanishes.
     private func renderReply(_ text: String, placement: ReplyPlacement,
                              celebrate: Bool = false,
-                             matchStrokes: [PKStroke] = []) {
+                             matchStrokes: [PKStroke] = [],
+                             completion: (() -> Void)? = nil) {
         // PEN-32: publish before drawing. Every reply reaches VoiceOver
         // regardless of which path produced it, and regardless of whether the
         // ink pipeline later clips or re-pages.
@@ -2902,6 +3245,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                   width: w, height: placement.xHeight * 1.35)
                 renderer.celebrateAnswer(in: rect)
             }
+            completion?()
             return
         }
 
@@ -2925,6 +3269,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             InkUnity.shared.endSentence()
             addPage()
             onStatus?("Added a page — write again.")
+            completion?()
             return
         }
         if settings.diagnostics, sequence.confidence < 0.55 {
@@ -2982,7 +3327,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                   letterCount: max(1, letters))
         InkUnity.shared.endSentence()
 
-        guard !strokes.isEmpty else { return }
+        guard !strokes.isEmpty else { completion?(); return }
         ensureRoom(below: bottomY + lineGap * 2)
         scrollToReveal(placement.origin.y)
 
@@ -3043,6 +3388,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 if celebrate {
                     self.renderer.celebrateAnswer(in: celebrateRect)
                 }
+                completion?()
                 if self.autoReply, self.canvas.drawing.strokes.count > self.lastReplyStrokeCount {
                     self.canvasViewDrawingDidChange(self.canvas)
                 }

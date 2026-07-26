@@ -81,7 +81,7 @@ final class GuidedCanvasView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .secondarySystemBackground
+        backgroundColor = UIColor(Pen.paperRaised)
         layer.cornerRadius = 14
         layer.masksToBounds = true
         canvas.backgroundColor = .clear
@@ -199,12 +199,12 @@ struct GlyphPreview: View {
                         let r = s.dotRadius
                         ctx.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r,
                                                          width: 2 * r, height: 2 * r)),
-                                 with: .color(.primary.opacity(0.85)))
+                                 with: .color(Pen.inkPrimary.opacity(0.85)))
                     } else if s.points.count > 1 {
                         var path = Path()
                         path.move(to: s.points[0])
                         for p in s.points.dropFirst() { path.addLine(to: p) }
-                        ctx.stroke(path, with: .color(.primary.opacity(0.85)),
+                        ctx.stroke(path, with: .color(Pen.inkPrimary.opacity(0.85)),
                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     }
                     if HandwritingSettings.shared.diagnostics,
@@ -219,11 +219,11 @@ struct GlyphPreview: View {
                 }
             }
             .frame(width: 76, height: 62)
-            .background(Color.secondary.opacity(0.08))
+            .background(Pen.inkFaded.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(selected ? Color.accentColor : Color.clear, lineWidth: 2)
+                    .stroke(selected ? Pen.inkAccent : Color.clear, lineWidth: 2)
             )
 
             if let onDelete {
@@ -432,8 +432,12 @@ struct CalibrationView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 12)
+            .background(Pen.paper.ignoresSafeArea())
+            .tint(Pen.inkAccent)
             .navigationTitle("Teach it your hand")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Pen.paper, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     HStack(spacing: 6) {
@@ -474,11 +478,11 @@ struct CalibrationView: View {
                 Text("• Use your real spacing between letters in words")
             }
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Pen.inkFaded)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.yellow.opacity(0.12))
+        .background(Pen.inkCaution.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
@@ -505,7 +509,7 @@ struct CalibrationView: View {
             if let caption = modeCaption {
                 Text(caption)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Pen.inkFaded)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -525,7 +529,7 @@ struct CalibrationView: View {
                         .minimumScaleFactor(0.4)
                     Text("\(currentIndex + 1) of \(targets.count) · \(trainedCount) trained")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Pen.inkFaded)
                 }
                 .frame(maxWidth: .infinity)
 
@@ -538,7 +542,7 @@ struct CalibrationView: View {
 
                 Text("The bright lines are the ones this \(isWordTarget ? "word" : "letter") should touch — write naturally between them.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Pen.inkFaded)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
             GuidedCanvas(proxy: proxy,
@@ -550,8 +554,8 @@ struct CalibrationView: View {
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(saveIsWarning ? .orange.opacity(0.9)
-                                        : .green.opacity(0.9), in: Capsule())
+                            .background(saveIsWarning ? Pen.inkCaution.opacity(0.9)
+                                        : Pen.inkPositive.opacity(0.9), in: Capsule())
                             .foregroundStyle(.white)
                             .padding(8)
                             .transition(.opacity)
@@ -584,7 +588,7 @@ struct CalibrationView: View {
 
                 Text("\(samples)/\(PersonalFontStore.maxVariants)")
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(samples > 0 ? Color.green : Color.secondary)
+                    .foregroundStyle(samples > 0 ? Pen.inkPositive : Pen.inkFaded)
             }
 
             if trainMode == .letters || trainMode == .words {
@@ -632,7 +636,7 @@ struct CalibrationView: View {
                         Text("\(mode.rawValue) \(p.done)/\(p.total)")
                             .font(.caption2.monospacedDigit())
                     }
-                    .foregroundStyle(complete ? Color.green : Color.secondary)
+                    .foregroundStyle(complete ? Pen.inkPositive : Pen.inkFaded)
                 }
                 .buttonStyle(.plain)
             }
@@ -696,9 +700,9 @@ struct CalibrationView: View {
                 .minimumScaleFactor(0.55)
                 .padding(.horizontal, 4)
                 .frame(maxWidth: .infinity, minHeight: 30)
-                .background(selected ? Color.accentColor.opacity(0.28)
-                            : trained ? Color.green.opacity(0.18)
-                            : Color.secondary.opacity(0.1))
+                .background(selected ? Pen.inkAccent.opacity(0.28)
+                            : trained ? Pen.inkPositive.opacity(0.18)
+                            : Pen.inkFaded.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)

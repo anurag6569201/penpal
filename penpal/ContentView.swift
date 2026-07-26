@@ -30,6 +30,7 @@ struct MagicPaper: UIViewRepresentable {
     var onCodeBlocksChange: ([CodeBlock]) -> Void
     var onRequestEditCodeBlock: (CodeBlock) -> Void
     var onPageEditModeChange: (Bool) -> Void
+    var onMarkupOpened: () -> Void
 
     func makeUIView(context: Context) -> MagicPaperView {
         let view = MagicPaperView()
@@ -56,6 +57,7 @@ struct MagicPaper: UIViewRepresentable {
         view.onCodeBlocksChange = onCodeBlocksChange
         view.onRequestEditCodeBlock = onRequestEditCodeBlock
         view.onPageEditModeChange = onPageEditModeChange
+        view.onMarkupOpened = onMarkupOpened
     }
 }
 
@@ -88,13 +90,15 @@ struct ContentView: View {
     @State private var showMathChips = false
     @State private var statusMessage = ""
     @State private var showStatus = false
-    @State private var showMoveNote = false
     @State private var showShare = false
     @State private var shareItems: [Any] = []
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotos = false
-    @State private var findQuery = ""
-    @State private var showFind = false
+    /// PEN-35 — photo import uses its own picker binding, distinct from the
+    /// plain photo attachment above: a selection here is READ and rebuilt as
+    /// page content (ink + image blocks), not just dropped on as a picture.
+    @State private var importPhotoItem: PhotosPickerItem?
+    @State private var showImportPhotos = false
     @State private var loadedNoteID: UUID?
     @State private var bodyText: String = ""
     @State private var titleText: String = ""
@@ -179,9 +183,8 @@ struct ContentView: View {
             }
         }
         .tint(accent)
-        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.88),
-                   value: navigationDrawerPresented)
-        .animation(.easeOut(duration: 0.25), value: showPrefer)
+        .animation(reduceMotion ? nil : Pen.spring, value: navigationDrawerPresented)
+        .animation(reduceMotion ? nil : Pen.spring, value: showPrefer)
         .onAppear {
             syncEditorFromStore(force: true)
         }
@@ -219,11 +222,15 @@ struct ContentView: View {
         .onChange(of: photoItem) { _, item in
             Task { await importPhoto(item) }
         }
+        .onChange(of: importPhotoItem) { _, item in
+            Task { await importPageFromPhoto(item) }
+        }
         .sheet(isPresented: $showTraining) {
             CalibrationView()
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
                 .interactiveDismissDisabled(true)
+                .presentationBackground(Pen.paper)
         }
         .sheet(isPresented: $showSettings) {
             PenpalSettingsView(settings: settings) { message in
@@ -231,30 +238,25 @@ struct ContentView: View {
                 showStatus = true
             }
             .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $showMoveNote) {
-            moveNoteSheet
-                .presentationDetents([.medium])
+            .presentationBackground(Pen.paper)
         }
         .sheet(isPresented: $showShare) {
             ActivityView(items: shareItems)
         }
         .sheet(item: studioSheetItem) { block in
             BlockStudioView(block: block, expanded: $studioFullScreen, onSave: studioSave)
+                .presentationBackground(Pen.paper)
         }
         .fullScreenCover(item: studioFullScreenItem) { block in
             BlockStudioView(block: block, expanded: $studioFullScreen, onSave: studioSave)
+                .background(Pen.paper.ignoresSafeArea())
         }
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
+        .photosPicker(isPresented: $showImportPhotos, selection: $importPhotoItem, matching: .images)
         .alert("Penpal", isPresented: $showStatus) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(statusMessage)
-        }
-        .alert("Find in Note", isPresented: $showFind) {
-            TextField("Search", text: $findQuery)
-            Button("Cancel", role: .cancel) {}
-            Button("Find") { performFind() }
         }
     }
 
@@ -262,7 +264,7 @@ struct ContentView: View {
 
     private var editorDetail: some View {
         ZStack(alignment: .bottom) {
-            Color(.systemBackground).ignoresSafeArea()
+            Pen.paper.ignoresSafeArea()
 
             if let note = store.selectedNote {
                 if note.isCoded {
@@ -313,8 +315,8 @@ struct ContentView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { editorToolbar }
-        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: penpalOn)
-        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: mathChipsVisible)
+        .animation(reduceMotion ? nil : Pen.spring, value: penpalOn)
+        .animation(reduceMotion ? nil : Pen.spring, value: mathChipsVisible)
     }
 
     /// Ink-only toolbar actions don't apply when the note is a coded paper.
@@ -336,7 +338,7 @@ struct ContentView: View {
                     }
                 } label: {
                     Image(systemName: "sidebar.left")
-                        .foregroundStyle(navigationDrawerPresented ? Pen.inkAccent : Color.primary)
+                        .foregroundStyle(navigationDrawerPresented ? Pen.inkAccent : Pen.inkPrimary)
                         .frame(width: 44, height: 40)
                 }
                 .accessibilityLabel(navigationDrawerPresented
@@ -344,13 +346,13 @@ struct ContentView: View {
                                     : "Open Folders and Notes")
 
                 Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    withAnimation(reduceMotion ? nil : Pen.spring) {
                         stickyHidden.toggle()
                     }
                     if !stickyHidden { flushEditor() }
                 } label: {
                     Image(systemName: stickyHidden ? "note.text.badge.plus" : "chevron.up.circle")
-                        .foregroundStyle(stickyHidden ? Color.primary : Pen.inkAccent)
+                        .foregroundStyle(stickyHidden ? Pen.inkPrimary : Pen.inkAccent)
                         .frame(width: 44, height: 40)
                 }
                 .disabled(store.selectedNote == nil)
@@ -358,7 +360,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .frame(width: 104, height: 40, alignment: .center)
-            .glassEffect(.regular, in: Capsule())
+            .background(Pen.paperRaised, in: Capsule())
         }
         .sharedBackgroundVisibility(.hidden)
 
@@ -369,7 +371,7 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 Button { proxy.view?.undo() } label: {
                     Image(systemName: "arrow.uturn.backward.circle")
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                         .frame(width: 44, height: 40)
                 }
                 .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
@@ -377,7 +379,7 @@ struct ContentView: View {
 
                 Button { proxy.view?.redo() } label: {
                     Image(systemName: "arrow.uturn.forward.circle")
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                         .frame(width: 44, height: 40)
                 }
                 .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
@@ -385,7 +387,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .frame(width: 104, height: 40, alignment: .center)
-            .glassEffect(.regular, in: Capsule())
+            .background(Pen.paperRaised, in: Capsule())
         }
         .sharedBackgroundVisibility(.hidden)
 
@@ -393,6 +395,9 @@ struct ContentView: View {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 0) {
                 Menu {
+                    Button("Import Page", systemImage: "doc.viewfinder") {
+                        showImportPhotos = true
+                    }
                     Button("Add Attachment", systemImage: "paperclip") {
                         insertPageBlock(CodedPaper.attachmentBlockHTML, kind: .attachment, height: 280)
                     }
@@ -414,7 +419,7 @@ struct ContentView: View {
                     }
                 } label: {
                     Image(systemName: "paperclip")
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                         .frame(width: 44, height: 40)
                 }
                 .disabled(store.selectedNote == nil || selectedIsCoded)
@@ -429,7 +434,7 @@ struct ContentView: View {
                     Image(systemName: toolsVisible
                           ? "pencil.tip.crop.circle.fill"
                           : "pencil.tip.crop.circle")
-                        .foregroundStyle(toolsVisible ? Pen.inkAccent : Color.primary)
+                        .foregroundStyle(toolsVisible ? Pen.inkAccent : Pen.inkPrimary)
                         .frame(width: 44, height: 40)
                 }
                 .disabled(store.selectedNote == nil || selectedIsCoded)
@@ -448,7 +453,7 @@ struct ContentView: View {
                     Image(systemName: pageEditMode
                           ? "square.dashed.inset.filled"
                           : "square.dashed")
-                        .foregroundStyle(pageEditMode ? Pen.inkAccent : Color.primary)
+                        .foregroundStyle(pageEditMode ? Pen.inkAccent : Pen.inkPrimary)
                         .frame(width: 44, height: 40)
                 }
                 .disabled(store.selectedNote == nil || selectedIsCoded)
@@ -465,7 +470,7 @@ struct ContentView: View {
                     }
                 } label: {
                     Image(systemName: "signature")
-                        .foregroundStyle(penpalOn ? Pen.inkAccent : Color.primary)
+                        .foregroundStyle(penpalOn ? Pen.inkAccent : Pen.inkPrimary)
                         .frame(width: 44, height: 40)
                 }
                 .disabled(store.selectedNote == nil || selectedIsCoded)
@@ -473,7 +478,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .frame(width: 192, height: 40, alignment: .center)
-            .glassEffect(.regular, in: Capsule())
+            .background(Pen.paperRaised, in: Capsule())
         }
         .sharedBackgroundVisibility(.hidden)
 
@@ -482,7 +487,7 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 Button(action: shareCurrentNote) {
                     Image(systemName: "square.and.arrow.up")
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                 }
                 .disabled(store.selectedNote == nil)
                 .frame(width: 44, height: 40)
@@ -500,7 +505,7 @@ struct ContentView: View {
                     }
                 } label: {
                     Image(systemName: "square.and.pencil")
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                 } primaryAction: {
                     createNote()
                 }
@@ -511,7 +516,7 @@ struct ContentView: View {
                     moreActions
                 } label: {
                     Image(systemName: "ellipsis.circle")
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Pen.inkPrimary)
                 }
                 .disabled(store.selectedNote == nil)
                 .menuIndicator(.hidden)
@@ -519,7 +524,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .frame(width: 132, height: 40, alignment: .center)
-            .glassEffect(.regular, in: Capsule())
+            .background(Pen.paperRaised, in: Capsule())
         }
         .sharedBackgroundVisibility(.hidden)
     }
@@ -542,13 +547,13 @@ struct ContentView: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Pen.inkFaded)
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Pen.paperRaised, in: Capsule())
         .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.2), lineWidth: 1))
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
     }
@@ -657,6 +662,12 @@ struct ContentView: View {
                         proxy.view?.setToolsVisible(false)
                         bodyFocused = false
                     }
+                },
+                onMarkupOpened: {
+                    // Photo import opens the markup tray itself so its ink
+                    // paints — keep the toolbar button in sync.
+                    toolsVisible = true
+                    bodyFocused = false
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -668,7 +679,7 @@ struct ContentView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: stickyHidden)
+        .animation(reduceMotion ? nil : Pen.spring, value: stickyHidden)
     }
 
     private var stickyNoteCard: some View {
@@ -679,7 +690,7 @@ struct ContentView: View {
                 Text(store.selectedNote?.modifiedAt.formatted(date: .abbreviated, time: .shortened) ?? "")
                     .font(.caption2)
             }
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Pen.inkFaded)
             .padding(.bottom, 4)
 
             TextField("Title", text: $titleText)
@@ -912,16 +923,25 @@ struct ContentView: View {
         showShare = true
     }
 
-    private func performFind() {
-        let q = findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return }
-        if bodyText.localizedCaseInsensitiveContains(q) || titleText.localizedCaseInsensitiveContains(q) {
-            bodyFocused = true
-            statusMessage = "Found “\(q)” in this note."
+    /// PEN-35 — read an existing paper page from a photo and rebuild its
+    /// content on the live page, rather than dropping the photo in as a flat
+    /// picture (that's `importPhoto`/`insertImageAttachment`, still separate).
+    @MainActor
+    private func importPageFromPhoto(_ item: PhotosPickerItem?) async {
+        guard let item, store.selectedNoteID != nil else { return }
+        defer { importPhotoItem = nil }
+        let data: Data?
+        if let loaded = try? await item.loadTransferable(type: Data.self) {
+            data = loaded
         } else {
-            statusMessage = "“\(q)” not found in this note."
+            data = try? await item.loadTransferable(type: PhotoData.self)?.data
         }
-        showStatus = true
+        guard let data, let image = UIImage(data: data) else {
+            statusMessage = "Couldn't read that photo."
+            showStatus = true
+            return
+        }
+        proxy.view?.importPhotoPage(image)
     }
 
     @MainActor
@@ -950,11 +970,6 @@ struct ContentView: View {
 
     @ViewBuilder
     private var moreActions: some View {
-        Button("Find in Note", systemImage: "magnifyingglass") { showFind = true }
-        Button("Move Note", systemImage: "folder") { showMoveNote = true }
-        Button("Solve Whole Page", systemImage: "list.number") {
-            proxy.view?.solveWholePageAsWorksheet()
-        }
         // PEN-19 — only offered when there's actually something due, so it
         // never nags. The reward is the list getting shorter, not a streak.
         if planner.hasWorkDue {
@@ -962,26 +977,7 @@ struct ContentView: View {
                 startPractice()
             }
         }
-        Button("Check My Working", systemImage: "checkmark.circle.badge.questionmark") {
-            proxy.view?.checkMyWorking()
-        }
-        // PEN-23 — accessibility first: Penpal otherwise requires a stylus
-        // and fine motor control, which excludes people outright.
-        Button(voice.isListening ? "Stop Listening" : "Speak a Problem",
-               systemImage: voice.isListening ? "stop.circle" : "mic") {
-            if voice.isListening {
-                voice.stop()
-            } else {
-                voice.start { spoken in
-                    proxy.view?.sendTextMessage(spoken)
-                }
-            }
-        }
         Button("Add Page", systemImage: "plus.rectangle.portrait") { proxy.view?.addPage() }
-        Button("Insert Code Block", systemImage: "curlybraces") {
-            insertPageBlock(CodedPaper.blockStarterHTML, kind: .code, height: 300)
-        }
-        Button("Erase Penpal Replies", systemImage: "eraser") { proxy.view?.clearPenpalContent() }
         Divider()
         Button("Train Handwriting", systemImage: "signature") { showTraining = true }
         Button("Penpal Settings", systemImage: "slider.horizontal.3") { showSettings = true }
@@ -1000,37 +996,13 @@ struct ContentView: View {
         }
     }
 
-    private var moveNoteSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(store.movableFolders()) { folder in
-                    Button {
-                        if let id = store.selectedNoteID {
-                            store.moveNote(id, to: folder.id)
-                        }
-                        showMoveNote = false
-                    } label: {
-                        Label(folder.name, systemImage: "folder")
-                    }
-                }
-            }
-            .navigationTitle("Move Note")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showMoveNote = false }
-                }
-            }
-        }
-    }
-
     private var preferenceBar: some View {
         HStack(spacing: 14) {
             Text("Looks like you?")
                 .font(.footnote.weight(.medium))
             Text("\(Int(naturalness * 100))%")
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Pen.inkFaded)
             Button {
                 StyleRL.shared.prefer(liked: true)
                 showPrefer = false
@@ -1051,11 +1023,11 @@ struct ContentView: View {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Pen.inkFaded)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Pen.paperRaised, in: Capsule())
         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
     }
 }

@@ -1506,14 +1506,14 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         // Live ring (normal mode, active only). Below the ink visually, like
         // the block itself — it marks the block, it doesn't float over ink.
         activeRing.fillColor = UIColor.clear.cgColor
-        activeRing.strokeColor = UIColor.tintColor.withAlphaComponent(0.55).cgColor
+        activeRing.strokeColor = UIColor(Pen.inkAccent).withAlphaComponent(0.55).cgColor
         activeRing.lineWidth = 2
         activeRing.isHidden = true
         layer.addSublayer(activeRing)
 
         // Dashed selection outline (edit mode only).
         outline.fillColor = UIColor.clear.cgColor
-        outline.strokeColor = UIColor.tintColor.withAlphaComponent(0.9).cgColor
+        outline.strokeColor = UIColor(Pen.inkAccent).withAlphaComponent(0.9).cgColor
         outline.lineWidth = 1.5
         outline.lineDashPattern = [6, 4]
         outline.isHidden = true
@@ -1523,8 +1523,8 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         for corner in 0..<4 {
             let h = UIView()
             h.tag = corner
-            h.backgroundColor = .systemBackground
-            h.layer.borderColor = UIColor.tintColor.cgColor
+            h.backgroundColor = UIColor(Pen.paperRaised)
+            h.layer.borderColor = UIColor(Pen.inkAccent).cgColor
             h.layer.borderWidth = 2
             h.layer.cornerRadius = handleSize / 2
             h.isHidden = true
@@ -1540,7 +1540,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         toolbar.alignment = .center
         toolbar.isLayoutMarginsRelativeArrangement = true
         toolbar.directionalLayoutMargins = .init(top: 6, leading: 10, bottom: 6, trailing: 10)
-        toolbar.backgroundColor = UIColor.secondarySystemBackground
+        toolbar.backgroundColor = UIColor(Pen.paperRaised)
         toolbar.layer.cornerRadius = 16
         toolbar.layer.cornerCurve = .continuous
         toolbar.layer.shadowColor = UIColor.black.cgColor
@@ -1627,7 +1627,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     private func makeToolButton(system: String, action: Selector, destructive: Bool = false) -> UIButton {
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: system)
-        config.baseForegroundColor = destructive ? .systemRed : .tintColor
+        config.baseForegroundColor = destructive ? .systemRed : UIColor(Pen.inkAccent)
         config.preferredSymbolConfigurationForImage =
             UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
         config.contentInsets = .init(top: 4, leading: 6, bottom: 4, trailing: 6)
@@ -1639,7 +1639,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     private func makeMenuButton(system: String, menu: UIMenu) -> UIButton {
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: system)
-        config.baseForegroundColor = .tintColor
+        config.baseForegroundColor = UIColor(Pen.inkAccent)
         config.preferredSymbolConfigurationForImage =
             UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
         config.contentInsets = .init(top: 4, leading: 6, bottom: 4, trailing: 6)
@@ -2036,6 +2036,7 @@ struct CodeBlockEditorView: View {
                 switch mode {
                 case .code:
                     TextEditor(text: $html)
+                        .scrollContentBackground(.hidden)
                         .font(.system(.footnote, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -2043,11 +2044,15 @@ struct CodeBlockEditorView: View {
                         .padding(.horizontal, 8)
                 case .preview:
                     BlockPreview(html: html)
-                        .background(Color(.secondarySystemBackground))
+                        .background(Pen.paperRaised)
                 }
             }
+            .background(Pen.paper.ignoresSafeArea())
+            .tint(Pen.inkAccent)
             .navigationTitle("Code Block")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Pen.paper, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Picker("Mode", selection: $mode) {
