@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import unicodedata
 from typing import Any
@@ -11,10 +12,14 @@ from django.conf import settings
 from google import genai
 from google.genai import types
 
-from . import mathengine, routing, telemetry
+from . import mathengine, routing, telemetry, tracer
 from .prompts import (
     GRADER_SYSTEM_PROMPT,
+    DEBATE_SYSTEM_PROMPT,
     IMPORT_SYSTEM_PROMPT,
+    ILLUSTRATOR_SYSTEM_PROMPT,
+    ILLUSTRATOR_TRACE_GATE_PROMPT,
+    LANGUAGE_PRACTICE_SYSTEM_PROMPT,
     MATH_CORRECTOR_NOTE,
     MATH_DETAIL,
     PRACTICE_SYSTEM_PROMPT,
@@ -23,7 +28,10 @@ from .prompts import (
     WORKSHEET_CORRECTOR_NOTE,
     WORKSHEET_SYSTEM_PROMPT,
     WORKSHEET_VERIFIER_PROMPT,
+    VISION_CLASSIFIER_PROMPT,
+    VISION_COMPANION_NOTE,
     build_system_prompt,
+    language_partner_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -443,6 +451,7 @@ def solve_math_image(
     mime_type: str = "image/png",
     history: list[dict[str, Any]] | None = None,
     math_detail: str = "compact",
+    question: str = "",
 ) -> str:
     """
     Solve a boxed handwritten problem straight from its image — no OCR,
@@ -456,9 +465,10 @@ def solve_math_image(
         capability="mathematician", math_detail=math_detail
     )
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-    prompt_part = types.Part.from_text(
-        text="Solve the handwritten problem in this image."
-    )
+    prompt_part = types.Part.from_text(text=(
+        question.strip()[:4000]
+        or "Solve the handwritten problem in this image."
+    ))
 
     contents = _build_contents(history, "")[:-1]  # history only
     contents.append(
@@ -700,6 +710,563 @@ def import_page(image_bytes: bytes, mime_type: str = "image/png") -> list[dict[s
     if not blocks:
         raise GeminiError("Nothing readable was found on that page.")
     return blocks
+
+
+def _clean_illustration(raw: Any) -> dict[str, Any]:
+    """Validate and bound Illustrator's model-authored path plan."""
+    if not isinstance(raw, dict):
+        raise ValueError("illustration must be a JSON object")
+
+    kind = str(raw.get("kind") or "").strip().lower()
+    if kind == "refusal":
+        message = str(raw.get("message") or "").strip()[:240]
+        return {
+            "kind": "refusal",
+            "message": message or (
+                "I need a trusted reference to draw that accurately, "
+                "so I won't guess."
+            ),
+        }
+    if kind != "strokes":
+        raise ValueError("illustration kind must be strokes or refusal")
+
+    source = raw.get("strokes")
+    if not isinstance(source, list):
+        raise ValueError("illustration strokes must be a list")
+
+    strokes: list[dict[str, Any]] = []
+    total_points = 0
+    for item in source[:120]:
+        if not isinstance(item, dict) or not isinstance(item.get("points"), list):
+            continue
+        role = str(item.get("role") or "detail").strip().lower()
+        if role not in ("outline", "detail"):
+            role = "detail"
+
+        points: list[list[float]] = []
+        for pair in item["points"][:180]:
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                continue
+            try:
+                x, y = float(pair[0]), float(pair[1])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(x) or not math.isfinite(y):
+                continue
+            if not 0 <= x <= 1000 or not 0 <= y <= 1000:
+                continue
+            point = [round(x / 1000, 4), round(y / 1000, 4)]
+            if not points or point != points[-1]:
+                points.append(point)
+        if len(points) < 2:
+            continue
+        if total_points + len(points) > 12_000:
+            break
+        total_points += len(points)
+        strokes.append({"role": role, "points": points})
+
+    if not strokes:
+        raise ValueError("illustration contains no usable strokes")
+    return {
+        "kind": "strokes",
+        "label": str(raw.get("label") or "illustration").strip()[:120]
+            or "illustration",
+        "strokes": strokes,
+    }
+
+
+def _illustrate_plan(message: str) -> dict[str, Any]:
+    """
+    PEN-36 direct path — the model plans ordered stroke geometry itself.
+
+    No image is generated: fast, offline-friendly, and the graceful fallback if
+    the trace path fails. Factual/labelled diagrams fail closed as a refusal
+    because this path has no vetted reference to trace.
+    """
+    model = (getattr(settings, "GEMINI_ILLUSTRATOR_MODEL", "") or "").strip() \
+        or settings.GEMINI_MODEL
+    client = _client()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=message[:4000])],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=ILLUSTRATOR_SYSTEM_PROMPT,
+                temperature=0.35,
+                top_p=0.9,
+                max_output_tokens=8000,
+                response_mime_type="application/json",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Illustration planning failed")
+        raise GeminiError(str(exc)) from exc
+
+    _account(model, response)
+    try:
+        return _clean_illustration(_parse_json_block(_extract_text(response)))
+    except ValueError as exc:
+        raise GeminiError(f"Could not draw that: {exc}") from exc
+
+
+def _gate_illustration(message: str) -> dict[str, Any]:
+    """
+    Decide refuse-vs-draw for the trace path, and — if allowed — write the image
+    prompt. Keeping the correctness boundary on the text model means an unsafe or
+    factual request is refused *before* any image quota is spent.
+    """
+    model = (getattr(settings, "GEMINI_ILLUSTRATOR_MODEL", "") or "").strip() \
+        or settings.GEMINI_MODEL
+    client = _client()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=message[:4000])],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=ILLUSTRATOR_TRACE_GATE_PROMPT,
+                temperature=0.2,
+                top_p=0.9,
+                max_output_tokens=800,
+                response_mime_type="application/json",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Illustration gate failed")
+        raise GeminiError(str(exc)) from exc
+
+    _account(model, response)
+    raw = _parse_json_block(_extract_text(response))
+    if not isinstance(raw, dict):
+        raise GeminiError("Illustration gate returned no decision.")
+    kind = str(raw.get("kind") or "").strip().lower()
+    if kind == "refusal":
+        message_out = str(raw.get("message") or "").strip()[:240]
+        return {"kind": "refusal", "message": message_out or (
+            "I need a trusted reference to draw that accurately, so I won't guess."
+        )}
+    prompt = str(raw.get("image_prompt") or "").strip()
+    if kind != "image" or not prompt:
+        raise GeminiError("Illustration gate produced no image prompt.")
+    return {
+        "kind": "image",
+        "label": str(raw.get("label") or "illustration").strip()[:120] or "illustration",
+        "image_prompt": prompt[:1500],
+    }
+
+
+def generate_reference_image(prompt: str) -> bytes:
+    """Render `prompt` to PNG-ish bytes with the configured image model."""
+    model = (getattr(settings, "GEMINI_IMAGE_MODEL", "") or
+             "gemini-2.5-flash-image").strip()
+    client = _client()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=prompt[:1500])],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+                temperature=0.4,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Reference image generation failed")
+        raise GeminiError(str(exc)) from exc
+
+    _account(model, response)
+    for cand in getattr(response, "candidates", None) or []:
+        content = getattr(cand, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            inline = getattr(part, "inline_data", None)
+            data = getattr(inline, "data", None) if inline else None
+            if data:
+                return data
+    raise GeminiError("The image model returned no image.")
+
+
+def _illustrate_trace(message: str) -> dict[str, Any]:
+    """Trace path — gate → generate reference image → trace to ink strokes."""
+    gate = _gate_illustration(message)
+    if gate.get("kind") == "refusal":
+        return gate
+    image_bytes = generate_reference_image(gate["image_prompt"])
+    raw = tracer.trace(image_bytes, label=gate.get("label") or "illustration")
+    if isinstance(raw, dict) and raw.get("kind") == "refusal":
+        # An empty/garbled render — degrade honestly instead of inking noise.
+        raise GeminiError(raw.get("message") or "Nothing traceable was rendered.")
+    return _clean_illustration(raw)
+
+
+def trace_image(image_bytes: bytes, label: str = "sketch",
+                mode: str = "auto") -> dict[str, Any]:
+    """
+    PEN-36 (Goal B) — trace a user-provided image into ordered pen strokes.
+
+    Pure on-server computer vision: no model call, so a user's own photo is
+    never sent to Gemini. Returns the same stroke/refusal contract as the
+    generative path; an untraceable image degrades to an honest refusal rather
+    than inking noise.
+    """
+    raw = tracer.trace(image_bytes, label=label or "sketch", mode=mode)
+    if isinstance(raw, dict) and raw.get("kind") == "refusal":
+        return raw
+    try:
+        return _clean_illustration(raw)
+    except ValueError as exc:
+        raise GeminiError(f"Could not trace that image: {exc}") from exc
+
+
+def illustrate(message: str, mode: str = "plan") -> dict[str, Any]:
+    """
+    PEN-36 — turn an imaginative request into ordered pen strokes.
+
+    `mode="trace"` renders the subject with an image model and traces it into
+    ink (richer sketches); `mode="plan"` has the model author stroke geometry
+    directly (no image call). Trace degrades to plan on any pipeline failure, so
+    the page still gets a drawing; a *refusal* from the gate is returned as-is
+    and never redrawn as a guess.
+    """
+    message = str(message or "").strip()
+    if not message:
+        raise GeminiError("A drawing request is required.")
+
+    if mode == "trace":
+        try:
+            return _illustrate_trace(message)
+        except (GeminiError, ValueError):
+            logger.warning("Trace illustration failed; falling back to direct plan",
+                           exc_info=True)
+            return _illustrate_plan(message)
+    return _illustrate_plan(message)
+
+
+SUPPORTED_LANGUAGES = {
+    "en-US": "English",
+    "es-ES": "Spanish",
+    "fr-FR": "French",
+    "de-DE": "German",
+    "it-IT": "Italian",
+    "pt-BR": "Brazilian Portuguese",
+}
+
+
+def _clean_language_turn(raw: Any, language: str) -> dict[str, Any]:
+    """Validate a Language Partner reply without stripping its Unicode."""
+    if not isinstance(raw, dict):
+        raise ValueError("language turn must be a JSON object")
+    reply = str(raw.get("reply") or "").strip()[:600]
+    if not reply:
+        raise ValueError("language turn contains no reply")
+
+    correction = raw.get("correction")
+    correction = correction if isinstance(correction, dict) else {}
+    try:
+        confidence = float(correction.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if not math.isfinite(confidence):
+        confidence = 0
+    confidence = max(0.0, min(1.0, confidence))
+
+    reason = str(correction.get("reason") or "").strip()[:240]
+    corrected = str(correction.get("corrected") or "").strip()[:400]
+    skill = str(correction.get("skill") or "").strip()[:120]
+    # False corrections are more damaging than missed ones. Require the
+    # model's explicit high confidence plus enough content to help.
+    found_error = (
+        bool(correction.get("found_error"))
+        and confidence >= 0.85
+        and bool(reason)
+        and bool(corrected)
+    )
+    if not found_error:
+        reason = corrected = skill = ""
+
+    return {
+        "reply": reply,
+        "language": language,
+        "correction": {
+            "found_error": found_error,
+            "reason": reason,
+            "corrected": corrected,
+            "skill": skill or (f"{language} conversation" if found_error else ""),
+            "confidence": round(confidence, 3),
+        },
+    }
+
+
+def language_turn(
+    message: str,
+    language_code: str,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """PEN-37 — converse in the target language and flag one safe correction."""
+    message = str(message or "").strip()
+    if not message:
+        raise GeminiError("A language message is required.")
+    language = SUPPORTED_LANGUAGES.get(language_code)
+    if not language:
+        raise GeminiError("That practice language is not supported.")
+
+    model = (getattr(settings, "GEMINI_LANGUAGE_MODEL", "") or "").strip() \
+        or settings.GEMINI_MODEL
+    client = _client()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=_build_contents(history, message[:4000]),
+            config=types.GenerateContentConfig(
+                system_instruction=language_partner_prompt(language),
+                temperature=0.45,
+                top_p=0.9,
+                max_output_tokens=3000,
+                response_mime_type="application/json",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Language Partner turn failed")
+        raise GeminiError(str(exc)) from exc
+
+    _account(model, response)
+    try:
+        raw = _parse_json_block(_extract_text(response))
+        return _clean_language_turn(raw, language)
+    except ValueError as exc:
+        raise GeminiError(f"Could not continue that conversation: {exc}") from exc
+
+
+def _clean_debate_turn(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise ValueError("debate turn must be a JSON object")
+    counterargument = str(raw.get("counterargument") or "").strip()[:900]
+    question = str(raw.get("question") or "").strip()[:240]
+    if not counterargument:
+        raise ValueError("debate turn contains no counterargument")
+    return {
+        "counterargument": counterargument,
+        "question": question,
+    }
+
+
+def debate_turn(
+    message: str,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """PEN-38 — a strongest-good-faith counterpoint, never a grade."""
+    message = str(message or "").strip()
+    if not message:
+        raise GeminiError("An argument is required.")
+
+    model = (getattr(settings, "GEMINI_DEBATE_MODEL", "") or "").strip() \
+        or settings.GEMINI_MODEL
+    client = _client()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=_build_contents(history, message[:4000]),
+            config=types.GenerateContentConfig(
+                system_instruction=DEBATE_SYSTEM_PROMPT,
+                temperature=0.55,
+                top_p=0.9,
+                max_output_tokens=3000,
+                response_mime_type="application/json",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Debate Partner turn failed")
+        raise GeminiError(str(exc)) from exc
+
+    _account(model, response)
+    try:
+        return _clean_debate_turn(
+            _parse_json_block(_extract_text(response))
+        )
+    except ValueError as exc:
+        raise GeminiError(f"Could not form a counterpoint: {exc}") from exc
+
+
+def _vision_contents(
+    image_part: types.Part,
+    prompt: str,
+    history: list[dict[str, Any]] | None,
+) -> list[types.Content]:
+    contents = _build_contents(history, prompt)
+    contents[-1] = types.Content(
+        role="user",
+        parts=[image_part, types.Part.from_text(text=prompt)],
+    )
+    return contents
+
+
+def _classify_vision(
+    client: genai.Client,
+    model: str,
+    image_part: types.Part,
+    prompt: str,
+) -> str:
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[types.Content(
+                role="user",
+                parts=[image_part, types.Part.from_text(text=prompt)],
+            )],
+            config=types.GenerateContentConfig(
+                system_instruction=VISION_CLASSIFIER_PROMPT,
+                temperature=0.0,
+                max_output_tokens=400,
+                response_mime_type="application/json",
+            ),
+        )
+        _account(model, response)
+        raw = _parse_json_block(_extract_text(response))
+        kind = str(raw.get("kind") or "") if isinstance(raw, dict) else ""
+        if kind not in ("math", "other"):
+            raise ValueError("unknown image kind")
+        return kind
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Vision classification failed")
+        raise GeminiError(f"Could not tell how to read that photo: {exc}") from exc
+
+
+def vision_turn(
+    image_bytes: bytes,
+    capability: str,
+    message: str = "",
+    history: list[dict[str, Any]] | None = None,
+    mime_type: str = "image/jpeg",
+    math_detail: str = "compact",
+    language_code: str = "es-ES",
+) -> dict[str, Any]:
+    """
+    PEN-39 — respond to external visual content through the selected
+    capability. This is intentionally separate from PEN-35 transcription.
+    """
+    if not image_bytes:
+        raise GeminiError("No image supplied.")
+    capability = (capability or "companion").strip().lower()
+    if capability not in ("companion", "mathematician", "language", "debate"):
+        raise GeminiError("That capability cannot respond to a photo.")
+
+    defaults = {
+        "companion": "What is this? Explain what you can see clearly for a student.",
+        "mathematician": "Solve the mathematical problem in this image.",
+        "language": "Talk with me in the target language about what is shown here.",
+        "debate": "Treat the visible text as the claim and give its strongest counterpoint.",
+    }
+    prompt = (message or "").strip()[:4000] or defaults[capability]
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+
+    # Mathematics always uses the existing solve → verify → correct pipeline.
+    if capability == "mathematician":
+        return {
+            "kind": "math",
+            "reply": solve_math_image(
+                image_bytes,
+                mime_type=mime_type,
+                history=history,
+                math_detail=math_detail,
+                question=prompt,
+            ),
+        }
+
+    model = (getattr(settings, "GEMINI_VISION_MODEL", "") or "").strip() \
+        or settings.GEMINI_MODEL
+    client = _client()
+
+    # Companion photos may still be maths. Classify first so a visible
+    # equation can never receive an unchecked conversational answer.
+    if capability == "companion":
+        if _classify_vision(client, model, image_part, prompt) == "math":
+            return {
+                "kind": "math",
+                "reply": solve_math_image(
+                    image_bytes,
+                    mime_type=mime_type,
+                    history=history,
+                    math_detail=math_detail,
+                    question=prompt,
+                ),
+            }
+        system_prompt = (
+            build_system_prompt(capability="companion")
+            + "\n\n" + VISION_COMPANION_NOTE
+        )
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=_vision_contents(image_part, prompt, history),
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.5,
+                    top_p=0.9,
+                    max_output_tokens=2500,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Companion vision failed")
+            raise GeminiError(str(exc)) from exc
+        _account(model, response)
+        reply = _clean_reply(_extract_text(response))
+        if not reply:
+            raise GeminiError("Nothing readable was found in that photo.")
+        return {"kind": "companion", "reply": reply, "trust": "unverified"}
+
+    system_prompt: str
+    if capability == "language":
+        language = SUPPORTED_LANGUAGES.get(language_code)
+        if not language:
+            raise GeminiError("That practice language is not supported.")
+        system_prompt = language_partner_prompt(language)
+    else:
+        language = ""
+        system_prompt = DEBATE_SYSTEM_PROMPT
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=_vision_contents(image_part, prompt, history),
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.45 if capability == "language" else 0.55,
+                top_p=0.9,
+                max_output_tokens=3000,
+                response_mime_type="application/json",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("%s vision failed", capability)
+        raise GeminiError(str(exc)) from exc
+    _account(model, response)
+
+    try:
+        raw = _parse_json_block(_extract_text(response))
+        if capability == "language":
+            return {
+                "kind": "language",
+                **_clean_language_turn(raw, language),
+            }
+        return {
+            "kind": "debate",
+            **_clean_debate_turn(raw),
+            "trust": "perspective",
+        }
+    except ValueError as exc:
+        raise GeminiError(f"Could not read that photo: {exc}") from exc
 
 
 def _verify_worksheet(client, image_part, prompt_part, system_prompt,
@@ -1022,6 +1589,7 @@ def practice_problem(
     topic: str,
     mistake: str = "",
     difficulty: str = "same",
+    domain: str = "math",
 ) -> dict[str, Any]:
     """
     PEN-19 — one practice problem targeting a specific past mistake.
@@ -1037,6 +1605,7 @@ def practice_problem(
     difficulty = (difficulty or "same").strip().lower()
     if difficulty not in ("easier", "same", "harder"):
         difficulty = "same"
+    domain = "language" if (domain or "").strip().lower() == "language" else "math"
 
     prompt = f"Topic: {topic}\nDifficulty: {difficulty}"
     if mistake:
@@ -1049,7 +1618,10 @@ def practice_problem(
             contents=[types.Content(role="user",
                                     parts=[types.Part.from_text(text=prompt)])],
             config=types.GenerateContentConfig(
-                system_instruction=PRACTICE_SYSTEM_PROMPT,
+                system_instruction=(
+                    LANGUAGE_PRACTICE_SYSTEM_PROMPT
+                    if domain == "language" else PRACTICE_SYSTEM_PROMPT
+                ),
                 # A little warmth here: identical practice problems every time
                 # would be recognisable rather than instructive.
                 temperature=0.6,

@@ -4,3 +4,7 @@ django-cors-headers>=4.4
 google-genai>=1.0
 python-dotenv>=1.0
 sympy>=1.12
+# PEN-36 trace path — raster reference image → centre-line pen strokes.
+opencv-python-headless>=4.9
+scikit-image>=0.22
+numpy>=1.26

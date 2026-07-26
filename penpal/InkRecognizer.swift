@@ -22,12 +22,14 @@ enum InkRecognizer {
     /// can't be read (too little ink, scribbles, or Vision found nothing).
     @MainActor
     static func recognize(strokes: [PKStroke],
-                          traits: UITraitCollection? = nil) async -> String {
+                          traits: UITraitCollection? = nil,
+                          recognitionLanguages: [String] = ["en-US"]) async -> String {
         guard !strokes.isEmpty else { return "" }
         guard let cgImage = renderImage(strokes: strokes, traits: traits) else {
             return ""
         }
-        return await transcribe(cgImage, languageCorrection: true).first ?? ""
+        return await transcribe(cgImage, languageCorrection: true,
+                                recognitionLanguages: recognitionLanguages).first ?? ""
     }
 
     /// Multiple plausible transcriptions, best-for-conversation first.
@@ -36,11 +38,16 @@ enum InkRecognizer {
     /// swallows carets. Callers try each candidate until one parses.
     @MainActor
     static func recognizeCandidates(strokes: [PKStroke],
-                                    traits: UITraitCollection? = nil) async -> [String] {
+                                    traits: UITraitCollection? = nil,
+                                    recognitionLanguages: [String] = ["en-US"]) async -> [String] {
         guard !strokes.isEmpty,
               let cgImage = renderImage(strokes: strokes, traits: traits) else { return [] }
-        let corrected = await transcribe(cgImage, languageCorrection: true)
-        let raw = await transcribe(cgImage, languageCorrection: false)
+        let corrected = await transcribe(
+            cgImage, languageCorrection: true,
+            recognitionLanguages: recognitionLanguages)
+        let raw = await transcribe(
+            cgImage, languageCorrection: false,
+            recognitionLanguages: recognitionLanguages)
         var seen = Set<String>()
         var out: [String] = []
         for candidate in corrected + raw
@@ -123,7 +130,8 @@ enum InkRecognizer {
     /// Runs one Vision pass; returns up to 3 full-text readings (top candidate
     /// join first, then joins of the 2nd/3rd ranked per-line candidates).
     private static func transcribe(_ cgImage: CGImage,
-                                   languageCorrection: Bool) async -> [String] {
+                                   languageCorrection: Bool,
+                                   recognitionLanguages: [String]) async -> [String] {
         await withCheckedContinuation { continuation in
             // Build the request AND the handler inside the background block:
             // neither type is Sendable, so nothing may cross the isolation
@@ -149,10 +157,13 @@ enum InkRecognizer {
                 }
                 request.recognitionLevel = .accurate
                 request.usesLanguageCorrection = languageCorrection
-                request.recognitionLanguages = ["en-US"]
+                request.recognitionLanguages = recognitionLanguages.isEmpty
+                    ? ["en-US"] : recognitionLanguages
                 // Nudge the recognizer toward math vocabulary it mangles.
-                request.customWords = ["mod", "sin", "cos", "tan", "sqrt",
-                                       "log", "ln", "pi", "abs", "exp"]
+                if request.recognitionLanguages.contains("en-US") {
+                    request.customWords = ["mod", "sin", "cos", "tan", "sqrt",
+                                           "log", "ln", "pi", "abs", "exp"]
+                }
 
                 let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
                 do {

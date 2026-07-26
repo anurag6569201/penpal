@@ -173,6 +173,33 @@ GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "")
 # falls back to GEMINI_MODEL.
 GEMINI_IMPORT_MODEL = os.getenv("GEMINI_IMPORT_MODEL", "")
 
+# PEN-36 — imaginative line-art planning. Independently configurable because
+# long structured stroke output has different cost/quality needs than chat.
+# Empty keeps the deployment simple by falling back to GEMINI_MODEL.
+GEMINI_ILLUSTRATOR_MODEL = os.getenv("GEMINI_ILLUSTRATOR_MODEL", "")
+
+# PEN-36 (trace path) — the image model whose render the tracer turns into ink.
+# Imagen is being retired; nano-banana is the current default. Set
+# GEMINI_IMAGE_MODEL=gemini-3-pro-image-preview for higher-fidelity renders.
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+
+# PEN-36 (trace path) — when on, imaginative requests are rendered by the image
+# model then traced into strokes; when off, the model plans stroke geometry
+# directly (no image call). Trace gives far richer sketches; direct-plan is the
+# offline/degraded fallback and is what runs if a trace step fails.
+ILLUSTRATOR_TRACE_ENABLED = os.getenv("ILLUSTRATOR_TRACE", "1").lower() in (
+    "1", "true", "yes", "on")
+
+# PEN-37 — structured conversation plus correction. Empty uses GEMINI_MODEL.
+GEMINI_LANGUAGE_MODEL = os.getenv("GEMINI_LANGUAGE_MODEL", "")
+
+# PEN-38 — good-faith counterargument generation. Empty uses GEMINI_MODEL.
+GEMINI_DEBATE_MODEL = os.getenv("GEMINI_DEBATE_MODEL", "")
+
+# PEN-39 — image classification and non-math visual responses.
+# Verified visual maths continues to use GEMINI_MODEL's math pipeline.
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "")
+
 # PEN-26 — access control.
 #
 # Comma-separated shared tokens. When empty AND dev mode is on, the API stays

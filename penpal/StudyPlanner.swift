@@ -145,9 +145,11 @@ final class StudyPlanner: ObservableObject {
         // A student who keeps missing something needs a win they can respect,
         // not a harder version of what already beat them.
         let difficulty = weakness.timesCorrect == 0 ? "easier" : "same"
+        let domain = weakness.topic.hasPrefix("Language:") ? "language" : "math"
         return try await PenpalAPI.practice(topic: weakness.topic,
                                             mistake: weakness.mistake,
                                             difficulty: difficulty,
+                                            domain: domain,
                                             baseURL: baseURL)
     }
 

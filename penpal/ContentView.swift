@@ -10,6 +10,7 @@ import SwiftUI
 import PhotosUI
 import PencilKit
 import UniformTypeIdentifiers
+import UIKit
 
 final class PaperProxy {
     weak var view: MagicPaperView?
@@ -99,6 +100,11 @@ struct ContentView: View {
     /// page content (ink + image blocks), not just dropped on as a picture.
     @State private var importPhotoItem: PhotosPickerItem?
     @State private var showImportPhotos = false
+    /// PEN-39 — external visual input. Kept separate from PEN-35 because this
+    /// asks a capability to respond; it does not rebuild the photo as a page.
+    @State private var visionPhotoItem: PhotosPickerItem?
+    @State private var showVisionPhotos = false
+    @State private var showVisionCamera = false
     @State private var loadedNoteID: UUID?
     @State private var bodyText: String = ""
     @State private var titleText: String = ""
@@ -225,6 +231,9 @@ struct ContentView: View {
         .onChange(of: importPhotoItem) { _, item in
             Task { await importPageFromPhoto(item) }
         }
+        .onChange(of: visionPhotoItem) { _, item in
+            Task { await respondToVisionPhoto(item) }
+        }
         .sheet(isPresented: $showTraining) {
             CalibrationView()
                 .presentationDetents([.large])
@@ -251,8 +260,18 @@ struct ContentView: View {
             BlockStudioView(block: block, expanded: $studioFullScreen, onSave: studioSave)
                 .background(Pen.paper.ignoresSafeArea())
         }
+        .fullScreenCover(isPresented: $showVisionCamera) {
+            CameraCaptureView { image in
+                showVisionCamera = false
+                if let image {
+                    proxy.view?.respondToExternalPhoto(image)
+                }
+            }
+            .ignoresSafeArea()
+        }
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .photosPicker(isPresented: $showImportPhotos, selection: $importPhotoItem, matching: .images)
+        .photosPicker(isPresented: $showVisionPhotos, selection: $visionPhotoItem, matching: .images)
         .alert("Penpal", isPresented: $showStatus) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -278,6 +297,8 @@ struct ContentView: View {
                             settings: settings,
                             activityPhase: penpalActivityPhase,
                             statusText: penpalStatusText,
+                            onVisionCamera: openVisionCamera,
+                            onVisionPhoto: { showVisionPhotos = true },
                             onClose: {
                                 withAnimation(Pen.spring) { penpalOn = false }
                             }
@@ -530,6 +551,14 @@ struct ContentView: View {
     }
 
     private var isMathematician: Bool { settings.capability == "mathematician" }
+    private var isIllustrator: Bool { settings.capability == "illustrator" }
+    private var isLanguagePartner: Bool { settings.capability == "language" }
+    private var isDebatePartner: Bool { settings.capability == "debate" }
+
+    private var targetLanguageTitle: String {
+        PenpalControlOptions.languages.first { $0.tag == settings.targetLanguage }?.title
+            ?? "language"
+    }
 
     private var mathChipsVisible: Bool {
         penpalOn && isMathematician && showMathChips
@@ -592,8 +621,16 @@ struct ContentView: View {
             return voice.transcript.isEmpty ? "Listening…" : voice.transcript
         }
         if isReading { return "Reading expression…" }
-        if isThinking { return isMathematician ? "Solving & verifying…" : "Penpal is thinking…" }
-        if isWriting { return "Penpal is writing…" }
+        if isThinking {
+            if isMathematician { return "Solving & verifying…" }
+            if isIllustrator { return "Planning the sketch…" }
+            if isLanguagePartner { return "Thinking in \(targetLanguageTitle)…" }
+            if isDebatePartner { return "Finding the strongest counterpoint…" }
+            return "Penpal is thinking…"
+        }
+        if isWriting {
+            return isIllustrator ? "Penpal is drawing…" : "Penpal is writing…"
+        }
         // PEN-12 — say plainly that work is waiting, so "I'll answer as soon
         // as we're back" is visible state rather than a promise made once.
         if outbox.hasPending {
@@ -923,6 +960,34 @@ struct ContentView: View {
         showShare = true
     }
 
+    @MainActor
+    private func openVisionCamera() {
+        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            showVisionCamera = true
+        } else {
+            // Simulator and camera-less devices still get the same flow.
+            showVisionPhotos = true
+        }
+    }
+
+    @MainActor
+    private func respondToVisionPhoto(_ item: PhotosPickerItem?) async {
+        guard let item, store.selectedNoteID != nil else { return }
+        defer { visionPhotoItem = nil }
+        let data: Data?
+        if let loaded = try? await item.loadTransferable(type: Data.self) {
+            data = loaded
+        } else {
+            data = try? await item.loadTransferable(type: PhotoData.self)?.data
+        }
+        guard let data, let image = UIImage(data: data) else {
+            statusMessage = "Couldn't read that photo."
+            showStatus = true
+            return
+        }
+        proxy.view?.respondToExternalPhoto(image)
+    }
+
     /// PEN-35 — read an existing paper page from a photo and rebuild its
     /// content on the live page, rather than dropping the photo in as a flat
     /// picture (that's `importPhoto`/`insertImageAttachment`, still separate).
@@ -1058,6 +1123,50 @@ private struct PhotoData: Transferable {
         }
         DataRepresentation(importedContentType: .image) { data in
             PhotoData(data: data)
+        }
+    }
+}
+
+private struct CameraCaptureView: UIViewControllerRepresentable {
+    let completion: (UIImage?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(completion: completion)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIImagePickerController,
+        context: Context
+    ) {}
+
+    final class Coordinator: NSObject,
+                             UIImagePickerControllerDelegate,
+                             UINavigationControllerDelegate {
+        let completion: (UIImage?) -> Void
+
+        init(completion: @escaping (UIImage?) -> Void) {
+            self.completion = completion
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [
+                UIImagePickerController.InfoKey: Any
+            ]
+        ) {
+            completion(info[.originalImage] as? UIImage)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            completion(nil)
         }
     }
 }

@@ -14,14 +14,20 @@ from django.http import StreamingHttpResponse
 
 from .gemini import (
     GeminiError,
+    SUPPORTED_LANGUAGES,
+    debate_turn as gemini_debate_turn,
     generate_reply,
     grade_working,
+    illustrate as gemini_illustrate,
+    trace_image as gemini_trace_image,
     import_page as gemini_import_page,
+    language_turn as gemini_language_turn,
     practice_problem,
     stream_math_reply,
     solve_math_image,
     solve_worksheet,
     transcribe_math,
+    vision_turn as gemini_vision_turn,
 )
 
 
@@ -240,6 +246,196 @@ def import_page(request):
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
+def illustrate(request):
+    """
+    PEN-36 — turn an imaginative request into ordered pen strokes.
+
+    Factual/labelled requests return a structured refusal until a vetted
+    reference-image source is available; they are never guessed as line art.
+    """
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    message = str(data.get("message") or data.get("prompt") or "")
+    message = message[:MAX_MESSAGE_CHARS].strip()
+    if not message:
+        return Response({"error": "message is required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    mode = "trace" if getattr(settings, "ILLUSTRATOR_TRACE_ENABLED", False) else "plan"
+    try:
+        result = gemini_illustrate(message, mode=mode)
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({
+        **result,
+        "model": settings.GEMINI_ILLUSTRATOR_MODEL or settings.GEMINI_MODEL,
+        "capability": "illustrator",
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def trace_image(request):
+    """
+    PEN-36 (Goal B) — trace a user-provided image into ordered pen strokes.
+
+    Body: {"image": "<base64 png/jpeg>", "label": "<optional>",
+           "mode": "auto|lineart|photo"}. Pure computer vision on the server —
+    no model call — so the user's own photo is never sent to Gemini.
+    """
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    image_bytes, err = _decode_image(data)
+    if err is not None:
+        return err
+
+    label = str(data.get("label") or "sketch").strip()[:120] or "sketch"
+    mode = str(data.get("mode") or "auto").strip().lower()
+    if mode not in ("auto", "lineart", "photo"):
+        mode = "auto"
+
+    try:
+        result = gemini_trace_image(image_bytes, label=label, mode=mode)
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({**result, "capability": "illustrator"})
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def language_turn(request):
+    """PEN-37 — target-language reply plus at most one gentle correction."""
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    message = str(data.get("message") or "")[:MAX_MESSAGE_CHARS].strip()
+    if not message:
+        return Response({"error": "message is required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    language_code = str(data.get("language") or "").strip()
+    if language_code not in SUPPORTED_LANGUAGES:
+        return Response({"error": "unsupported language"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(data.get("history") or [], list):
+        return Response({"error": "history must be a list"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    history = _clean_history(data.get("history"))
+
+    try:
+        result = gemini_language_turn(message, language_code, history=history)
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({
+        **result,
+        "model": settings.GEMINI_LANGUAGE_MODEL or settings.GEMINI_MODEL,
+        "capability": "language",
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def debate_turn(request):
+    """PEN-38 — strongest good-faith counterargument, never a verdict."""
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    message = str(data.get("message") or "")[:MAX_MESSAGE_CHARS].strip()
+    if not message:
+        return Response({"error": "message is required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(data.get("history") or [], list):
+        return Response({"error": "history must be a list"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        result = gemini_debate_turn(
+            message,
+            history=_clean_history(data.get("history")),
+        )
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({
+        **result,
+        "model": settings.GEMINI_DEBATE_MODEL or settings.GEMINI_MODEL,
+        "capability": "debate",
+        # Explicit trust tier: useful perspective, not independently verified.
+        "trust": "perspective",
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def vision_turn(request):
+    """PEN-39 — ask the selected capability about an external photo."""
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    image_bytes, err = _decode_image(data)
+    if err is not None:
+        return err
+    capability = str(data.get("capability") or "companion").strip().lower()
+    if capability not in ("companion", "mathematician", "language", "debate"):
+        return Response({"error": "unsupported vision capability"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(data.get("history") or [], list):
+        return Response({"error": "history must be a list"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    mime_type = str(data.get("mime_type") or "image/jpeg").strip().lower()
+    if mime_type not in ("image/jpeg", "image/png"):
+        return Response({"error": "unsupported image type"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        result = gemini_vision_turn(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            capability=capability,
+            message=str(data.get("message") or ""),
+            history=_clean_history(data.get("history")),
+            math_detail=str(data.get("math_detail") or "compact"),
+            language_code=str(data.get("language") or "es-ES"),
+        )
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({
+        **result,
+        "capability": capability,
+        "model": (
+            settings.GEMINI_MODEL if result.get("kind") == "math"
+            else settings.GEMINI_VISION_MODEL or settings.GEMINI_MODEL
+        ),
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
 def check_work(request):
     """
     PEN-16 — mark the student's own working, first wrong line only.
@@ -331,6 +527,7 @@ def practice(request):
             topic=topic,
             mistake=str(data.get("mistake") or ""),
             difficulty=str(data.get("difficulty") or "same"),
+            domain=str(data.get("domain") or "math"),
         )
     except GeminiError as exc:
         return Response({"error": str(exc)},

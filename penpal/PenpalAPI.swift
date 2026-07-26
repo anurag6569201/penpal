@@ -326,6 +326,352 @@ enum PenpalAPI {
         return blocks
     }
 
+    // MARK: - Illustrator (PEN-36)
+
+    struct Illustration: Decodable {
+        struct Stroke: Decodable {
+            let role: String
+            /// Normalised [x, y] pairs, top-left origin.
+            let points: [[Double]]
+        }
+
+        /// "strokes" or "refusal".
+        let kind: String
+        let label: String?
+        let message: String?
+        let strokes: [Stroke]?
+        let error: String?
+
+        var isRefusal: Bool { kind == "refusal" }
+    }
+
+    /// Plan an imaginative line drawing. Factual diagrams return a structured
+    /// refusal until Penpal has a vetted reference source to trace.
+    static func illustrate(
+        message: String,
+        baseURL: String
+    ) async throws -> Illustration {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/illustrate/") else {
+            throw APIError.badURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.timeoutInterval = 120
+
+        struct Body: Encodable { let message: String }
+        request.httpBody = try JSONEncoder().encode(Body(message: message))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let parsed = try? JSONDecoder().decode(Illustration.self, from: data)
+        if !(200...299).contains(code) {
+            if let err = parsed?.error, !err.isEmpty {
+                throw APIError.http(code, err)
+            }
+            throw APIError.http(code, String(data: data, encoding: .utf8) ?? "no body")
+        }
+        guard let illustration = parsed else { throw APIError.emptyReply }
+        if illustration.isRefusal {
+            guard illustration.message?.isEmpty == false else { throw APIError.emptyReply }
+            return illustration
+        }
+        guard illustration.kind == "strokes",
+              illustration.strokes?.isEmpty == false else {
+            throw APIError.emptyReply
+        }
+        return illustration
+    }
+
+    /// Trace a user-provided image into ordered pen strokes (PEN-36, Goal B).
+    /// The server runs pure computer vision — no model call — so the photo is
+    /// never sent to Gemini. Reuses the `Illustration` contract, so the drawing
+    /// path reveals a traced image exactly like a generated sketch. Returns a
+    /// refusal when nothing traceable is found.
+    static func traceImage(
+        imageData: Data,
+        label: String,
+        baseURL: String
+    ) async throws -> Illustration {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/trace-image/") else {
+            throw APIError.badURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.timeoutInterval = 60
+
+        struct Body: Encodable { let image: String; let label: String }
+        request.httpBody = try JSONEncoder().encode(
+            Body(image: imageData.base64EncodedString(), label: label))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let parsed = try? JSONDecoder().decode(Illustration.self, from: data)
+        if !(200...299).contains(code) {
+            if let err = parsed?.error, !err.isEmpty {
+                throw APIError.http(code, err)
+            }
+            throw APIError.http(code, String(data: data, encoding: .utf8) ?? "no body")
+        }
+        guard let illustration = parsed else { throw APIError.emptyReply }
+        if illustration.isRefusal {
+            guard illustration.message?.isEmpty == false else { throw APIError.emptyReply }
+            return illustration
+        }
+        guard illustration.kind == "strokes",
+              illustration.strokes?.isEmpty == false else {
+            throw APIError.emptyReply
+        }
+        return illustration
+    }
+
+    // MARK: - Language Partner (PEN-37)
+
+    struct LanguageTurn: Decodable {
+        struct Correction: Decodable {
+            let found_error: Bool
+            let reason: String
+            let corrected: String
+            let skill: String
+            let confidence: Double
+
+            var note: String {
+                guard found_error else { return "" }
+                return reason.isEmpty ? corrected : "\(reason)\nTry: \(corrected)"
+            }
+        }
+
+        let reply: String
+        let language: String
+        let correction: Correction
+        let error: String?
+    }
+
+    static func languageTurn(
+        message: String,
+        language: String,
+        history: [ChatRequest.Turn],
+        baseURL: String
+    ) async throws -> LanguageTurn {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/language-turn/") else {
+            throw APIError.badURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.timeoutInterval = 90
+
+        struct Body: Encodable {
+            let message: String
+            let language: String
+            let history: [ChatRequest.Turn]
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(message: message, language: language, history: history)
+        )
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200...299).contains(code) {
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = object["error"] as? String, !error.isEmpty {
+                throw APIError.http(code, error)
+            }
+            throw APIError.http(code, String(data: data, encoding: .utf8) ?? "no body")
+        }
+        let turn = try JSONDecoder().decode(LanguageTurn.self, from: data)
+        guard !turn.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError.emptyReply
+        }
+        return turn
+    }
+
+    // MARK: - Debate Partner (PEN-38)
+
+    struct DebateTurn: Decodable {
+        let counterargument: String
+        let question: String
+        let trust: String
+        let error: String?
+
+        /// The label is part of the honesty boundary: this is another
+        /// perspective, not a verified verdict on the writer.
+        var inkText: String {
+            let body = "Another view:\n\(counterargument)"
+            return question.isEmpty ? body : "\(body)\n\(question)"
+        }
+    }
+
+    static func debateTurn(
+        message: String,
+        history: [ChatRequest.Turn],
+        baseURL: String
+    ) async throws -> DebateTurn {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/debate-turn/") else {
+            throw APIError.badURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.timeoutInterval = 90
+
+        struct Body: Encodable {
+            let message: String
+            let history: [ChatRequest.Turn]
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(message: message, history: history)
+        )
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200...299).contains(code) {
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = object["error"] as? String, !error.isEmpty {
+                throw APIError.http(code, error)
+            }
+            throw APIError.http(code, String(data: data, encoding: .utf8) ?? "no body")
+        }
+        let turn = try JSONDecoder().decode(DebateTurn.self, from: data)
+        guard !turn.counterargument
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError.emptyReply
+        }
+        return turn
+    }
+
+    // MARK: - Vision input (PEN-39)
+
+    struct VisionTurn: Decodable {
+        let kind: String
+        let reply: String?
+        let language: String?
+        let correction: LanguageTurn.Correction?
+        let counterargument: String?
+        let question: String?
+        let trust: String?
+        let error: String?
+
+        var inkText: String {
+            switch kind {
+            case "debate":
+                let body = "Another view:\n\(counterargument ?? "")"
+                guard let question, !question.isEmpty else { return body }
+                return "\(body)\n\(question)"
+            case "language":
+                guard let correction, correction.found_error else {
+                    return reply ?? ""
+                }
+                return "\(correction.note)\n\(reply ?? "")"
+            default:
+                return reply ?? ""
+            }
+        }
+    }
+
+    static func visionTurn(
+        jpegData: Data,
+        message: String = "",
+        capability: String,
+        language: String,
+        mathDetail: String,
+        history: [ChatRequest.Turn],
+        baseURL: String
+    ) async throws -> VisionTurn {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/vision-turn/") else {
+            throw APIError.badURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.timeoutInterval = 180
+
+        struct Body: Encodable {
+            let image: String
+            let mime_type: String
+            let message: String
+            let capability: String
+            let language: String
+            let math_detail: String
+            let history: [ChatRequest.Turn]
+        }
+        request.httpBody = try JSONEncoder().encode(Body(
+            image: jpegData.base64EncodedString(),
+            mime_type: "image/jpeg",
+            message: message,
+            capability: capability,
+            language: language,
+            math_detail: mathDetail,
+            history: history
+        ))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200...299).contains(code) {
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = object["error"] as? String, !error.isEmpty {
+                throw APIError.http(code, error)
+            }
+            throw APIError.http(code, String(data: data, encoding: .utf8) ?? "no body")
+        }
+        let turn = try JSONDecoder().decode(VisionTurn.self, from: data)
+        guard !turn.inkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError.emptyReply
+        }
+        return turn
+    }
+
     // MARK: - Show-your-work grading (PEN-16)
 
     /// The result of marking a student's own working.
@@ -489,6 +835,7 @@ enum PenpalAPI {
     }
 
     static func practice(topic: String, mistake: String, difficulty: String,
+                         domain: String = "math",
                          baseURL: String) async throws -> PracticeProblem {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: trimmed + "/api/practice/") else {
@@ -504,9 +851,11 @@ enum PenpalAPI {
             let topic: String
             let mistake: String
             let difficulty: String
+            let domain: String
         }
         request.httpBody = try JSONEncoder().encode(
-            Body(topic: topic, mistake: mistake, difficulty: difficulty))
+            Body(topic: topic, mistake: mistake, difficulty: difficulty,
+                 domain: domain))
 
         let data: Data
         let response: URLResponse

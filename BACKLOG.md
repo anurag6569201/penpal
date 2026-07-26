@@ -476,11 +476,20 @@ point beyond the "Insert on Page" menu (camera capture directly, rather than
 picking an existing photo); telemetry for image-blocks-dropped-for-no-box, to
 see in practice how often the model can't produce a usable crop.
 
-### PEN-36 · Illustrator capability — traced, not pasted
+### PEN-36 · Illustrator capability — traced, not pasted — **IMAGINATIVE V1 SHIPPED**
 A third capability alongside Companion and Mathematician. Ask for a diagram —
 a cell, a circuit, a map, a dragon, whatever — and watch Penpal **draw** it,
 stroke by stroke, in the same pen it writes everything else with. Never a
 pasted image.
+
+**What shipped in v1:** Illustrator is selectable from the on-page capability
+bar. Typed or handwritten requests go to a dedicated structured endpoint that
+returns bounded, ordered outline/detail paths. The app adds slight hand-drawn
+drift, reveals those paths through `HandwritingRenderer`, and bakes each one
+into the page's `PKDrawing`; the whole sketch is one undo action. Long paths
+use visibly drawn time-lapse pacing. Because there is not yet a trusted
+reference-image source, factual, technical and labelled requests fail closed
+with an honest note instead of a generated guess.
 
 **The reference point is a specific childhood memory, and it's the right
 one:** tracing paper laid over a picture with a light underneath, following
@@ -514,14 +523,25 @@ Long or detailed sketches may need to accelerate rather than fully real-time
 — still visibly hand-drawn, just faster than realtime, the way a time-lapse
 of a real sketch still reads as sketching.
 
-**Still open:** cost/latency of vectorizing an image into strokes server-side
-vs on-device; where this sits in PEN-29's model routing; how a sketch is
-undone as one action (PEN-14) rather than hundreds of tiny strokes.
+**Still open:** the factual path — vetted reference search/upload, provenance,
+and contour tracing — plus whether that vectorization belongs server-side or
+on-device. The current imaginative path emits line geometry directly rather
+than tracing a generated reference image; richer subjects may benefit from the
+reference → contour pipeline once its latency and cost are measured.
 
-### PEN-37 · Language partner capability
+### PEN-37 · Language partner capability — **LATIN-LANGUAGE V1 SHIPPED**
 Write — or speak, via PEN-23 — in the language you're learning. Penpal
 replies in that language, and corrects gently in the margin rather than
 rewriting your sentence.
+
+**What shipped in v1:** choose English, Spanish, French, German, Italian or
+Brazilian Portuguese from the on-page capability bar. Handwritten recognition
+uses that locale, and a dedicated structured endpoint returns a short
+target-language reply plus at most one correction. Corrections only survive
+above an 85% confidence gate; they softly underline the learner's untouched
+ink and write a small "Try:" note beside it. Confident grammar/vocabulary
+misses enter PEN-19's existing spaced-repetition queue, whose practice
+generator now has a language-specific path.
 
 **Decision — correct the ink, never overwrite it.** Your sentence stays
 exactly as you wrote it; the correction is a small note beside it, the same
@@ -539,10 +559,24 @@ correction need a translation-tuned model rather than the general chat model,
 or is a well-built prompt enough? Decide with a small accuracy check, not by
 assumption.
 
-### PEN-38 · Debate / devil's advocate capability
+**Still open:** wire PEN-23's currently dormant microphone UI to the selected
+locale; evaluate false-correction rates against a translation-tuned model; add
+non-Latin scripts. Language text containing glyphs the trained stroke font
+cannot represent deliberately falls back to the selected typeset reply font
+rather than dropping accents or drawing question marks.
+
+### PEN-38 · Debate / devil's advocate capability — **SHIPPED**
 Write an argument or an essay position. Penpal writes back the strongest
 good-faith counter-argument, in the margin — not a verdict on whether you're
 right.
+
+**What shipped:** Debate Partner accepts typed or handwritten claims through a
+dedicated structured endpoint. It writes a concise steelmanned counterargument
+and one testing question as native ink below the claim. Every response begins
+`Another view:` and the API reports the `perspective` trust tier; it never
+uses Mathematician's verified language, scores the argument, or grades the
+writer. Double-underlining in this mode cannot accidentally invoke the math
+grader.
 
 **Why this is a real gap, not a nice-to-have:** every other capability is
 STEM-shaped (solve, check, graph, practice). This is the first thing in the
@@ -562,7 +596,7 @@ a checked fact. It should never be dressed up with the same "verified"
 visual language (PEN-04's honest-degradation line) that math and CAS-backed
 answers get, because it isn't the same kind of claim.
 
-### PEN-39 · Vision capability — reading what the camera sees
+### PEN-39 · Vision capability — reading what the camera sees — **V1 SHIPPED**
 Point the camera at something that **isn't your own page** — a textbook
 diagram, a whiteboard, a friend's handwritten problem — and Penpal reads it
 and responds directly onto *your* page, in your hand.
@@ -580,12 +614,23 @@ exactly the failure mode this backlog is built to prevent — arguably a worse
 one than usual, since the source material isn't even yours to double-check
 against memory.
 
-**Open question, flagged rather than decided:** this is closer to an *input
-modality* than a `capability` string like Companion/Mathematician — a photo
-of someone else's whiteboard could reasonably get a Companion-toned reply or
-a Mathematician-toned solve depending on content. Worth deciding whether
-Vision is its own capability tab or a camera affordance available *within*
-the existing ones before writing any UI for it.
+**Decision — input modality, not another capability tab.** The on-page Penpal
+bar now offers Take Photo / Choose Photo inside Companion, Mathematician,
+Language Partner and Debate Partner. The selected capability controls the
+response. Mathematician photos run through the existing image-aware
+solve → verify → correct pipeline; Companion first classifies visible maths
+and promotes it to that same checked path. Language and Debate preserve their
+confidence/trust contracts. Replies land as normal page ink. Illustrator is
+disabled for photo Q&A until its vetted-reference tracing path exists.
+
+This remains deliberately separate from PEN-35: **Import Page** reconstructs
+your old page without computing a claim; the camera button inspects external
+content and responds. Camera uploads are orientation-normalised, reduced to a
+2048-pixel long edge, and kept under the backend's independent 6 MiB cap.
+
+**Still open:** an optional spoken/typed question before upload (v1 uses a
+capability-specific default and supports written follow-up), source thumbnails,
+and richer positional responses for multi-part textbook diagrams.
 
 ---
 

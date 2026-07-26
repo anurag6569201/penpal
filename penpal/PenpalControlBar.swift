@@ -8,6 +8,14 @@
 import SwiftUI
 
 enum PenpalControlOptions {
+    static let capabilities: [(tag: String, title: String, icon: String)] = [
+        ("companion", "Companion", "heart.text.square"),
+        ("mathematician", "Mathematician", "x.squareroot"),
+        ("illustrator", "Illustrator", "pencil.and.outline"),
+        ("language", "Language Partner", "character.bubble"),
+        ("debate", "Debate Partner", "arrow.left.arrow.right"),
+    ]
+
     static let moods: [(tag: String, title: String, icon: String)] = [
         ("warm", "Warm friend", "cup.and.saucer"),
         ("playful", "Playful", "party.popper"),
@@ -22,12 +30,23 @@ enum PenpalControlOptions {
         ("full", "Full working", "list.number"),
         ("proof", "Proof", "checkmark.seal"),
     ]
+
+    static let languages: [(tag: String, title: String)] = [
+        ("en-US", "English"),
+        ("es-ES", "Spanish"),
+        ("fr-FR", "French"),
+        ("de-DE", "German"),
+        ("it-IT", "Italian"),
+        ("pt-BR", "Portuguese"),
+    ]
 }
 
 struct PenpalControlBar: View {
     @ObservedObject var settings: HandwritingSettings
     var activityPhase: InkThinkingIndicator.Phase?
     var statusText: String?
+    var onVisionCamera: () -> Void
+    var onVisionPhoto: () -> Void
     var onClose: () -> Void
 
     @State private var showCustomMoodEditor = false
@@ -35,6 +54,19 @@ struct PenpalControlBar: View {
 
     private var isMathematician: Bool {
         settings.capability == "mathematician"
+    }
+
+    private var isLanguagePartner: Bool {
+        settings.capability == "language"
+    }
+
+    private var selectedCapability: (tag: String, title: String, icon: String) {
+        PenpalControlOptions.capabilities.first { $0.tag == settings.capability }
+            ?? PenpalControlOptions.capabilities[0]
+    }
+
+    private var hasSecondaryControls: Bool {
+        ["companion", "mathematician", "language"].contains(settings.capability)
     }
 
     private var selectedMoodTitle: String {
@@ -47,6 +79,11 @@ struct PenpalControlBar: View {
             ?? "Detail"
     }
 
+    private var selectedLanguageTitle: String {
+        PenpalControlOptions.languages.first { $0.tag == settings.targetLanguage }?.title
+            ?? "Language"
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             if activityPhase != nil || statusText != nil {
@@ -54,24 +91,43 @@ struct PenpalControlBar: View {
                 Divider().frame(height: 24)
             }
 
-            capabilityButton(
-                title: "Companion",
-                icon: "heart.text.square",
-                tag: "companion"
-            )
-            capabilityButton(
-                title: "Mathematician",
-                icon: "x.squareroot",
-                tag: "mathematician"
-            )
+            capabilityMenu
 
-            Divider().frame(height: 24)
-
-            if isMathematician {
-                detailMenu
-            } else {
-                moodMenu
+            if hasSecondaryControls {
+                Divider().frame(height: 24)
+                if isMathematician {
+                    detailMenu
+                } else if isLanguagePartner {
+                    languageMenu
+                } else {
+                    moodMenu
+                }
             }
+
+            Menu {
+                Button("Take Photo", systemImage: "camera") {
+                    onVisionCamera()
+                }
+                Button("Choose Photo", systemImage: "photo.on.rectangle") {
+                    onVisionPhoto()
+                }
+            } label: {
+                Image(systemName: "camera.viewfinder")
+                    .font(.body)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Pen.inkPrimary)
+            .accessibilityLabel(
+                settings.capability == "illustrator"
+                    ? "Trace a photo"
+                    : "Ask Penpal about a photo"
+            )
+            .accessibilityHint(
+                settings.capability == "illustrator"
+                    ? "Take or choose a photo to trace as ink"
+                    : "Take or choose an external photo"
+            )
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -121,19 +177,26 @@ struct PenpalControlBar: View {
         .accessibilityValue(statusText ?? "Working")
     }
 
-    private func capabilityButton(title: String, icon: String, tag: String) -> some View {
-        let selected = settings.capability == tag
-        return Button {
-            settings.capability = tag
+    private var capabilityMenu: some View {
+        Menu {
+            ForEach(PenpalControlOptions.capabilities, id: \.tag) { capability in
+                Button {
+                    settings.capability = capability.tag
+                } label: {
+                    Label(capability.title, systemImage:
+                            settings.capability == capability.tag
+                          ? "checkmark" : capability.icon)
+                }
+            }
         } label: {
-            Label(title, systemImage: icon)
+            Label(selectedCapability.title, systemImage: selectedCapability.icon)
                 .padding(.horizontal, 10)
                 .frame(height: 32)
-                .foregroundStyle(selected ? Color.white : Pen.inkPrimary)
-                .background(selected ? Pen.inkAccent : Color.clear, in: Capsule())
+                .foregroundStyle(Color.white)
+                .background(Pen.inkAccent, in: Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel("Penpal capability, \(selectedCapability.title)")
     }
 
     private var moodMenu: some View {
@@ -177,5 +240,25 @@ struct PenpalControlBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Solution detail, \(selectedDetailTitle)")
+    }
+
+    private var languageMenu: some View {
+        Menu {
+            ForEach(PenpalControlOptions.languages, id: \.tag) { language in
+                Button {
+                    settings.targetLanguage = language.tag
+                } label: {
+                    Label(language.title, systemImage:
+                            settings.targetLanguage == language.tag
+                          ? "checkmark" : "character.bubble")
+                }
+            }
+        } label: {
+            Label(selectedLanguageTitle, systemImage: "globe")
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Practice language, \(selectedLanguageTitle)")
     }
 }

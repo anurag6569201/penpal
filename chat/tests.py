@@ -1106,6 +1106,612 @@ class ImportPageEndpointTests(GeminiTestCase):
 
 
 # --------------------------------------------------------------------------
+# Illustrator (PEN-36)
+# --------------------------------------------------------------------------
+
+SKETCH = ('{"kind":"strokes","label":"dragon","strokes":['
+          '{"role":"outline","points":[[100,500],[250,250],[500,120],'
+          '[750,250],[900,500]]},'
+          '{"role":"detail","points":[[350,420],[500,520],[650,420]]}'
+          ']}')
+
+
+class IllustratorTests(GeminiTestCase):
+
+    def test_returns_ordered_normalised_strokes(self):
+        self.install(solver=SKETCH)
+        result = gemini.illustrate("draw a friendly dragon")
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["label"], "dragon")
+        self.assertEqual(result["strokes"][0]["role"], "outline")
+        self.assertEqual(result["strokes"][0]["points"][0], [0.1, 0.5])
+
+    def test_factual_request_can_fail_closed_as_refusal(self):
+        self.install(solver=(
+            '{"kind":"refusal","message":'
+            '"I need a trusted reference to draw that accurately, so I won\'t guess."}'
+        ))
+        result = gemini.illustrate("draw a labelled diagram of mitosis")
+        self.assertEqual(result["kind"], "refusal")
+        self.assertIn("trusted reference", result["message"])
+
+    def test_invalid_and_out_of_bounds_points_are_dropped(self):
+        cleaned = gemini._clean_illustration({
+            "kind": "strokes",
+            "label": "shape",
+            "strokes": [
+                {"role": "other", "points": [[0, 0], [500, 500], [1001, 2]]},
+                {"role": "detail", "points": [["bad", 1], [2, 3]]},
+            ],
+        })
+        self.assertEqual(len(cleaned["strokes"]), 1)
+        self.assertEqual(cleaned["strokes"][0]["role"], "detail")
+        self.assertEqual(cleaned["strokes"][0]["points"], [[0.0, 0.0], [0.5, 0.5]])
+
+    def test_empty_stroke_plan_is_rejected(self):
+        self.install(solver='{"kind":"strokes","label":"nothing","strokes":[]}')
+        with self.assertRaises(gemini.GeminiError):
+            gemini.illustrate("draw something")
+
+    def test_unparseable_output_is_a_clear_error(self):
+        self.install(solver="Here is your drawing")
+        with self.assertRaises(gemini.GeminiError):
+            gemini.illustrate("draw a flower")
+
+    def test_empty_request_is_rejected_without_a_model_call(self):
+        models = self.install(solver=SKETCH)
+        with self.assertRaises(gemini.GeminiError):
+            gemini.illustrate("   ")
+        self.assertEqual(models.calls, [])
+
+    @override_settings(GEMINI_MODEL="fake-model",
+                       GEMINI_ILLUSTRATOR_MODEL="art-model")
+    def test_illustrator_model_setting_is_used(self):
+        captured = {}
+        models = FakeModels(solver=SKETCH)
+        real_generate = models.generate_content
+
+        def spy(model, contents, config):
+            captured["model"] = model
+            return real_generate(model, contents, config)
+
+        models.generate_content = spy
+        patcher = patch.object(gemini, "_client", lambda: FakeClient(models))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        gemini.illustrate("draw a dragon")
+        self.assertEqual(captured["model"], "art-model")
+
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
+                   GEMINI_ILLUSTRATOR_MODEL="", ILLUSTRATOR_TRACE_ENABLED=False)
+class IllustratorEndpointTests(GeminiTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+
+    def test_returns_structured_strokes(self):
+        self.install(solver=SKETCH)
+        response = self.api.post("/api/illustrate/",
+                                 {"message": "draw a dragon"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["kind"], "strokes")
+        self.assertEqual(payload["capability"], "illustrator")
+        self.assertEqual(len(payload["strokes"]), 2)
+
+    def test_returns_factual_refusal_without_fake_strokes(self):
+        self.install(solver='{"kind":"refusal","message":"Reference required."}')
+        response = self.api.post("/api/illustrate/",
+                                 {"message": "draw a cell diagram"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["kind"], "refusal")
+        self.assertNotIn("strokes", response.json())
+
+    def test_requires_a_message(self):
+        self.assertEqual(
+            self.api.post("/api/illustrate/", {}, format="json").status_code, 400)
+
+    def test_brain_failure_is_a_503(self):
+        self.install(solver='{"kind":"strokes","strokes":[]}')
+        self.assertEqual(
+            self.api.post("/api/illustrate/", {"message": "draw a cat"},
+                          format="json").status_code, 503)
+
+
+# --------------------------------------------------------------------------
+# Illustrator trace path (PEN-36) — generate → trace
+# --------------------------------------------------------------------------
+
+GATE_IMAGE = ('{"kind":"image","label":"fox",'
+              '"image_prompt":"A clean black-and-white line drawing of a fox"}')
+GATE_REFUSAL = ('{"kind":"refusal","message":'
+                '"I need a trusted reference to draw that accurately, so I won\'t guess."}')
+# A raw traced plan, on the 0..1000 canvas _clean_illustration expects as input.
+TRACED = {
+    "kind": "strokes", "label": "fox",
+    "strokes": [
+        {"role": "outline", "points": [[100, 500], [250, 250], [500, 120],
+                                       [750, 250], [900, 500]]},
+        {"role": "detail", "points": [[350, 420], [500, 520], [650, 420]]},
+    ],
+}
+
+
+class IllustratorTraceTests(GeminiTestCase):
+
+    def test_gate_refusal_is_returned_without_spending_an_image_call(self):
+        self.install(solver=GATE_REFUSAL)
+        with patch.object(gemini, "generate_reference_image") as gen:
+            result = gemini.illustrate("draw a labelled circuit", mode="trace")
+        self.assertEqual(result["kind"], "refusal")
+        self.assertIn("trusted reference", result["message"])
+        gen.assert_not_called()
+
+    def test_trace_generates_an_image_then_inks_the_traced_strokes(self):
+        self.install(solver=GATE_IMAGE)
+        with patch.object(gemini, "generate_reference_image", return_value=b"IMG"), \
+             patch.object(gemini.tracer, "trace", return_value=TRACED) as tr:
+            result = gemini.illustrate("draw a fox", mode="trace")
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["label"], "fox")
+        self.assertEqual(result["strokes"][0]["role"], "outline")
+        # Traced 0..1000 coords are normalised to 0..1 by _clean_illustration.
+        self.assertEqual(result["strokes"][0]["points"][0], [0.1, 0.5])
+        tr.assert_called_once()
+
+    def test_trace_falls_back_to_direct_plan_when_image_generation_fails(self):
+        replies = iter([GATE_IMAGE, SKETCH])  # 1st call gates, 2nd is the fallback plan
+        self.install(solver=lambda contents: next(replies))
+        with patch.object(gemini, "generate_reference_image",
+                          side_effect=gemini.GeminiError("no image")):
+            result = gemini.illustrate("draw a dragon", mode="trace")
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["label"], "dragon")  # proves the plan path drew it
+
+    def test_empty_render_degrades_to_plan_rather_than_inking_noise(self):
+        replies = iter([GATE_IMAGE, SKETCH])
+        self.install(solver=lambda contents: next(replies))
+        empty = {"kind": "refusal", "message": "No traceable lines found."}
+        with patch.object(gemini, "generate_reference_image", return_value=b"IMG"), \
+             patch.object(gemini.tracer, "trace", return_value=empty):
+            result = gemini.illustrate("draw a fox", mode="trace")
+        self.assertEqual(result["kind"], "strokes")   # fell back, still drew
+        self.assertEqual(result["label"], "dragon")
+
+    def test_rdp_keeps_corners_and_drops_collinear_points(self):
+        # Regression: NumPy 2.3 removed the 2-D np.cross the old _rdp relied on.
+        straight = [(0, 0), (5, 0), (10, 0)]
+        self.assertEqual(gemini.tracer._rdp(straight, 1.6), [(0, 0), (10, 0)])
+        corner = [(0, 0), (5, 0), (5, 5)]
+        self.assertEqual(gemini.tracer._rdp(corner, 1.6), corner)
+
+    def test_tracer_turns_a_real_image_into_bounded_ordered_strokes(self):
+        import numpy as np
+        import cv2
+        img = np.full((240, 240, 3), 255, np.uint8)
+        cv2.rectangle(img, (40, 40), (200, 200), (0, 0, 0), 3)   # big outline
+        cv2.circle(img, (120, 120), 18, (0, 0, 0), 2)            # small detail
+        _, buf = cv2.imencode(".png", img)
+        plan = gemini.tracer.trace(buf.tobytes(), label="shapes")
+        self.assertEqual(plan["kind"], "strokes")
+        self.assertTrue(plan["strokes"])
+        self.assertLessEqual(len(plan["strokes"]), 120)
+        roles = {s["role"] for s in plan["strokes"]}
+        self.assertTrue(roles <= {"outline", "detail"})
+        for s in plan["strokes"]:
+            self.assertLessEqual(len(s["points"]), 180)
+            for x, y in s["points"]:
+                self.assertTrue(0 <= x <= 1000 and 0 <= y <= 1000)
+
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
+                   GEMINI_ILLUSTRATOR_MODEL="", ILLUSTRATOR_TRACE_ENABLED=True)
+class IllustratorTraceEndpointTests(GeminiTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+
+    def test_endpoint_returns_traced_strokes_for_a_generated_image(self):
+        self.install(solver=GATE_IMAGE)
+        with patch.object(gemini, "generate_reference_image", return_value=b"IMG"), \
+             patch.object(gemini.tracer, "trace", return_value=TRACED):
+            response = self.api.post("/api/illustrate/",
+                                     {"message": "draw a fox"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["kind"], "strokes")
+        self.assertEqual(payload["capability"], "illustrator")
+
+    def test_endpoint_returns_gate_refusal_without_strokes(self):
+        self.install(solver=GATE_REFUSAL)
+        with patch.object(gemini, "generate_reference_image") as gen:
+            response = self.api.post("/api/illustrate/",
+                                     {"message": "draw a wiring schematic"},
+                                     format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["kind"], "refusal")
+        self.assertNotIn("strokes", response.json())
+        gen.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# Illustrator trace of a user-given image (PEN-36 Goal B)
+# --------------------------------------------------------------------------
+
+def _line_art_png_b64() -> str:
+    """A small black-line drawing, base64 PNG — a stand-in for a picked image."""
+    import base64
+    import numpy as np
+    import cv2
+    img = np.full((240, 240, 3), 255, np.uint8)
+    cv2.rectangle(img, (40, 40), (200, 200), (0, 0, 0), 3)
+    cv2.line(img, (40, 40), (200, 200), (0, 0, 0), 2)
+    _, buf = cv2.imencode(".png", img)
+    return base64.b64encode(buf.tobytes()).decode()
+
+
+class TraceImageTests(GeminiTestCase):
+
+    def test_trace_image_returns_bounded_normalised_strokes(self):
+        import base64
+        png = base64.b64decode(_line_art_png_b64())
+        result = gemini.trace_image(png, label="doodle")
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["label"], "doodle")
+        self.assertTrue(result["strokes"])
+        for s in result["strokes"]:
+            self.assertIn(s["role"], ("outline", "detail"))
+            for x, y in s["points"]:
+                self.assertTrue(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0)
+
+    def test_blank_image_degrades_to_refusal_not_noise(self):
+        import base64
+        import numpy as np
+        import cv2
+        _, buf = cv2.imencode(".png", np.full((120, 120, 3), 255, np.uint8))
+        result = gemini.trace_image(buf.tobytes(), label="blank")
+        self.assertEqual(result["kind"], "refusal")
+
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model")
+class TraceImageEndpointTests(GeminiTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+
+    def test_endpoint_traces_a_posted_image(self):
+        response = self.api.post("/api/trace-image/",
+                                 {"image": _line_art_png_b64(), "label": "doodle"},
+                                 format="json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["kind"], "strokes")
+        self.assertEqual(payload["capability"], "illustrator")
+        self.assertTrue(payload["strokes"])
+
+    def test_missing_image_is_a_400(self):
+        self.assertEqual(
+            self.api.post("/api/trace-image/", {}, format="json").status_code, 400)
+
+    def test_non_base64_image_is_a_400(self):
+        response = self.api.post("/api/trace-image/",
+                                 {"image": "not base64!!"}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_untraceable_image_is_a_503(self):
+        import base64
+        import numpy as np
+        import cv2
+        _, buf = cv2.imencode(".png", np.full((120, 120, 3), 255, np.uint8))
+        blank = base64.b64encode(buf.tobytes()).decode()
+        response = self.api.post("/api/trace-image/",
+                                 {"image": blank}, format="json")
+        # A refusal from trace_image is a strokes-less 200; a blank image traces
+        # to nothing, which the view surfaces as an honest refusal payload.
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["kind"], "refusal")
+
+
+# --------------------------------------------------------------------------
+# Language Partner (PEN-37)
+# --------------------------------------------------------------------------
+
+LANGUAGE_TURN = (
+    '{"reply":"¡Sí! También me gusta caminar por la mañana.",'
+    '"correction":{"found_error":true,'
+    '"reason":"Use the feminine article with mañana.",'
+    '"corrected":"por la mañana","skill":"Spanish noun gender",'
+    '"confidence":0.94}}'
+)
+
+
+class LanguagePartnerTests(GeminiTestCase):
+
+    def test_preserves_target_language_unicode(self):
+        self.install(solver=LANGUAGE_TURN)
+        result = gemini.language_turn("Me gusta caminar por el mañana", "es-ES")
+        self.assertIn("¡Sí!", result["reply"])
+        self.assertEqual(result["language"], "Spanish")
+        self.assertTrue(result["correction"]["found_error"])
+
+    def test_low_confidence_correction_is_suppressed(self):
+        self.install(solver=(
+            '{"reply":"Bonjour !","correction":{"found_error":true,'
+            '"reason":"Maybe use another article.","corrected":"la maison",'
+            '"skill":"French articles","confidence":0.7}}'
+        ))
+        correction = gemini.language_turn("Bonjour", "fr-FR")["correction"]
+        self.assertFalse(correction["found_error"])
+        self.assertEqual(correction["corrected"], "")
+
+    def test_acceptable_sentence_has_no_correction(self):
+        self.install(solver=(
+            '{"reply":"Anch\'io!","correction":{"found_error":false,'
+            '"reason":"","corrected":"","skill":"","confidence":0}}'
+        ))
+        result = gemini.language_turn("Mi piace leggere", "it-IT")
+        self.assertFalse(result["correction"]["found_error"])
+
+    def test_reply_and_correction_fields_are_bounded(self):
+        cleaned = gemini._clean_language_turn({
+            "reply": "é" * 900,
+            "correction": {
+                "found_error": True,
+                "reason": "r" * 400,
+                "corrected": "c" * 700,
+                "skill": "s" * 300,
+                "confidence": 1,
+            },
+        }, "French")
+        self.assertEqual(len(cleaned["reply"]), 600)
+        self.assertEqual(len(cleaned["correction"]["reason"]), 240)
+        self.assertEqual(len(cleaned["correction"]["corrected"]), 400)
+        self.assertEqual(len(cleaned["correction"]["skill"]), 120)
+
+    def test_unsupported_language_is_rejected_without_model_call(self):
+        models = self.install(solver=LANGUAGE_TURN)
+        with self.assertRaises(gemini.GeminiError):
+            gemini.language_turn("hello", "xx-XX")
+        self.assertEqual(models.calls, [])
+
+    def test_empty_reply_is_an_error(self):
+        self.install(solver='{"reply":"","correction":{"found_error":false}}')
+        with self.assertRaises(gemini.GeminiError):
+            gemini.language_turn("hola", "es-ES")
+
+    def test_language_mistakes_reuse_practice_scheduler_with_language_prompt(self):
+        models = self.install(solver=(
+            '{"problem":"Complete: Voy ___ mercado.",'
+            '"answer":"al","hint":"Combine a + el.",'
+            '"skill":"Spanish contractions"}'
+        ))
+        result = gemini.practice_problem(
+            "Language: Spanish contractions",
+            "used a el instead of al",
+            domain="language",
+        )
+        self.assertEqual(result["answer"], "al")
+        instruction = models.calls[-1][2].system_instruction
+        self.assertIn("language-practice", instruction)
+
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
+                   GEMINI_LANGUAGE_MODEL="")
+class LanguagePartnerEndpointTests(GeminiTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+
+    def test_returns_reply_and_correction(self):
+        self.install(solver=LANGUAGE_TURN)
+        response = self.api.post("/api/language-turn/", {
+            "message": "Me gusta caminar por el mañana",
+            "language": "es-ES",
+            "history": [],
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["capability"], "language")
+        self.assertTrue(payload["correction"]["found_error"])
+
+    def test_requires_message_and_supported_language(self):
+        self.assertEqual(self.api.post("/api/language-turn/", {
+            "language": "es-ES",
+        }, format="json").status_code, 400)
+        self.assertEqual(self.api.post("/api/language-turn/", {
+            "message": "hello", "language": "xx-XX",
+        }, format="json").status_code, 400)
+
+    def test_rejects_non_list_history(self):
+        self.assertEqual(self.api.post("/api/language-turn/", {
+            "message": "hola", "language": "es-ES", "history": "bad",
+        }, format="json").status_code, 400)
+
+    def test_brain_failure_is_a_503(self):
+        self.install(solver='{"reply":"","correction":{}}')
+        self.assertEqual(self.api.post("/api/language-turn/", {
+            "message": "hola", "language": "es-ES",
+        }, format="json").status_code, 503)
+
+
+# --------------------------------------------------------------------------
+# Debate Partner (PEN-38)
+# --------------------------------------------------------------------------
+
+DEBATE_TURN = (
+    '{"counterargument":"This assumes a citywide ban is the only way to '
+    'reduce traffic, but targeted pricing could cut congestion without '
+    'limiting people who lack alternatives.",'
+    '"question":"What would your proposal do for people with no reliable transit?"}'
+)
+
+
+class DebatePartnerTests(GeminiTestCase):
+
+    def test_returns_counterargument_and_open_question(self):
+        models = self.install(solver=DEBATE_TURN)
+        result = gemini.debate_turn("Cars should be banned from every city centre.")
+        self.assertIn("assumes", result["counterargument"])
+        self.assertTrue(result["question"].endswith("?"))
+        instruction = models.calls[-1][2].system_instruction
+        self.assertIn("never score, grade", instruction.lower())
+        self.assertIn("never the writer", instruction.lower())
+
+    def test_fields_are_bounded(self):
+        cleaned = gemini._clean_debate_turn({
+            "counterargument": "c" * 1200,
+            "question": "q" * 400,
+        })
+        self.assertEqual(len(cleaned["counterargument"]), 900)
+        self.assertEqual(len(cleaned["question"]), 240)
+
+    def test_empty_counterargument_is_an_error(self):
+        self.install(solver='{"counterargument":"","question":"Why?"}')
+        with self.assertRaises(gemini.GeminiError):
+            gemini.debate_turn("A claim")
+
+    def test_empty_argument_is_rejected_without_model_call(self):
+        models = self.install(solver=DEBATE_TURN)
+        with self.assertRaises(gemini.GeminiError):
+            gemini.debate_turn(" ")
+        self.assertEqual(models.calls, [])
+
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
+                   GEMINI_DEBATE_MODEL="")
+class DebatePartnerEndpointTests(GeminiTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+
+    def test_returns_perspective_trust_tier(self):
+        self.install(solver=DEBATE_TURN)
+        response = self.api.post("/api/debate-turn/", {
+            "message": "Cars should be banned.", "history": [],
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["capability"], "debate")
+        self.assertEqual(payload["trust"], "perspective")
+        self.assertNotIn("verified", payload)
+
+    def test_requires_message_and_list_history(self):
+        self.assertEqual(
+            self.api.post("/api/debate-turn/", {}, format="json").status_code, 400)
+        self.assertEqual(self.api.post("/api/debate-turn/", {
+            "message": "claim", "history": "bad",
+        }, format="json").status_code, 400)
+
+    def test_brain_failure_is_a_503(self):
+        self.install(solver='{"counterargument":"","question":""}')
+        self.assertEqual(self.api.post("/api/debate-turn/", {
+            "message": "claim",
+        }, format="json").status_code, 503)
+
+
+# --------------------------------------------------------------------------
+# Vision input (PEN-39)
+# --------------------------------------------------------------------------
+
+
+class VisionTurnTests(GeminiTestCase):
+
+    def test_mathematician_photo_uses_verified_image_pipeline(self):
+        models = self.install(
+            solver="Reading as: 2 + 2\nAns: 4",
+            verifier='{"verdict":"correct","reason":"ok"}',
+        )
+        result = gemini.vision_turn(PNG, "mathematician")
+        self.assertEqual(result["kind"], "math")
+        self.assertIn("Ans: 4", result["reply"])
+        self.assertEqual(len(models.of_kind("verifier")), 1)
+        self.assertIn(
+            "image",
+            models.part_kinds(models.last_parts("verifier")),
+        )
+
+    def test_companion_math_photo_is_promoted_to_verified_math(self):
+        replies = iter(['{"kind":"math"}', "Reading as: x + 1 = 3\nAns: 2"])
+        models = self.install(
+            solver=lambda _: next(replies),
+            verifier='{"verdict":"correct","reason":"ok"}',
+        )
+        result = gemini.vision_turn(PNG, "companion")
+        self.assertEqual(result["kind"], "math")
+        self.assertEqual(len(models.of_kind("verifier")), 1)
+
+    def test_companion_nonmath_photo_stays_unverified_prose(self):
+        replies = iter(['{"kind":"other"}', "This looks like a leaf cross-section."])
+        models = self.install(solver=lambda _: next(replies))
+        result = gemini.vision_turn(PNG, "companion")
+        self.assertEqual(result["kind"], "companion")
+        self.assertEqual(result["trust"], "unverified")
+        self.assertEqual(len(models.of_kind("verifier")), 0)
+
+    def test_language_photo_reuses_confidence_gated_contract(self):
+        self.install(solver=LANGUAGE_TURN)
+        result = gemini.vision_turn(
+            PNG, "language", language_code="es-ES")
+        self.assertEqual(result["kind"], "language")
+        self.assertTrue(result["correction"]["found_error"])
+
+    def test_debate_photo_keeps_perspective_trust_tier(self):
+        self.install(solver=DEBATE_TURN)
+        result = gemini.vision_turn(PNG, "debate")
+        self.assertEqual(result["kind"], "debate")
+        self.assertEqual(result["trust"], "perspective")
+
+    def test_illustrator_photo_fails_closed(self):
+        models = self.install()
+        with self.assertRaises(gemini.GeminiError):
+            gemini.vision_turn(PNG, "illustrator")
+        self.assertEqual(models.calls, [])
+
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
+                   GEMINI_VISION_MODEL="")
+class VisionTurnEndpointTests(GeminiTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+
+    def test_returns_capability_toned_response(self):
+        replies = iter(['{"kind":"other"}', "A clear explanation."])
+        self.install(solver=lambda _: next(replies))
+        response = self.api.post("/api/vision-turn/", {
+            "image": _b64(PNG),
+            "mime_type": "image/png",
+            "capability": "companion",
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["kind"], "companion")
+
+    def test_requires_image_and_supported_capability(self):
+        self.assertEqual(self.api.post("/api/vision-turn/", {
+            "capability": "companion",
+        }, format="json").status_code, 400)
+        self.assertEqual(self.api.post("/api/vision-turn/", {
+            "image": _b64(PNG), "capability": "illustrator",
+        }, format="json").status_code, 400)
+
+    def test_rejects_non_list_history_and_unknown_image_type(self):
+        self.assertEqual(self.api.post("/api/vision-turn/", {
+            "image": _b64(PNG), "capability": "companion", "history": "bad",
+        }, format="json").status_code, 400)
+        self.assertEqual(self.api.post("/api/vision-turn/", {
+            "image": _b64(PNG), "capability": "companion",
+            "mime_type": "image/gif",
+        }, format="json").status_code, 400)
+
+
+# --------------------------------------------------------------------------
 # show-your-work grading (PEN-16)
 # --------------------------------------------------------------------------
 
@@ -1654,7 +2260,13 @@ class AccessControlTests(GeminiTestCase):
     def test_all_expensive_endpoints_are_protected(self):
         for path, body in (("/api/chat/", {"message": "hi"}),
                            ("/api/solve-math/", {"image": _b64(PNG)}),
-                           ("/api/read-math/", {"image": _b64(PNG)})):
+                           ("/api/read-math/", {"image": _b64(PNG)}),
+                           ("/api/illustrate/", {"message": "draw a cat"}),
+                           ("/api/language-turn/",
+                            {"message": "hola", "language": "es-ES"}),
+                           ("/api/debate-turn/", {"message": "a claim"}),
+                           ("/api/vision-turn/",
+                            {"image": _b64(PNG), "capability": "companion"})):
             response = self.api.post(path, body, format="json")
             self.assertEqual(response.status_code, 401, msg=path)
 

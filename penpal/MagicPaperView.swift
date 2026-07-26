@@ -790,6 +790,120 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         return true
     }
 
+    // MARK: - Illustrator (PEN-36)
+
+    /// Traces an ordered line-art plan through the handwriting renderer and
+    /// bakes every path into PencilKit. The whole sketch is one undo action.
+    @discardableResult
+    private func drawIllustration(_ illustration: PenpalAPI.Illustration) -> Bool {
+        guard let planned = illustration.strokes, !planned.isEmpty else {
+            onStatus?("I couldn't find any lines to draw.")
+            return false
+        }
+
+        let all = canvas.drawing.strokes
+        let content = all.reduce(CGRect.null) { $0.union($1.renderBounds) }
+        let top = content.isNull ? rulesTopInset + lineGap
+                                 : max(lastReplyBottom, content.maxY) + lineGap
+        let size = min(bounds.width - leftMargin - 40, 420)
+        let frame = CGRect(x: leftMargin, y: top, width: size, height: size)
+        let strokes = IllustrationPlotter.strokes(from: planned, in: frame)
+        guard !strokes.isEmpty else {
+            onStatus?("I couldn't turn that sketch into drawable lines.")
+            return false
+        }
+
+        ensureRoom(below: frame.maxY + lineGap * 2)
+        let baseWidth = max(1.2, lineRelativeXHeight * 0.09
+                            * CGFloat(settings.penWidthScale))
+        renderer.inkColor = bakedInkColor
+        beginUndoableAction("Draw Illustration")
+        onWritingStateChange?(true)
+        scrollToReveal(frame.minY)
+
+        renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
+            guard let self, i < strokes.count else { return }
+            if !self.bakeStroke(strokes[i], baseWidth: baseWidth,
+                                color: self.bakedInkColor) {
+                self.renderer.drawStatic([strokes[i]], baseWidth: baseWidth)
+            }
+        }) { [weak self] in
+            guard let self else { return }
+            self.lastReplyBottom = frame.maxY
+            self.endUndoableAction()
+            self.onWritingStateChange?(false)
+            self.publishUndoRedo()
+            self.flushWritingCompletions()
+        }
+        publishForVoiceOver(
+            "Drawing \(illustration.label ?? "an illustration")",
+            isAnswer: false
+        )
+        return true
+    }
+
+    /// Goal B — trace a user-given image. In Illustrator mode a chosen photo is
+    /// sent to the server's pure-CV tracer (no model call, so the photo never
+    /// reaches Gemini) and revealed by the very same `drawIllustration`, so a
+    /// traced image reads as the same hand as a generated sketch.
+    func traceExternalPhoto(_ rawImage: UIImage) {
+        idleTimer?.invalidate()
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current drawing to finish.")
+            return
+        }
+        guard settings.useBrain else {
+            onStatus?("Tracing needs the brain server — enable it in Settings → Behavior.")
+            return
+        }
+
+        let image = Self.normalizedUp(rawImage)
+        guard let jpegData = Self.visionJPEGData(image) else {
+            onStatus?("Couldn't prepare that photo.")
+            return
+        }
+
+        brainBusy = true
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("Tracing your image…")
+
+        Task { @MainActor in
+            let store = ConversationStore.shared
+            do {
+                let illustration = try await PenpalAPI.traceImage(
+                    imageData: jpegData,
+                    label: "your image",
+                    baseURL: self.settings.apiBaseURL
+                )
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                store.append(role: "user", content: "(image to trace)")
+
+                if illustration.isRefusal {
+                    let refusal = illustration.message
+                        ?? "I couldn't find clean lines to trace in that image."
+                    store.append(role: "assistant", content: refusal)
+                    self.onWritingStateChange?(false)
+                    self.onStatus?(refusal)
+                    return
+                }
+
+                store.append(role: "assistant",
+                             content: "I traced \(illustration.label ?? "your image").")
+                self.onStatus?("")
+                if !self.drawIllustration(illustration) {
+                    self.onWritingStateChange?(false)
+                }
+            } catch {
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(PenpalError.message(for: error))
+            }
+        }
+    }
+
     // MARK: - Live answer preview (PEN-11)
 
     /// Shows the on-device answer ghosted just past the user's "=", before
@@ -1704,6 +1818,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         if let body = GraphPlotter.functionBody(in: trimmed), drawGraph(of: body) {
             return
         }
+        if settings.capability == "illustrator" {
+            requestIllustration(trimmed)
+            return
+        }
         idleTimer?.invalidate()
         guard !renderer.isWriting else {
             onStatus?("Wait for the current reply to finish.")
@@ -1729,6 +1847,39 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                          isUser: true)
         lastReplyBottom = userBottom
         lastReplyStrokeCount = canvas.drawing.strokes.count
+
+        if settings.capability == "language" || settings.capability == "debate" {
+            let replyY = max(userBottom + lineGap, originY + lineGap)
+            let replyPlacement = ReplyPlacement(
+                origin: CGPoint(x: leftMargin, y: replyY),
+                xHeight: lineRelativeXHeight,
+                maxX: bounds.width - 24,
+                maxY: contentHeight + bounds.height,
+                newInkBounds: .zero,
+                detectedLines: [],
+                needsNewPage: false
+            )
+            if settings.capability == "language" {
+                let userWidth = min(
+                    bounds.width - leftMargin - 24,
+                    Self.estimatedWidth(of: trimmed, xHeight: lineRelativeXHeight)
+                )
+                let userBounds = CGRect(
+                    x: leftMargin,
+                    y: originY - lineRelativeXHeight * 1.5,
+                    width: userWidth,
+                    height: lineRelativeXHeight * 1.8
+                )
+                requestLanguageTurn(
+                    trimmed,
+                    placement: replyPlacement,
+                    sourceBounds: userBounds
+                )
+            } else {
+                requestDebateTurn(trimmed, placement: replyPlacement)
+            }
+            return
+        }
 
         guard settings.useBrain else {
             // Offline canned path
@@ -1905,13 +2056,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         lastReplyStrokeCount = all.count
 
         let mathematicianMode = penpalEnabled && settings.capability == "mathematician"
+        let illustratorMode = penpalEnabled && settings.capability == "illustrator"
+        let languageMode = penpalEnabled && settings.capability == "language"
+        let debateMode = penpalEnabled && settings.capability == "debate"
 
         // Drawn intent (PEN-07) runs FIRST: a double underline is also two
         // long thin strokes, and would otherwise be read as something else.
         if penpalEnabled,
            let gesture = InkAnalyzer.detectGesture(all: all, newStart: newStart) {
-            perform(gesture, all: all)
-            return
+            if (languageMode || debateMode), case .checkWork = gesture {
+                // A double underline in Language Partner must never invoke the
+                // math grader. Leave it as ordinary ink for this turn.
+            } else {
+                perform(gesture, all: all)
+                return
+            }
         }
 
         // Boxed problem: Penpal + Mathematician only.
@@ -1986,8 +2145,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
             // Cheap OCR first (no highlight yet) — we need to know if there's
             // an "=" before spending the slow structured parse / animation.
-            let candidates = await InkRecognizer.recognizeCandidates(strokes: inkToRead,
-                                                                     traits: traits)
+            let recognitionLanguages = languageMode
+                ? [self.settings.targetLanguage] : ["en-US"]
+            let candidates = await InkRecognizer.recognizeCandidates(
+                strokes: inkToRead,
+                traits: traits,
+                recognitionLanguages: recognitionLanguages)
             let trimmed = (candidates.first ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -2019,7 +2182,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     }
                     if lineMates.count > inkToRead.count {
                         let lineCandidates = await InkRecognizer.recognizeCandidates(
-                            strokes: lineMates, traits: traits)
+                            strokes: lineMates,
+                            traits: traits,
+                            recognitionLanguages: recognitionLanguages)
                         fullLineText = lineCandidates.first?
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if mathematicianMode {
@@ -2029,6 +2194,86 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                         }
                     }
                 }
+            }
+
+            if languageMode {
+                let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+                guard !auto || self.settings.autoReply else {
+                    self.lastReplyStrokeCount = newStart
+                    return
+                }
+                guard !bestText.isEmpty else {
+                    self.lastReplyStrokeCount = newStart
+                    if !auto { self.onStatus?("Write a sentence to practise.") }
+                    return
+                }
+                guard self.settings.useBrain else {
+                    self.lastReplyStrokeCount = newStart
+                    self.onStatus?(
+                        "Language Partner needs the brain — enable it in Settings → Behavior."
+                    )
+                    return
+                }
+                self.requestLanguageTurn(
+                    bestText,
+                    placement: placement,
+                    sourceBounds: placement.newInkBounds,
+                    sourceStrokes: inkToRead
+                )
+                return
+            }
+
+            if debateMode {
+                let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+                guard !auto || self.settings.autoReply else {
+                    self.lastReplyStrokeCount = newStart
+                    return
+                }
+                guard !bestText.isEmpty else {
+                    self.lastReplyStrokeCount = newStart
+                    if !auto { self.onStatus?("Write the claim you'd like challenged.") }
+                    return
+                }
+                guard self.settings.useBrain else {
+                    self.lastReplyStrokeCount = newStart
+                    self.onStatus?(
+                        "Debate Partner needs the brain — enable it in Settings → Behavior."
+                    )
+                    return
+                }
+                self.requestDebateTurn(bestText, placement: placement,
+                                       sourceStrokes: inkToRead)
+                return
+            }
+
+            // Illustrator is an explicit mode: recognised writing is a
+            // drawing request, while real function plots stay on-device.
+            // Route before the calculator so "plot y = x^2" cannot be
+            // mistaken for an unfinished arithmetic expression.
+            if illustratorMode {
+                let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+                guard !auto || self.settings.autoReply else {
+                    self.lastReplyStrokeCount = newStart
+                    return
+                }
+                guard !bestText.isEmpty else {
+                    self.lastReplyStrokeCount = newStart
+                    if !auto { self.onStatus?("Write what you'd like me to draw.") }
+                    return
+                }
+                if let body = GraphPlotter.functionBody(in: bestText),
+                   self.drawGraph(of: body) {
+                    return
+                }
+                guard self.settings.useBrain else {
+                    self.lastReplyStrokeCount = newStart
+                    self.onStatus?(
+                        "Illustrator needs the brain — enable it in Settings → Behavior."
+                    )
+                    return
+                }
+                self.requestIllustration(bestText, refusalPlacement: placement)
+                return
             }
 
             // Penpal + Mathematician: "=" is for the brain only — never the
@@ -2098,11 +2343,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 return
             }
 
-            // Companion (and other non-mathematician Penpal) below.
             guard self.penpalEnabled else { return }
 
             let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
 
+            // Companion below.
             if bestText.hasSuffix("="), self.looksLikeMath(bestText),
                self.settings.useBrain {
                 self.askBrain(bestText, placement: placement,
@@ -2174,6 +2419,238 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             if let hit = attempt(candidate) { return hit }
         }
         return nil
+    }
+
+    /// Requests a perspective-labelled counterargument. This is deliberately
+    /// separate from Mathematician: no verified styling and no verdict.
+    private func requestDebateTurn(
+        _ message: String,
+        placement: ReplyPlacement,
+        sourceStrokes: [PKStroke] = []
+    ) {
+        idleTimer?.invalidate()
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current reply to finish.")
+            return
+        }
+        guard settings.useBrain else {
+            onStatus?("Debate Partner needs the brain — enable it in Settings → Behavior.")
+            return
+        }
+
+        brainBusy = true
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("")
+
+        Task { @MainActor in
+            let store = ConversationStore.shared
+            do {
+                let turn = try await PenpalAPI.debateTurn(
+                    message: message,
+                    history: store.historyForAPI(),
+                    baseURL: self.settings.apiBaseURL
+                )
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                store.append(role: "user", content: message)
+                store.append(role: "assistant", content: turn.inkText)
+                self.renderReply(
+                    turn.inkText,
+                    placement: placement,
+                    matchStrokes: sourceStrokes,
+                    purpose: .debate
+                )
+            } catch {
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(PenpalError.message(for: error))
+            }
+        }
+    }
+
+    /// Requests a conversational reply plus one high-confidence correction.
+    /// The correction marks the learner's ink but never replaces it.
+    private func requestLanguageTurn(
+        _ message: String,
+        placement: ReplyPlacement,
+        sourceBounds: CGRect,
+        sourceStrokes: [PKStroke] = []
+    ) {
+        idleTimer?.invalidate()
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current reply to finish.")
+            return
+        }
+        guard settings.useBrain else {
+            onStatus?(
+                "Language Partner needs the brain — enable it in Settings → Behavior."
+            )
+            return
+        }
+
+        brainBusy = true
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("")
+
+        Task { @MainActor in
+            let store = ConversationStore.shared
+            do {
+                let turn = try await PenpalAPI.languageTurn(
+                    message: message,
+                    language: self.settings.targetLanguage,
+                    history: store.historyForAPI(),
+                    baseURL: self.settings.apiBaseURL
+                )
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                store.append(role: "user", content: message)
+                store.append(role: "assistant", content: turn.reply)
+                self.showLanguageTurn(
+                    turn,
+                    placement: placement,
+                    sourceBounds: sourceBounds,
+                    sourceStrokes: sourceStrokes
+                )
+            } catch {
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(PenpalError.message(for: error))
+            }
+        }
+    }
+
+    private func showLanguageTurn(
+        _ turn: PenpalAPI.LanguageTurn,
+        placement: ReplyPlacement,
+        sourceBounds: CGRect,
+        sourceStrokes: [PKStroke]
+    ) {
+        guard turn.correction.found_error, !turn.correction.note.isEmpty else {
+            renderReply(
+                turn.reply,
+                placement: placement,
+                matchStrokes: sourceStrokes,
+                purpose: .language
+            )
+            return
+        }
+
+        StudyPlanner.shared.recordMistake(
+            topic: "Language: \(turn.correction.skill)",
+            mistake: turn.correction.reason
+        )
+
+        let markedBounds = (!sourceBounds.isNull && sourceBounds.width > 2)
+            ? sourceBounds : placement.newInkBounds
+        renderer.markLine(markedBounds)
+
+        let correctionXHeight = max(10, placement.xHeight * 0.78)
+        let correctionWidth = min(
+            240,
+            Self.estimatedWidth(
+                of: turn.correction.note,
+                xHeight: correctionXHeight
+            )
+        )
+        let inlineX = markedBounds.maxX + correctionXHeight
+        let fitsInline = !markedBounds.isNull
+            && inlineX + correctionWidth <= placement.maxX
+        let correctionOrigin = fitsInline
+            ? CGPoint(x: inlineX, y: markedBounds.maxY)
+            : placement.origin
+        let correctionPlacement = ReplyPlacement(
+            origin: correctionOrigin,
+            xHeight: correctionXHeight,
+            maxX: placement.maxX,
+            maxY: placement.maxY,
+            newInkBounds: markedBounds,
+            detectedLines: placement.detectedLines,
+            needsNewPage: placement.needsNewPage
+        )
+
+        renderReply(
+            turn.correction.note,
+            placement: correctionPlacement,
+            matchStrokes: sourceStrokes,
+            purpose: .language
+        ) { [weak self] in
+            guard let self else { return }
+            var replyPlacement = placement
+            replyPlacement.origin.y = max(
+                placement.origin.y,
+                self.lastReplyBottom + self.lineGap
+            )
+            self.renderReply(
+                turn.reply,
+                placement: replyPlacement,
+                matchStrokes: sourceStrokes,
+                purpose: .language
+            )
+        }
+    }
+
+    /// Requests a structured line-art plan. Illustrator deliberately does not
+    /// use the chat endpoint: prose and ordered geometry are different
+    /// contracts, and factual diagrams must be able to fail closed.
+    private func requestIllustration(
+        _ message: String,
+        refusalPlacement: ReplyPlacement? = nil
+    ) {
+        idleTimer?.invalidate()
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current drawing to finish.")
+            return
+        }
+        guard settings.useBrain else {
+            onStatus?("Illustrator needs the brain — enable it in Settings → Behavior.")
+            return
+        }
+
+        brainBusy = true
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("")
+
+        Task { @MainActor in
+            let store = ConversationStore.shared
+            do {
+                let illustration = try await PenpalAPI.illustrate(
+                    message: message,
+                    baseURL: self.settings.apiBaseURL
+                )
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                store.append(role: "user", content: message)
+
+                if illustration.isRefusal {
+                    let refusal = illustration.message
+                        ?? "I need a trusted reference for that, so I won't guess."
+                    store.append(role: "assistant", content: refusal)
+                    self.onWritingStateChange?(false)
+                    if let placement = refusalPlacement {
+                        self.renderReply(refusal, placement: placement, matchStrokes: [])
+                    } else {
+                        self.writeReplyText(refusal)
+                    }
+                    return
+                }
+
+                let label = illustration.label ?? "illustration"
+                store.append(role: "assistant", content: "I drew \(label).")
+                if !self.drawIllustration(illustration) {
+                    self.onWritingStateChange?(false)
+                }
+            } catch {
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(PenpalError.message(for: error))
+            }
+        }
     }
 
     /// Sends recognized ink to the brain and writes the reply. `fallbackInk`
@@ -2894,6 +3371,133 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                               needsNewPage: false)
     }
 
+    // MARK: - Vision input (PEN-39)
+
+    /// Ask the currently selected capability about an external photo. Unlike
+    /// PEN-35 this never rebuilds the photo on the page; it computes a response
+    /// and writes that response as page ink.
+    func respondToExternalPhoto(_ rawImage: UIImage, prompt: String = "") {
+        if settings.capability == "illustrator" {
+            // In Illustrator mode a chosen photo isn't "read" — it's traced.
+            traceExternalPhoto(rawImage)
+            return
+        }
+        guard settings.useBrain else {
+            onStatus?("Vision needs the brain — enable it in Settings → Behavior.")
+            return
+        }
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current reply to finish.")
+            return
+        }
+
+        let image = Self.normalizedUp(rawImage)
+        guard let jpegData = Self.visionJPEGData(image) else {
+            onStatus?("Couldn't prepare that photo.")
+            return
+        }
+
+        brainBusy = true
+        setReadingBanner(true)
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("")
+
+        Task { @MainActor in
+            defer { self.setReadingBanner(false) }
+            let store = ConversationStore.shared
+            do {
+                let turn = try await PenpalAPI.visionTurn(
+                    jpegData: jpegData,
+                    message: prompt,
+                    capability: self.settings.capability,
+                    language: self.settings.targetLanguage,
+                    mathDetail: self.settings.mathDetail,
+                    history: store.historyForAPI(),
+                    baseURL: self.settings.apiBaseURL
+                )
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+
+                let userSummary = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                store.append(
+                    role: "user",
+                    content: userSummary.isEmpty
+                        ? "(external photo)"
+                        : "(external photo) \(userSummary)"
+                )
+                store.append(role: "assistant", content: turn.inkText)
+                if turn.kind == "language",
+                   let correction = turn.correction,
+                   correction.found_error {
+                    StudyPlanner.shared.recordMistake(
+                        topic: "Language: \(correction.skill)",
+                        mistake: correction.reason
+                    )
+                }
+
+                let all = self.canvas.drawing.strokes
+                let content = all.reduce(CGRect.null) { $0.union($1.renderBounds) }
+                let originY = content.isNull
+                    ? self.rulesTopInset + self.lineGap
+                    : max(self.lastReplyBottom, content.maxY) + self.lineGap
+                self.ensureRoom(below: originY + self.lineGap * 8)
+                let placement = ReplyPlacement(
+                    origin: CGPoint(x: self.leftMargin, y: originY),
+                    xHeight: self.lineRelativeXHeight,
+                    maxX: self.bounds.width - 24,
+                    maxY: self.contentHeight + self.bounds.height,
+                    newInkBounds: .zero,
+                    detectedLines: [],
+                    needsNewPage: false
+                )
+                let purpose: ReplyRenderPurpose = switch turn.kind {
+                case "language": .language
+                case "debate": .debate
+                default: .assistant
+                }
+                self.renderReply(
+                    turn.inkText,
+                    placement: placement,
+                    celebrate: turn.kind == "math",
+                    purpose: purpose
+                )
+            } catch {
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(PenpalError.message(for: error))
+            }
+        }
+    }
+
+    /// Bounds upload cost and memory while preserving enough detail for text,
+    /// handwriting and diagrams. The server independently enforces 6 MiB.
+    private static func visionJPEGData(_ image: UIImage) -> Data? {
+        let pixelWidth = CGFloat(image.cgImage?.width ?? Int(image.size.width * image.scale))
+        let pixelHeight = CGFloat(image.cgImage?.height ?? Int(image.size.height * image.scale))
+        guard pixelWidth > 1, pixelHeight > 1 else { return nil }
+        let maxSide: CGFloat = 2_048
+        let scale = min(1, maxSide / max(pixelWidth, pixelHeight))
+        let targetSize = CGSize(width: floor(pixelWidth * scale),
+                                height: floor(pixelHeight * scale))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let resized = UIGraphicsImageRenderer(size: targetSize, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: targetSize))
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        for quality in [CGFloat(0.88), 0.72, 0.56] {
+            if let data = resized.jpegData(compressionQuality: quality),
+               data.count <= 5_500_000 {
+                return data
+            }
+        }
+        return nil
+    }
+
     // MARK: - Photo import (PEN-35)
 
     /// Read an existing paper page from a photo and rebuild it on this page:
@@ -3148,13 +3752,18 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private enum ReplyRenderPurpose {
         case assistant
         case pageImport
+        case language
+        case debate
 
         var forcesCanvasInk: Bool { self == .pageImport }
-        var isVoiceOverAnswer: Bool { self == .assistant }
+        var isVoiceOverAnswer: Bool { self != .pageImport }
+        var typesetsUnsupportedUnicode: Bool { self == .language }
         var undoName: String {
             switch self {
             case .assistant: "Penpal Reply"
             case .pageImport: "Import Page Ink"
+            case .language: "Language Partner Reply"
+            case .debate: "Debate Counterpoint"
             }
         }
     }
@@ -3196,7 +3805,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let bakeColor = matched?.color ?? bakedInkColor
 
         // Typed-font replies bypass the stroke pipeline entirely.
-        if settings.replyStyle == "font", !purpose.forcesCanvasInk {
+        let needsUnicodeFont = purpose.typesetsUnsupportedUnicode
+            && text.unicodeScalars.contains { !$0.isASCII }
+        if (settings.replyStyle == "font" || needsUnicodeFont), !purpose.forcesCanvasInk {
             let bottom = writeTypedReply(text, placement: placement, color: bakeColor)
             lastReplyBottom = bottom
             ensureRoom(below: bottom + lineGap * 2)

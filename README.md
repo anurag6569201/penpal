@@ -4,7 +4,7 @@ Handwriting mimicry on iOS, plus a Django + Gemini brain for text conversation.
 
 ## Capabilities
 
-Pick who Penpal is in Settings → Penpal (or one tap from the banner):
+Pick who Penpal is from the on-page Penpal control bar:
 
 - **Companion** — conversation, in a mood you choose: warm friend, playful,
   thoughtful, coach, or a custom persona described in your own words.
@@ -19,6 +19,20 @@ Pick who Penpal is in Settings → Penpal (or one tap from the banner):
   Explain, Another way, Harder — or write "check" above your own work to
   find your first wrong line. Detail level (Answer / Compact / Full / Proof)
   switches from the on-page banner or Settings.
+- **Illustrator** — ask for an imaginative sketch and watch Penpal trace it
+  stroke by stroke in the same ink as your handwriting. The result is native
+  PencilKit ink: erasable, lassoable, saved with the page, and removed by one
+  undo. Factual or labelled diagrams are refused for now rather than guessed;
+  they will require a vetted reference-image source.
+- **Language Partner** — practise English, Spanish, French, German, Italian or
+  Portuguese. Penpal replies in that language; when it is highly confident
+  about one grammar or vocabulary issue, it gently underlines the untouched
+  sentence and adds a small correction beside it. Those misses feed the same
+  spaced-practice queue used for maths.
+- **Debate Partner** — write a claim or thesis and get the strongest
+  good-faith opposing case plus one question that tests your position. It is
+  explicitly labelled as another perspective, never a verified verdict or a
+  grade on the writer.
 
 Always on, in any capability:
 
@@ -43,6 +57,11 @@ Always on, in any capability:
   come back as real ink in your own hand, top to bottom; anything that can't
   honestly become handwriting (a diagram, a table, a photo) is kept as a real
   image crop instead of a fake redrawing.
+- **Ask about a photo** — use the camera button on the Penpal bar for an
+  external textbook diagram, whiteboard or handwritten problem. The selected
+  capability responds onto your page; visible maths is automatically routed
+  through the image-aware solve-and-verify pipeline. This is intentionally
+  separate from Import Page, which reconstructs rather than answers.
 
 ## Quick start (brain)
 

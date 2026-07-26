@@ -45,9 +45,11 @@ final class HandwritingSettings: ObservableObject {
     @Published var apiBaseURL: String { didSet { save() } }
     /// When on, typed messages go to Gemini via Django.
     @Published var useBrain: Bool { didSet { save() } }
-    /// What Penpal IS right now: "companion" (conversation, moods) or
-    /// "mathematician" (step-by-step math solving).
+    /// What Penpal IS right now: companion, mathematician, illustrator,
+    /// language partner, or debate partner.
     @Published var capability: String { didSet { save() } }
+    /// BCP-47 locale practised by Language Partner.
+    @Published var targetLanguage: String { didSet { save() } }
     /// Companion mood: "warm" | "playful" | "thoughtful" | "coach" | "custom".
     @Published var companionMood: String { didSet { save() } }
     /// Free-text persona used when companionMood == "custom".
@@ -84,6 +86,7 @@ final class HandwritingSettings: ObservableObject {
         apiBaseURL = defaults.string(forKey: "penpal.settings.apiBaseURL") ?? "http://127.0.0.1:8000"
         useBrain = defaults.object(forKey: "penpal.settings.useBrain") as? Bool ?? true
         capability = defaults.string(forKey: "penpal.settings.capability") ?? "companion"
+        targetLanguage = defaults.string(forKey: "penpal.settings.targetLanguage") ?? "es-ES"
         companionMood = defaults.string(forKey: "penpal.settings.companionMood") ?? "warm"
         customMoodText = defaults.string(forKey: "penpal.settings.customMoodText") ?? ""
         mathDetail = defaults.string(forKey: "penpal.settings.mathDetail") ?? "compact"
@@ -128,6 +131,7 @@ final class HandwritingSettings: ObservableObject {
         d.set(apiBaseURL, forKey: "penpal.settings.apiBaseURL")
         d.set(useBrain, forKey: "penpal.settings.useBrain")
         d.set(capability, forKey: "penpal.settings.capability")
+        d.set(targetLanguage, forKey: "penpal.settings.targetLanguage")
         d.set(companionMood, forKey: "penpal.settings.companionMood")
         d.set(customMoodText, forKey: "penpal.settings.customMoodText")
         d.set(mathDetail, forKey: "penpal.settings.mathDetail")
