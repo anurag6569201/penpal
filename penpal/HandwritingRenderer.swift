@@ -54,7 +54,11 @@ final class HandwritingRenderer: UIView {
     }
 
     private func setupPen() {
-        penDot.path = UIBezierPath(ovalIn: CGRect(x: -2, y: -2, width: 4, height: 4)).cgPath
+        // A compact contact point sits on the wet ink front. A larger dot makes
+        // its leading edge look ahead even when the animation clocks are equal.
+        penDot.path = UIBezierPath(
+            ovalIn: CGRect(x: -1.5, y: -1.5, width: 3, height: 3)
+        ).cgPath
         penDot.fillColor = UIColor(Pen.inkAccent).cgColor
         let nib = UIBezierPath()
         nib.move(to: CGPoint(x: 2, y: -3))
@@ -793,6 +797,10 @@ final class HandwritingRenderer: UIView {
         // have it; otherwise a curvature profile that slows into bends and eases
         // in/out at the ends — the hand-drawing-a-letter feel.
         let keyTimes = Self.travelKeyTimes(stroke)
+        // Both animations receive one absolute start time. Adding animations
+        // sequentially without this can put the pen a frame ahead of the mask.
+        let leadIn = 0.012
+        let animationStart = CACurrentMediaTime() + leadIn
         let inkLayer: CAShapeLayer
 
         if let capturedWidths = stroke.widths, capturedWidths.count == stroke.points.count {
@@ -818,7 +826,12 @@ final class HandwritingRenderer: UIView {
             mask.lineJoin = .round
             fill.mask = mask
 
-            let reveal = Self.revealAnimation(points: stroke.points, keyTimes: keyTimes, duration: duration)
+            let reveal = Self.revealAnimation(
+                points: stroke.points,
+                keyTimes: keyTimes,
+                duration: duration,
+                beginTime: animationStart
+            )
             mask.strokeEnd = 1
             mask.add(reveal, forKey: "reveal")
             inkLayer = fill
@@ -831,7 +844,12 @@ final class HandwritingRenderer: UIView {
             shape.lineCap = .round
             shape.lineJoin = .round
 
-            let reveal = Self.revealAnimation(points: stroke.points, keyTimes: keyTimes, duration: duration)
+            let reveal = Self.revealAnimation(
+                points: stroke.points,
+                keyTimes: keyTimes,
+                duration: duration,
+                beginTime: animationStart
+            )
             shape.strokeEnd = 1
             shape.add(reveal, forKey: "reveal")
             inkLayer = shape
@@ -849,13 +867,19 @@ final class HandwritingRenderer: UIView {
         travelDot.keyTimes = keyTimes
         travelDot.calculationMode = .linear
         travelDot.duration = duration
+        travelDot.beginTime = animationStart
+        travelDot.fillMode = .backwards
+        movePen(to: stroke.points[0])
         penDot.add(travelDot, forKey: "travel")
         penNib.add(travelDot, forKey: "travel")
         let endPoint = stroke.points.last ?? penDot.position
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         penDot.position = endPoint
         penNib.position = endPoint
+        CATransaction.commit()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + leadIn + duration) { [weak self] in
             guard let self, self.generation == gen else { return }
             self.finishStroke(index: index, layer: inkLayer, gen: gen)
             advance(endPoint)
@@ -962,10 +986,16 @@ final class HandwritingRenderer: UIView {
 
     /// Reveals the ink along its length using a shared timing curve, so the ink
     /// front and the pen dot advance together, point for point.
-    private static func revealAnimation(points: [CGPoint], keyTimes: [NSNumber],
-                                        duration: Double) -> CAKeyframeAnimation {
+    private static func revealAnimation(
+        points: [CGPoint],
+        keyTimes: [NSNumber],
+        duration: Double,
+        beginTime: CFTimeInterval
+    ) -> CAKeyframeAnimation {
         let animation = CAKeyframeAnimation(keyPath: "strokeEnd")
         animation.duration = duration
+        animation.beginTime = beginTime
+        animation.fillMode = .backwards
         guard points.count > 1, points.count == keyTimes.count else {
             animation.values = [0, 1]
             animation.keyTimes = [0, 1]

@@ -264,9 +264,16 @@ def illustrate(request):
         return Response({"error": "message is required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
-    mode = "trace" if getattr(settings, "ILLUSTRATOR_TRACE_ENABLED", False) else "plan"
+    default_quality = (
+        "detailed"
+        if getattr(settings, "ILLUSTRATOR_TRACE_ENABLED", True)
+        else "quick"
+    )
+    quality = str(data.get("quality") or "").strip().lower()
+    if quality not in ("quick", "balanced", "detailed"):
+        quality = default_quality
     try:
-        result = gemini_illustrate(message, mode=mode)
+        result = gemini_illustrate(message, quality=quality)
     except GeminiError as exc:
         return Response({"error": str(exc)},
                         status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -286,8 +293,9 @@ def trace_image(request):
     PEN-36 (Goal B) — trace a user-provided image into ordered pen strokes.
 
     Body: {"image": "<base64 png/jpeg>", "label": "<optional>",
-           "mode": "auto|lineart|photo"}. Pure computer vision on the server —
-    no model call — so the user's own photo is never sent to Gemini.
+           "mode": "auto|lineart|photo",
+           "quality": "quick|balanced|detailed"}. Pure computer vision on the
+    server — no model call — so the user's own photo is never sent to Gemini.
     """
     denied = access.check(request)
     if denied is not None:
@@ -302,9 +310,17 @@ def trace_image(request):
     mode = str(data.get("mode") or "auto").strip().lower()
     if mode not in ("auto", "lineart", "photo"):
         mode = "auto"
+    quality = str(data.get("quality") or "").strip().lower()
+    if quality not in ("quick", "balanced", "detailed"):
+        quality = "detailed"
 
     try:
-        result = gemini_trace_image(image_bytes, label=label, mode=mode)
+        result = gemini_trace_image(
+            image_bytes,
+            label=label,
+            mode=mode,
+            quality=quality,
+        )
     except GeminiError as exc:
         return Response({"error": str(exc)},
                         status=status.HTTP_503_SERVICE_UNAVAILABLE)

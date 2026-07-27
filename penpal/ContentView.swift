@@ -623,12 +623,21 @@ struct ContentView: View {
         if isReading { return "Reading expression…" }
         if isThinking {
             if isMathematician { return "Solving & verifying…" }
-            if isIllustrator { return "Planning the sketch…" }
+            if isIllustrator {
+                switch settings.illustratorQuality {
+                case "quick": return "Planning a quick sketch…"
+                case "balanced": return "Rendering the sketch…"
+                default: return "Building a detailed sketch…"
+                }
+            }
             if isLanguagePartner { return "Thinking in \(targetLanguageTitle)…" }
             if isDebatePartner { return "Finding the strongest counterpoint…" }
             return "Penpal is thinking…"
         }
         if isWriting {
+            if isIllustrator && settings.illustratorQuality == "detailed" {
+                return "Penpal is drawing the details…"
+            }
             return isIllustrator ? "Penpal is drawing…" : "Penpal is writing…"
         }
         // PEN-12 — say plainly that work is waiting, so "I'll answer as soon

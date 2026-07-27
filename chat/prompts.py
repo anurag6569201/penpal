@@ -515,10 +515,12 @@ stroke. You are planning ink paths, not producing prose or an image.
 - Each stroke is one natural pen-down path with 2-180 points. Avoid raster
   hatching and thousands of tiny segments.
 - The complete result must remain recognisable after tracing with one pen.
+- Include "aspect_ratio" as width / height (0.25...4). Use 1 for square,
+  about 1.78 for a wide landscape, and about 0.56 for a tall portrait.
 
 ## Output — JSON ONLY, no prose or markdown
 For an allowed request:
-{"kind":"strokes","label":"<short subject>",
+{"kind":"strokes","label":"<short subject>","aspect_ratio":<width/height>,
  "strokes":[
    {"role":"outline","points":[[x,y],[x,y],...]},
    {"role":"detail","points":[[x,y],[x,y],...]}
@@ -546,18 +548,53 @@ line art, and — if so — write a prompt for an image model to render it.
 - MUST refuse: hateful, sexual, or graphic violent imagery.
 
 ## The image prompt (only when allowed)
-Describe the subject for a clean pen tracing, not a finished illustration:
-"A clean black-and-white line drawing of <subject>, simple bold even-weight
-outlines, no shading, no colour, no fills, no text or labels, plain white
-background, centred with margin, minimal detail" — then add 1-2 short specifics
-about the subject. Keep it recognisable after tracing with a single pen.
+Describe the subject for a clean pen tracing, not a finished illustration.
+The QUALITY section below controls how much line detail to request. Always use
+black ink on a plain white background, centred with margin, with no colour,
+filled black regions, gradients, text, labels, border, or decorative frame.
+Every visible mark must make sense as a path drawn by one fine pen.
+Choose an image "aspect_ratio" that fits the request and composition:
+"1:1", "4:3", "3:4", "16:9", or "9:16". A requested portrait or landscape
+must not be squeezed into a square.
 
 ## Output — JSON ONLY, no prose or markdown
 Allowed:
-{"kind":"image","label":"<short subject>","image_prompt":"<the prompt above>"}
+{"kind":"image","label":"<short subject>","aspect_ratio":"<ratio>",
+ "image_prompt":"<the prompt above>"}
 Refuse:
 {"kind":"refusal","message":"I need a trusted reference to draw that accurately, so I won't guess."}
 """.strip()
+
+
+ILLUSTRATOR_TRACE_QUALITY = {
+    "balanced": """
+## QUALITY: Balanced
+Request a polished black-and-white line drawing with a clear outer silhouette,
+major interior contours, and a moderate number of distinctive details. Use
+clean, even-weight lines and sparse texture marks; avoid dense shading and
+visual noise. The subject must remain readable when reduced to a notebook page.
+""",
+    "detailed": """
+## QUALITY: Detailed
+Request a highly detailed black-and-white fine-pen illustration. Preserve the
+clear outer silhouette, then add layered interior contours and meaningful small
+features: facial features, folds, joints, overlapping forms, surface boundaries,
+and sparse subject-appropriate texture lines. Prefer precise separated lines
+over broad dark shading; no filled regions, gradients, or noisy stippling. Use
+the full canvas with breathing room so fine details survive a high-resolution
+single-pen trace.
+""",
+}
+
+
+def illustrator_trace_gate_prompt(quality: str) -> str:
+    """Gate prompt plus the bounded visual-detail contract for this tier."""
+    tier = quality if quality in ILLUSTRATOR_TRACE_QUALITY else "balanced"
+    return (
+        ILLUSTRATOR_TRACE_GATE_PROMPT
+        + "\n\n"
+        + ILLUSTRATOR_TRACE_QUALITY[tier].strip()
+    )
 
 
 def language_partner_prompt(language: str) -> str:

@@ -5,6 +5,34 @@ import CoreGraphics
 @MainActor
 final class IllustrationPlotterTests: XCTestCase {
 
+    func testIllustratorOffersQuickBalancedAndDetailedQuality() {
+        XCTAssertEqual(
+            PenpalControlOptions.illustratorQualities.map(\.tag),
+            ["quick", "balanced", "detailed"]
+        )
+        XCTAssertEqual(
+            PenpalControlOptions.illustratorQualities.last?.title,
+            "Detailed (slower)"
+        )
+    }
+
+    func testDrawingFrameUsesFullNoteWidthAndPreservesAspectRatio() {
+        let landscape = IllustrationPlotter.drawingFrame(
+            origin: CGPoint(x: 60, y: 100),
+            maxWidth: 700,
+            aspectRatio: 2
+        )
+        XCTAssertEqual(landscape, CGRect(x: 60, y: 100, width: 700, height: 350))
+
+        let portrait = IllustrationPlotter.drawingFrame(
+            origin: .zero,
+            maxWidth: 700,
+            aspectRatio: 0.5
+        )
+        XCTAssertEqual(portrait.width, 700)
+        XCTAssertEqual(portrait.height, 1_400)
+    }
+
     func testNormalisedPlanMapsIntoPageFrameInOrder() {
         let plan = [
             PenpalAPI.Illustration.Stroke(
@@ -58,7 +86,54 @@ final class IllustrationPlotterTests: XCTestCase {
             in: CGRect(x: 0, y: 0, width: 600, height: 600)
         )[0]
 
-        XCTAssertLessThanOrEqual(stroke.duration ?? 10, 0.55)
-        XCTAssertGreaterThanOrEqual(stroke.duration ?? 0, 0.10)
+        XCTAssertLessThanOrEqual(stroke.duration ?? 10, 0.95)
+        XCTAssertGreaterThanOrEqual(stroke.duration ?? 0, 0.11)
+    }
+
+    func testPathsFollowNearestEndpointAndReverseWhenUseful() {
+        let plan = [
+            PenpalAPI.Illustration.Stroke(
+                role: "outline",
+                points: [[0.10, 0.10], [0.20, 0.10]]
+            ),
+            PenpalAPI.Illustration.Stroke(
+                role: "outline",
+                points: [[0.80, 0.80], [0.90, 0.80]]
+            ),
+            PenpalAPI.Illustration.Stroke(
+                role: "outline",
+                points: [[0.50, 0.10], [0.21, 0.10]]
+            ),
+        ]
+
+        let strokes = IllustrationPlotter.strokes(
+            from: plan,
+            in: CGRect(x: 0, y: 0, width: 400, height: 400)
+        )
+
+        XCTAssertEqual(strokes.count, 3)
+        XCTAssertEqual(strokes[1].points.first?.x ?? 0, 84, accuracy: 0.01)
+        XCTAssertEqual(strokes[1].points.last?.x ?? 0, 200, accuracy: 0.01)
+        XCTAssertLessThan(strokes[1].pauseBefore ?? 1, strokes[2].pauseBefore ?? 0)
+    }
+
+    func testPressureTapersAndDetailsDrawMoreCarefully() {
+        let shared = [[0.1, 0.5], [0.5, 0.2], [0.9, 0.5]]
+        let plan = [
+            PenpalAPI.Illustration.Stroke(role: "outline", points: shared),
+            PenpalAPI.Illustration.Stroke(role: "detail", points: shared),
+        ]
+
+        let strokes = IllustrationPlotter.strokes(
+            from: plan,
+            in: CGRect(x: 0, y: 0, width: 400, height: 400),
+            baseWidth: 1.5
+        )
+
+        let outlineWidths = try! XCTUnwrap(strokes[0].widths)
+        XCTAssertEqual(outlineWidths.count, strokes[0].points.count)
+        XCTAssertLessThan(outlineWidths[0], outlineWidths[outlineWidths.count / 2])
+        XCTAssertGreaterThan(strokes[1].duration ?? 0, strokes[0].duration ?? 1)
+        XCTAssertGreaterThanOrEqual(strokes[1].pauseBefore ?? 0, 0.12)
     }
 }

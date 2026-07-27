@@ -18,7 +18,6 @@ from .prompts import (
     DEBATE_SYSTEM_PROMPT,
     IMPORT_SYSTEM_PROMPT,
     ILLUSTRATOR_SYSTEM_PROMPT,
-    ILLUSTRATOR_TRACE_GATE_PROMPT,
     LANGUAGE_PRACTICE_SYSTEM_PROMPT,
     MATH_CORRECTOR_NOTE,
     MATH_DETAIL,
@@ -31,6 +30,7 @@ from .prompts import (
     VISION_CLASSIFIER_PROMPT,
     VISION_COMPANION_NOTE,
     build_system_prompt,
+    illustrator_trace_gate_prompt,
     language_partner_prompt,
 )
 
@@ -712,11 +712,13 @@ def import_page(image_bytes: bytes, mime_type: str = "image/png") -> list[dict[s
     return blocks
 
 
-def _clean_illustration(raw: Any) -> dict[str, Any]:
+def _clean_illustration(raw: Any, quality: str = "detailed") -> dict[str, Any]:
     """Validate and bound Illustrator's model-authored path plan."""
     if not isinstance(raw, dict):
         raise ValueError("illustration must be a JSON object")
 
+    quality = tracer.normalize_quality(quality)
+    profile = tracer.profile_for(quality)
     kind = str(raw.get("kind") or "").strip().lower()
     if kind == "refusal":
         message = str(raw.get("message") or "").strip()[:240]
@@ -736,7 +738,7 @@ def _clean_illustration(raw: Any) -> dict[str, Any]:
 
     strokes: list[dict[str, Any]] = []
     total_points = 0
-    for item in source[:120]:
+    for item in source[:profile.max_strokes]:
         if not isinstance(item, dict) or not isinstance(item.get("points"), list):
             continue
         role = str(item.get("role") or "detail").strip().lower()
@@ -744,7 +746,7 @@ def _clean_illustration(raw: Any) -> dict[str, Any]:
             role = "detail"
 
         points: list[list[float]] = []
-        for pair in item["points"][:180]:
+        for pair in item["points"][:profile.max_points_per_stroke]:
             if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                 continue
             try:
@@ -760,22 +762,30 @@ def _clean_illustration(raw: Any) -> dict[str, Any]:
                 points.append(point)
         if len(points) < 2:
             continue
-        if total_points + len(points) > 12_000:
+        if total_points + len(points) > profile.max_total_points:
             break
         total_points += len(points)
         strokes.append({"role": role, "points": points})
 
     if not strokes:
         raise ValueError("illustration contains no usable strokes")
+    try:
+        aspect_ratio = float(raw.get("aspect_ratio") or 1)
+    except (TypeError, ValueError):
+        aspect_ratio = 1
+    if not math.isfinite(aspect_ratio) or not 0.25 <= aspect_ratio <= 4:
+        aspect_ratio = 1
     return {
         "kind": "strokes",
         "label": str(raw.get("label") or "illustration").strip()[:120]
             or "illustration",
+        "quality": quality,
+        "aspect_ratio": round(aspect_ratio, 4),
         "strokes": strokes,
     }
 
 
-def _illustrate_plan(message: str) -> dict[str, Any]:
+def _illustrate_plan(message: str, quality: str = "quick") -> dict[str, Any]:
     """
     PEN-36 direct path — the model plans ordered stroke geometry itself.
 
@@ -809,12 +819,14 @@ def _illustrate_plan(message: str) -> dict[str, Any]:
 
     _account(model, response)
     try:
-        return _clean_illustration(_parse_json_block(_extract_text(response)))
+        return _clean_illustration(
+            _parse_json_block(_extract_text(response)), quality=quality
+        )
     except ValueError as exc:
         raise GeminiError(f"Could not draw that: {exc}") from exc
 
 
-def _gate_illustration(message: str) -> dict[str, Any]:
+def _gate_illustration(message: str, quality: str) -> dict[str, Any]:
     """
     Decide refuse-vs-draw for the trace path, and — if allowed — write the image
     prompt. Keeping the correctness boundary on the text model means an unsafe or
@@ -833,7 +845,7 @@ def _gate_illustration(message: str) -> dict[str, Any]:
                 )
             ],
             config=types.GenerateContentConfig(
-                system_instruction=ILLUSTRATOR_TRACE_GATE_PROMPT,
+                system_instruction=illustrator_trace_gate_prompt(quality),
                 temperature=0.2,
                 top_p=0.9,
                 max_output_tokens=800,
@@ -857,18 +869,50 @@ def _gate_illustration(message: str) -> dict[str, Any]:
     prompt = str(raw.get("image_prompt") or "").strip()
     if kind != "image" or not prompt:
         raise GeminiError("Illustration gate produced no image prompt.")
+    aspect_ratio = str(raw.get("aspect_ratio") or "1:1").strip()
+    if aspect_ratio not in ("1:1", "4:3", "3:4", "16:9", "9:16"):
+        aspect_ratio = "1:1"
     return {
         "kind": "image",
         "label": str(raw.get("label") or "illustration").strip()[:120] or "illustration",
         "image_prompt": prompt[:1500],
+        "aspect_ratio": aspect_ratio,
     }
 
 
-def generate_reference_image(prompt: str) -> bytes:
+def generate_reference_image(
+    prompt: str,
+    quality: str = "balanced",
+    aspect_ratio: str = "1:1",
+) -> bytes:
     """Render `prompt` to PNG-ish bytes with the configured image model."""
-    model = (getattr(settings, "GEMINI_IMAGE_MODEL", "") or
-             "gemini-2.5-flash-image").strip()
+    quality = tracer.normalize_quality(quality)
+    if quality == "detailed":
+        model = (
+            getattr(settings, "GEMINI_DETAILED_IMAGE_MODEL", "")
+            or "gemini-3-pro-image"
+        ).strip()
+    else:
+        model = (
+            getattr(settings, "GEMINI_IMAGE_MODEL", "")
+            or "gemini-3.1-flash-image"
+        ).strip()
     client = _client()
+    config: dict[str, Any] = {
+        "response_modalities": ["IMAGE"],
+        "temperature": 0.4,
+    }
+    aspect_ratio = (
+        aspect_ratio
+        if aspect_ratio in ("1:1", "4:3", "3:4", "16:9", "9:16")
+        else "1:1"
+    )
+    if quality == "detailed":
+        config["image_config"] = types.ImageConfig(
+            aspect_ratio=aspect_ratio, image_size="2K"
+        )
+    else:
+        config["image_config"] = types.ImageConfig(aspect_ratio=aspect_ratio)
     try:
         response = client.models.generate_content(
             model=model,
@@ -878,10 +922,7 @@ def generate_reference_image(prompt: str) -> bytes:
                     parts=[types.Part.from_text(text=prompt[:1500])],
                 )
             ],
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-                temperature=0.4,
-            ),
+            config=types.GenerateContentConfig(**config),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Reference image generation failed")
@@ -898,21 +939,29 @@ def generate_reference_image(prompt: str) -> bytes:
     raise GeminiError("The image model returned no image.")
 
 
-def _illustrate_trace(message: str) -> dict[str, Any]:
+def _illustrate_trace(message: str, quality: str) -> dict[str, Any]:
     """Trace path — gate → generate reference image → trace to ink strokes."""
-    gate = _gate_illustration(message)
+    gate = _gate_illustration(message, quality)
     if gate.get("kind") == "refusal":
         return gate
-    image_bytes = generate_reference_image(gate["image_prompt"])
-    raw = tracer.trace(image_bytes, label=gate.get("label") or "illustration")
+    image_bytes = generate_reference_image(
+        gate["image_prompt"],
+        quality=quality,
+        aspect_ratio=gate["aspect_ratio"],
+    )
+    raw = tracer.trace(
+        image_bytes,
+        label=gate.get("label") or "illustration",
+        quality=quality,
+    )
     if isinstance(raw, dict) and raw.get("kind") == "refusal":
         # An empty/garbled render — degrade honestly instead of inking noise.
         raise GeminiError(raw.get("message") or "Nothing traceable was rendered.")
-    return _clean_illustration(raw)
+    return _clean_illustration(raw, quality=quality)
 
 
 def trace_image(image_bytes: bytes, label: str = "sketch",
-                mode: str = "auto") -> dict[str, Any]:
+                mode: str = "auto", quality: str = "detailed") -> dict[str, Any]:
     """
     PEN-36 (Goal B) — trace a user-provided image into ordered pen strokes.
 
@@ -921,37 +970,71 @@ def trace_image(image_bytes: bytes, label: str = "sketch",
     generative path; an untraceable image degrades to an honest refusal rather
     than inking noise.
     """
-    raw = tracer.trace(image_bytes, label=label or "sketch", mode=mode)
+    quality = tracer.normalize_quality(quality)
+    raw = tracer.trace(
+        image_bytes,
+        label=label or "sketch",
+        mode=mode,
+        quality=quality,
+    )
     if isinstance(raw, dict) and raw.get("kind") == "refusal":
-        return raw
+        return {**raw, "quality": quality, "pipeline": "trace"}
     try:
-        return _clean_illustration(raw)
+        return {
+            **_clean_illustration(raw, quality=quality),
+            "pipeline": "trace",
+        }
     except ValueError as exc:
         raise GeminiError(f"Could not trace that image: {exc}") from exc
 
 
-def illustrate(message: str, mode: str = "plan") -> dict[str, Any]:
+def illustrate(
+    message: str,
+    mode: str | None = None,
+    quality: str = "detailed",
+) -> dict[str, Any]:
     """
     PEN-36 — turn an imaginative request into ordered pen strokes.
 
-    `mode="trace"` renders the subject with an image model and traces it into
-    ink (richer sketches); `mode="plan"` has the model author stroke geometry
-    directly (no image call). Trace degrades to plan on any pipeline failure, so
-    the page still gets a drawing; a *refusal* from the gate is returned as-is
-    and never redrawn as a guess.
+    Quick has the model author stroke geometry directly. Balanced and Detailed
+    render the subject with an image model and trace it into ink. Trace degrades
+    to a Quick plan on any pipeline failure, so the page still gets a drawing;
+    a *refusal* from the gate is returned as-is and never redrawn as a guess.
+
+    `mode` remains as a compatibility shim for older callers.
     """
     message = str(message or "").strip()
     if not message:
         raise GeminiError("A drawing request is required.")
 
-    if mode == "trace":
-        try:
-            return _illustrate_trace(message)
-        except (GeminiError, ValueError):
-            logger.warning("Trace illustration failed; falling back to direct plan",
-                           exc_info=True)
-            return _illustrate_plan(message)
-    return _illustrate_plan(message)
+    quality = tracer.normalize_quality(quality)
+    if mode == "plan":
+        quality = "quick"
+    elif mode == "trace" and quality == "quick":
+        quality = "balanced"
+
+    if quality == "quick":
+        return {
+            **_illustrate_plan(message, quality="quick"),
+            "pipeline": "plan",
+        }
+
+    try:
+        return {
+            **_illustrate_trace(message, quality),
+            "quality": quality,
+            "pipeline": "trace",
+        }
+    except (GeminiError, ValueError):
+        logger.warning(
+            "Trace illustration failed; falling back to direct plan",
+            exc_info=True,
+        )
+        return {
+            **_illustrate_plan(message, quality="quick"),
+            "quality": "quick",
+            "pipeline": "plan_fallback",
+        }
 
 
 SUPPORTED_LANGUAGES = {

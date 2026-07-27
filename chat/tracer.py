@@ -19,6 +19,7 @@ silhouettes first.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 from typing import Any
 
@@ -26,14 +27,60 @@ import cv2
 import numpy as np
 from skimage.morphology import skeletonize
 
-# Mirror _clean_illustration's caps so we hand it something already in range.
-_MAX_STROKES = 120
-_MAX_PTS_PER_STROKE = 180
-_MIN_STROKE_PIXELS = 12          # drop specks and raster hatching fragments
-_RDP_EPS = 1.6                   # px; detail vs point-count trade-off
 _OUTLINE_FRACTION = 0.45         # a stroke is "outline" if its bbox diagonal is
                                  # >= this fraction of the biggest one
-_WORK_MAX_SIDE = 900             # cap working resolution for speed
+
+
+@dataclass(frozen=True)
+class TraceProfile:
+    """Bounded quality/cost envelope shared with the API cleaner."""
+
+    max_strokes: int
+    max_points_per_stroke: int
+    max_total_points: int
+    min_stroke_pixels: float
+    rdp_epsilon: float
+    work_max_side: int
+
+
+# Detailed is intentionally much less destructive, but still bounded: a literal
+# "unlimited" trace can turn image noise into tens of thousands of PencilKit
+# strokes and freeze the page.
+QUALITY_PROFILES = {
+    "quick": TraceProfile(
+        max_strokes=120,
+        max_points_per_stroke=180,
+        max_total_points=12_000,
+        min_stroke_pixels=12,
+        rdp_epsilon=1.6,
+        work_max_side=900,
+    ),
+    "balanced": TraceProfile(
+        max_strokes=300,
+        max_points_per_stroke=320,
+        max_total_points=40_000,
+        min_stroke_pixels=6,
+        rdp_epsilon=0.9,
+        work_max_side=1400,
+    ),
+    "detailed": TraceProfile(
+        max_strokes=600,
+        max_points_per_stroke=500,
+        max_total_points=100_000,
+        min_stroke_pixels=2,
+        rdp_epsilon=0.45,
+        work_max_side=1800,
+    ),
+}
+
+
+def normalize_quality(value: Any, default: str = "detailed") -> str:
+    quality = str(value or "").strip().lower()
+    return quality if quality in QUALITY_PROFILES else default
+
+
+def profile_for(quality: Any) -> TraceProfile:
+    return QUALITY_PROFILES[normalize_quality(quality)]
 
 _NB = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
@@ -131,23 +178,40 @@ def _skeleton_to_paths(skel: np.ndarray) -> list[list[tuple[int, int]]]:
 # 3. simplify
 # --------------------------------------------------------------------------
 def _rdp(points: list, eps: float) -> list:
-    # Pure-scalar perpendicular distance: NumPy 2.3 removed the 2-D np.cross,
-    # and the explicit form is both version-proof and faster in this loop.
+    """Iterative RDP, safe for detailed paths longer than Python's recursion cap."""
     if len(points) < 3:
         return points
-    ax, ay = points[0]
-    bx, by = points[-1]
-    dx, dy = bx - ax, by - ay
-    length = math.hypot(dx, dy)
-    if length == 0.0:
-        dists = [math.hypot(px - ax, py - ay) for px, py in points]
-    else:
-        dists = [abs(dx * (py - ay) - dy * (px - ax)) / length
-                 for px, py in points]
-    i = max(range(len(points)), key=dists.__getitem__)
-    if dists[i] > eps:
-        return _rdp(points[:i + 1], eps)[:-1] + _rdp(points[i:], eps)
-    return [points[0], points[-1]]
+
+    keep = {0, len(points) - 1}
+    stack = [(0, len(points) - 1)]
+    while stack:
+        start, end = stack.pop()
+        if end - start < 2:
+            continue
+        ax, ay = points[start]
+        bx, by = points[end]
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy)
+
+        best_index = -1
+        best_distance = -1.0
+        for index in range(start + 1, end):
+            px, py = points[index]
+            distance = (
+                math.hypot(px - ax, py - ay)
+                if length == 0.0
+                else abs(dx * (py - ay) - dy * (px - ax)) / length
+            )
+            if distance > best_distance:
+                best_distance = distance
+                best_index = index
+
+        if best_distance > eps:
+            keep.add(best_index)
+            stack.append((start, best_index))
+            stack.append((best_index, end))
+
+    return [points[index] for index in sorted(keep)]
 
 
 def _stroke_len(poly: list) -> float:
@@ -159,7 +223,7 @@ def _stroke_len(poly: list) -> float:
 # driver
 # --------------------------------------------------------------------------
 def trace(image_bytes: bytes, label: str = "illustration",
-          mode: str = "auto") -> dict[str, Any]:
+          mode: str = "auto", quality: str = "detailed") -> dict[str, Any]:
     """
     Trace `image_bytes` into a raw stroke plan for `_clean_illustration`.
 
@@ -167,13 +231,16 @@ def trace(image_bytes: bytes, label: str = "illustration",
     points on a 0..1000 canvas, or `{"kind": "refusal", "message"}` when there is
     nothing traceable — the same honest-degradation contract as the model path.
     """
+    quality = normalize_quality(quality)
+    profile = profile_for(quality)
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return {"kind": "refusal", "message": "That image could not be read."}
 
     h, w = img.shape[:2]
-    scale = min(1.0, _WORK_MAX_SIDE / max(h, w))
+    source_aspect_ratio = w / max(1, h)
+    scale = min(1.0, profile.work_max_side / max(h, w))
     if scale < 1.0:
         img = cv2.resize(img, (int(w * scale), int(h * scale)),
                          interpolation=cv2.INTER_AREA)
@@ -184,11 +251,13 @@ def trace(image_bytes: bytes, label: str = "illustration",
 
     strokes: list[dict[str, Any]] = []
     for poly in polys:
-        if len(poly) < 2 or _stroke_len(poly) < _MIN_STROKE_PIXELS:
+        if len(poly) < 2 or _stroke_len(poly) < profile.min_stroke_pixels:
             continue
-        simp = _rdp(poly, _RDP_EPS)
-        if len(simp) > _MAX_PTS_PER_STROKE:
-            idx = np.linspace(0, len(simp) - 1, _MAX_PTS_PER_STROKE).astype(int)
+        simp = _rdp(poly, profile.rdp_epsilon)
+        if len(simp) > profile.max_points_per_stroke:
+            idx = np.linspace(
+                0, len(simp) - 1, profile.max_points_per_stroke
+            ).astype(int)
             simp = [simp[i] for i in idx]
         xs = [p[0] for p in simp]
         ys = [p[1] for p in simp]
@@ -200,15 +269,30 @@ def trace(image_bytes: bytes, label: str = "illustration",
 
     # Order like a hand: biggest silhouettes first, small detail last.
     strokes.sort(key=lambda s: s["diag"], reverse=True)
-    strokes = strokes[:_MAX_STROKES]
+    strokes = strokes[:profile.max_strokes]
     biggest = strokes[0]["diag"] or 1.0
 
     out = []
+    total_points = 0
     for s in strokes:
+        remaining = profile.max_total_points - total_points
+        if remaining < 2:
+            break
+        poly = s["poly"]
+        if len(poly) > remaining:
+            idx = np.linspace(0, len(poly) - 1, remaining).astype(int)
+            poly = [poly[i] for i in idx]
         role = "outline" if s["diag"] >= _OUTLINE_FRACTION * biggest else "detail"
         # 0..1000 canvas — the raw shape _clean_illustration expects as input.
         points = [[round(x / w * 1000, 2), round(y / h * 1000, 2)]
-                  for x, y in s["poly"]]
+                  for x, y in poly]
         out.append({"role": role, "points": points})
+        total_points += len(points)
 
-    return {"kind": "strokes", "label": (label or "illustration")[:120], "strokes": out}
+    return {
+        "kind": "strokes",
+        "label": (label or "illustration")[:120],
+        "quality": quality,
+        "aspect_ratio": round(source_aspect_ratio, 4),
+        "strokes": out,
+    }

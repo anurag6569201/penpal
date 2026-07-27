@@ -31,6 +31,12 @@ enum PenpalControlOptions {
         ("proof", "Proof", "checkmark.seal"),
     ]
 
+    static let illustratorQualities: [(tag: String, title: String, icon: String)] = [
+        ("quick", "Quick", "bolt"),
+        ("balanced", "Balanced", "slider.horizontal.3"),
+        ("detailed", "Detailed (slower)", "sparkles"),
+    ]
+
     static let languages: [(tag: String, title: String)] = [
         ("en-US", "English"),
         ("es-ES", "Spanish"),
@@ -60,13 +66,18 @@ struct PenpalControlBar: View {
         settings.capability == "language"
     }
 
+    private var isIllustrator: Bool {
+        settings.capability == "illustrator"
+    }
+
     private var selectedCapability: (tag: String, title: String, icon: String) {
         PenpalControlOptions.capabilities.first { $0.tag == settings.capability }
             ?? PenpalControlOptions.capabilities[0]
     }
 
     private var hasSecondaryControls: Bool {
-        ["companion", "mathematician", "language"].contains(settings.capability)
+        ["companion", "mathematician", "illustrator", "language"]
+            .contains(settings.capability)
     }
 
     private var selectedMoodTitle: String {
@@ -84,6 +95,12 @@ struct PenpalControlBar: View {
             ?? "Language"
     }
 
+    private var selectedIllustratorQualityTitle: String {
+        PenpalControlOptions.illustratorQualities.first {
+            $0.tag == settings.illustratorQuality
+        }?.title ?? "Detailed (slower)"
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             if activityPhase != nil || statusText != nil {
@@ -97,6 +114,8 @@ struct PenpalControlBar: View {
                 Divider().frame(height: 24)
                 if isMathematician {
                     detailMenu
+                } else if isIllustrator {
+                    illustratorQualityMenu
                 } else if isLanguagePartner {
                     languageMenu
                 } else {
@@ -260,5 +279,29 @@ struct PenpalControlBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Practice language, \(selectedLanguageTitle)")
+    }
+
+    private var illustratorQualityMenu: some View {
+        Menu {
+            ForEach(PenpalControlOptions.illustratorQualities, id: \.tag) { quality in
+                Button {
+                    settings.illustratorQuality = quality.tag
+                } label: {
+                    Label(
+                        quality.title,
+                        systemImage: settings.illustratorQuality == quality.tag
+                            ? "checkmark" : quality.icon
+                    )
+                }
+            }
+        } label: {
+            Label(selectedIllustratorQualityTitle, systemImage: "sparkles")
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            "Illustration quality, \(selectedIllustratorQualityTitle)"
+        )
     }
 }

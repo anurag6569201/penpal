@@ -178,15 +178,17 @@ GEMINI_IMPORT_MODEL = os.getenv("GEMINI_IMPORT_MODEL", "")
 # Empty keeps the deployment simple by falling back to GEMINI_MODEL.
 GEMINI_ILLUSTRATOR_MODEL = os.getenv("GEMINI_ILLUSTRATOR_MODEL", "")
 
-# PEN-36 (trace path) — the image model whose render the tracer turns into ink.
-# Imagen is being retired; nano-banana is the current default. Set
-# GEMINI_IMAGE_MODEL=gemini-3-pro-image-preview for higher-fidelity renders.
-GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+# PEN-36 (trace path) — Balanced uses the fast image model; Detailed uses the
+# premium model. Kept independently configurable so deployments can choose
+# their own latency/cost ceiling without changing the client quality contract.
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
+GEMINI_DETAILED_IMAGE_MODEL = os.getenv(
+    "GEMINI_DETAILED_IMAGE_MODEL", "gemini-3-pro-image"
+)
 
-# PEN-36 (trace path) — when on, imaginative requests are rendered by the image
-# model then traced into strokes; when off, the model plans stroke geometry
-# directly (no image call). Trace gives far richer sketches; direct-plan is the
-# offline/degraded fallback and is what runs if a trace step fails.
+# Legacy/default tier for clients that omit `quality`: on selects Detailed image
+# tracing; off selects a Quick direct plan. Modern clients send their explicit
+# tier. Direct-plan remains the bounded fallback if an image trace fails.
 ILLUSTRATOR_TRACE_ENABLED = os.getenv("ILLUSTRATOR_TRACE", "1").lower() in (
     "1", "true", "yes", "on")
 

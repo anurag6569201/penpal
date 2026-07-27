@@ -56,6 +56,8 @@ final class HandwritingSettings: ObservableObject {
     @Published var customMoodText: String { didSet { save() } }
     /// Mathematician default detail: "answer" | "compact" | "full".
     @Published var mathDetail: String { didSet { save() } }
+    /// Illustrator quality: "quick" | "balanced" | "detailed".
+    @Published var illustratorQuality: String { didSet { save() } }
     /// Show the "5 × 5 — Solve" confirmation chip before computing, so a
     /// misread never becomes a wrong answer. Off = solve immediately.
     @Published var confirmBeforeSolving: Bool { didSet { save() } }
@@ -90,6 +92,9 @@ final class HandwritingSettings: ObservableObject {
         companionMood = defaults.string(forKey: "penpal.settings.companionMood") ?? "warm"
         customMoodText = defaults.string(forKey: "penpal.settings.customMoodText") ?? ""
         mathDetail = defaults.string(forKey: "penpal.settings.mathDetail") ?? "compact"
+        illustratorQuality = defaults.string(
+            forKey: "penpal.settings.illustratorQuality"
+        ) ?? "detailed"
         confirmBeforeSolving = defaults.object(forKey: "penpal.settings.confirmSolve") as? Bool ?? true
     }
 
@@ -135,6 +140,7 @@ final class HandwritingSettings: ObservableObject {
         d.set(companionMood, forKey: "penpal.settings.companionMood")
         d.set(customMoodText, forKey: "penpal.settings.customMoodText")
         d.set(mathDetail, forKey: "penpal.settings.mathDetail")
+        d.set(illustratorQuality, forKey: "penpal.settings.illustratorQuality")
         d.set(confirmBeforeSolving, forKey: "penpal.settings.confirmSolve")
     }
 }

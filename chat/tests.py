@@ -1148,6 +1148,33 @@ class IllustratorTests(GeminiTestCase):
         self.assertEqual(cleaned["strokes"][0]["role"], "detail")
         self.assertEqual(cleaned["strokes"][0]["points"], [[0.0, 0.0], [0.5, 0.5]])
 
+    def test_cleaner_uses_bounded_quality_specific_stroke_limits(self):
+        raw = {
+            "kind": "strokes",
+            "label": "dense",
+            "strokes": [
+                {"role": "detail", "points": [[0, i], [1000, i]]}
+                for i in range(700)
+            ],
+        }
+        quick = gemini._clean_illustration(raw, quality="quick")
+        detailed = gemini._clean_illustration(raw, quality="detailed")
+        self.assertEqual(len(quick["strokes"]), 120)
+        self.assertEqual(len(detailed["strokes"]), 600)
+        self.assertEqual(detailed["quality"], "detailed")
+
+    def test_cleaner_preserves_safe_canvas_aspect_ratio(self):
+        raw = {
+            "kind": "strokes",
+            "label": "landscape",
+            "aspect_ratio": 16 / 9,
+            "strokes": [{"role": "outline", "points": [[0, 0], [1000, 1000]]}],
+        }
+        cleaned = gemini._clean_illustration(raw)
+        self.assertAlmostEqual(cleaned["aspect_ratio"], 16 / 9, places=3)
+        raw["aspect_ratio"] = 99
+        self.assertEqual(gemini._clean_illustration(raw)["aspect_ratio"], 1)
+
     def test_empty_stroke_plan_is_rejected(self):
         self.install(solver='{"kind":"strokes","label":"nothing","strokes":[]}')
         with self.assertRaises(gemini.GeminiError):
@@ -1261,6 +1288,65 @@ class IllustratorTraceTests(GeminiTestCase):
         self.assertEqual(result["strokes"][0]["points"][0], [0.1, 0.5])
         tr.assert_called_once()
 
+    def test_detailed_tier_reaches_prompt_model_and_tracer(self):
+        models = self.install(solver=GATE_IMAGE)
+        with patch.object(
+            gemini, "generate_reference_image", return_value=b"IMG"
+        ) as generate, patch.object(
+            gemini.tracer, "trace", return_value=TRACED
+        ) as trace:
+            result = gemini.illustrate("draw a fox", quality="detailed")
+
+        instruction = models.of_kind("solver")[0][2].system_instruction
+        self.assertIn("QUALITY: Detailed", instruction)
+        self.assertIn("highly detailed", instruction)
+        generate.assert_called_once_with(
+            "A clean black-and-white line drawing of a fox",
+            quality="detailed",
+            aspect_ratio="1:1",
+        )
+        self.assertEqual(trace.call_args.kwargs["quality"], "detailed")
+        self.assertEqual(result["quality"], "detailed")
+        self.assertEqual(result["pipeline"], "trace")
+
+    @override_settings(GEMINI_DETAILED_IMAGE_MODEL="premium-image-model")
+    def test_detailed_tier_uses_premium_image_model_and_2k(self):
+        captured = {}
+        models = FakeModels()
+        real_generate = models.generate_content
+
+        def spy(model, contents, config):
+            captured["model"] = model
+            captured["config"] = config
+            return real_generate(model, contents, config)
+
+        models.generate_content = spy
+        with patch.object(gemini, "_client", lambda: FakeClient(models)):
+            with self.assertRaises(gemini.GeminiError):
+                gemini.generate_reference_image("draw", quality="detailed")
+
+        self.assertEqual(captured["model"], "premium-image-model")
+        self.assertEqual(captured["config"].image_config.image_size, "2K")
+        self.assertEqual(captured["config"].image_config.aspect_ratio, "1:1")
+
+    def test_requested_landscape_ratio_reaches_image_generation(self):
+        gate = (
+            '{"kind":"image","label":"valley","aspect_ratio":"16:9",'
+            '"image_prompt":"A detailed line drawing of a wide valley"}'
+        )
+        self.install(solver=gate)
+        with patch.object(
+            gemini, "generate_reference_image", return_value=b"IMG"
+        ) as generate, patch.object(
+            gemini.tracer, "trace", return_value=TRACED
+        ):
+            gemini.illustrate("draw a wide valley", quality="detailed")
+        generate.assert_called_once_with(
+            "A detailed line drawing of a wide valley",
+            quality="detailed",
+            aspect_ratio="16:9",
+        )
+
     def test_trace_falls_back_to_direct_plan_when_image_generation_fails(self):
         replies = iter([GATE_IMAGE, SKETCH])  # 1st call gates, 2nd is the fallback plan
         self.install(solver=lambda contents: next(replies))
@@ -1287,6 +1373,13 @@ class IllustratorTraceTests(GeminiTestCase):
         corner = [(0, 0), (5, 0), (5, 5)]
         self.assertEqual(gemini.tracer._rdp(corner, 1.6), corner)
 
+    def test_rdp_handles_detailed_paths_beyond_python_recursion_limit(self):
+        zigzag = [(i, i % 2) for i in range(1800)]
+        simplified = gemini.tracer._rdp(zigzag, 0.45)
+        self.assertEqual(simplified[0], zigzag[0])
+        self.assertEqual(simplified[-1], zigzag[-1])
+        self.assertGreater(len(simplified), 1000)
+
     def test_tracer_turns_a_real_image_into_bounded_ordered_strokes(self):
         import numpy as np
         import cv2
@@ -1305,6 +1398,30 @@ class IllustratorTraceTests(GeminiTestCase):
             for x, y in s["points"]:
                 self.assertTrue(0 <= x <= 1000 and 0 <= y <= 1000)
 
+    def test_detailed_tracer_keeps_two_pixel_feature(self):
+        import numpy as np
+        import cv2
+        img = np.full((32, 32, 3), 255, np.uint8)
+        cv2.line(img, (10, 16), (12, 16), (0, 0, 0), 1)
+        _, buf = cv2.imencode(".png", img)
+
+        quick = gemini.tracer.trace(buf.tobytes(), quality="quick")
+        detailed = gemini.tracer.trace(buf.tobytes(), quality="detailed")
+
+        self.assertEqual(quick["kind"], "refusal")
+        self.assertEqual(detailed["kind"], "strokes")
+        self.assertTrue(detailed["strokes"])
+
+    def test_tracer_reports_original_wide_image_ratio(self):
+        import numpy as np
+        import cv2
+        img = np.full((100, 300, 3), 255, np.uint8)
+        cv2.line(img, (10, 50), (290, 50), (0, 0, 0), 2)
+        _, buf = cv2.imencode(".png", img)
+        result = gemini.tracer.trace(buf.tobytes(), quality="detailed")
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["aspect_ratio"], 3)
+
 
 @override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
                    GEMINI_ILLUSTRATOR_MODEL="", ILLUSTRATOR_TRACE_ENABLED=True)
@@ -1319,11 +1436,27 @@ class IllustratorTraceEndpointTests(GeminiTestCase):
         with patch.object(gemini, "generate_reference_image", return_value=b"IMG"), \
              patch.object(gemini.tracer, "trace", return_value=TRACED):
             response = self.api.post("/api/illustrate/",
-                                     {"message": "draw a fox"}, format="json")
+                                     {"message": "draw a fox",
+                                      "quality": "detailed"}, format="json")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["kind"], "strokes")
         self.assertEqual(payload["capability"], "illustrator")
+        self.assertEqual(payload["quality"], "detailed")
+        self.assertEqual(payload["pipeline"], "trace")
+
+    def test_unknown_quality_uses_detailed_default(self):
+        self.install(solver=GATE_IMAGE)
+        with patch.object(gemini, "generate_reference_image", return_value=b"IMG"), \
+             patch.object(gemini.tracer, "trace", return_value=TRACED) as trace:
+            response = self.api.post(
+                "/api/illustrate/",
+                {"message": "draw a fox", "quality": "impossible"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["quality"], "detailed")
+        self.assertEqual(trace.call_args.kwargs["quality"], "detailed")
 
     def test_endpoint_returns_gate_refusal_without_strokes(self):
         self.install(solver=GATE_REFUSAL)
@@ -1385,12 +1518,14 @@ class TraceImageEndpointTests(GeminiTestCase):
 
     def test_endpoint_traces_a_posted_image(self):
         response = self.api.post("/api/trace-image/",
-                                 {"image": _line_art_png_b64(), "label": "doodle"},
+                                 {"image": _line_art_png_b64(), "label": "doodle",
+                                  "quality": "quick"},
                                  format="json")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["kind"], "strokes")
         self.assertEqual(payload["capability"], "illustrator")
+        self.assertEqual(payload["quality"], "quick")
         self.assertTrue(payload["strokes"])
 
     def test_missing_image_is_a_400(self):

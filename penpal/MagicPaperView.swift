@@ -805,17 +805,25 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let content = all.reduce(CGRect.null) { $0.union($1.renderBounds) }
         let top = content.isNull ? rulesTopInset + lineGap
                                  : max(lastReplyBottom, content.maxY) + lineGap
-        let size = min(bounds.width - leftMargin - 40, 420)
-        let frame = CGRect(x: leftMargin, y: top, width: size, height: size)
-        let strokes = IllustrationPlotter.strokes(from: planned, in: frame)
+        let maxWidth = bounds.width - leftMargin - 24
+        let frame = IllustrationPlotter.drawingFrame(
+            origin: CGPoint(x: leftMargin, y: top),
+            maxWidth: maxWidth,
+            aspectRatio: CGFloat(illustration.aspect_ratio ?? 1)
+        )
+        let baseWidth = max(1.2, lineRelativeXHeight * 0.09
+                            * CGFloat(settings.penWidthScale))
+        let strokes = IllustrationPlotter.strokes(
+            from: planned,
+            in: frame,
+            baseWidth: baseWidth
+        )
         guard !strokes.isEmpty else {
             onStatus?("I couldn't turn that sketch into drawable lines.")
             return false
         }
 
         ensureRoom(below: frame.maxY + lineGap * 2)
-        let baseWidth = max(1.2, lineRelativeXHeight * 0.09
-                            * CGFloat(settings.penWidthScale))
         renderer.inkColor = bakedInkColor
         beginUndoableAction("Draw Illustration")
         onWritingStateChange?(true)
@@ -874,6 +882,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 let illustration = try await PenpalAPI.traceImage(
                     imageData: jpegData,
                     label: "your image",
+                    quality: self.settings.illustratorQuality,
                     baseURL: self.settings.apiBaseURL
                 )
                 self.brainBusy = false
@@ -2620,6 +2629,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             do {
                 let illustration = try await PenpalAPI.illustrate(
                     message: message,
+                    quality: self.settings.illustratorQuality,
                     baseURL: self.settings.apiBaseURL
                 )
                 self.brainBusy = false

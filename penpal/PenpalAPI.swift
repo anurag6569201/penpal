@@ -341,6 +341,9 @@ enum PenpalAPI {
         let message: String?
         let strokes: [Stroke]?
         let error: String?
+        let quality: String?
+        let pipeline: String?
+        let aspect_ratio: Double?
 
         var isRefusal: Bool { kind == "refusal" }
     }
@@ -349,6 +352,7 @@ enum PenpalAPI {
     /// refusal until Penpal has a vetted reference source to trace.
     static func illustrate(
         message: String,
+        quality: String = "detailed",
         baseURL: String
     ) async throws -> Illustration {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -360,10 +364,12 @@ enum PenpalAPI {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         authorize(&request)
-        request.timeoutInterval = 120
+        request.timeoutInterval = quality == "detailed" ? 240 : 120
 
-        struct Body: Encodable { let message: String }
-        request.httpBody = try JSONEncoder().encode(Body(message: message))
+        struct Body: Encodable { let message: String; let quality: String }
+        request.httpBody = try JSONEncoder().encode(
+            Body(message: message, quality: quality)
+        )
 
         let data: Data
         let response: URLResponse
@@ -401,6 +407,7 @@ enum PenpalAPI {
     static func traceImage(
         imageData: Data,
         label: String,
+        quality: String = "detailed",
         baseURL: String
     ) async throws -> Illustration {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -412,11 +419,20 @@ enum PenpalAPI {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         authorize(&request)
-        request.timeoutInterval = 60
+        request.timeoutInterval = quality == "detailed" ? 120 : 60
 
-        struct Body: Encodable { let image: String; let label: String }
+        struct Body: Encodable {
+            let image: String
+            let label: String
+            let quality: String
+        }
         request.httpBody = try JSONEncoder().encode(
-            Body(image: imageData.base64EncodedString(), label: label))
+            Body(
+                image: imageData.base64EncodedString(),
+                label: label,
+                quality: quality
+            )
+        )
 
         let data: Data
         let response: URLResponse
