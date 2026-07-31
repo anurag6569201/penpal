@@ -1126,14 +1126,23 @@ class IllustratorTests(GeminiTestCase):
         self.assertEqual(result["strokes"][0]["role"], "outline")
         self.assertEqual(result["strokes"][0]["points"][0], [0.1, 0.5])
 
-    def test_factual_request_can_fail_closed_as_refusal(self):
+    def test_factual_labelled_request_is_drawn(self):
         self.install(solver=(
-            '{"kind":"refusal","message":'
-            '"I need a trusted reference to draw that accurately, so I won\'t guess."}'
+            '{"kind":"strokes","label":"mitosis","strokes":['
+            '{"role":"outline","points":[[100,500],[500,120],[900,500]]},'
+            '{"role":"detail","points":[[350,420],[500,520],[650,420]]}'
+            ']}'
         ))
         result = gemini.illustrate("draw a labelled diagram of mitosis")
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["label"], "mitosis")
+        self.assertGreaterEqual(len(result["strokes"]), 1)
+
+    def test_unsafe_request_can_fail_closed_as_refusal(self):
+        self.install(solver='{"kind":"refusal","message":"I can\'t draw that."}')
+        result = gemini.illustrate("draw graphic violent imagery")
         self.assertEqual(result["kind"], "refusal")
-        self.assertIn("trusted reference", result["message"])
+        self.assertIn("can't draw", result["message"])
 
     def test_invalid_and_out_of_bounds_points_are_dropped(self):
         cleaned = gemini._clean_illustration({
@@ -1228,10 +1237,27 @@ class IllustratorEndpointTests(GeminiTestCase):
         self.assertEqual(payload["capability"], "illustrator")
         self.assertEqual(len(payload["strokes"]), 2)
 
-    def test_returns_factual_refusal_without_fake_strokes(self):
-        self.install(solver='{"kind":"refusal","message":"Reference required."}')
+    def test_returns_labelled_diagram_strokes(self):
+        self.install(solver=(
+            '{"kind":"strokes","label":"cell","strokes":['
+            '{"role":"outline","points":[[100,500],[500,120],[900,500]]},'
+            '{"role":"detail","points":[[350,420],[500,520],[650,420]]}'
+            ']}'
+        ))
         response = self.api.post("/api/illustrate/",
-                                 {"message": "draw a cell diagram"}, format="json")
+                                 {"message": "draw a labelled cell diagram"},
+                                 format="json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["kind"], "strokes")
+        self.assertEqual(payload["label"], "cell")
+        self.assertIn("strokes", payload)
+
+    def test_returns_unsafe_refusal_without_fake_strokes(self):
+        self.install(solver='{"kind":"refusal","message":"I can\'t draw that."}')
+        response = self.api.post("/api/illustrate/",
+                                 {"message": "draw graphic violent imagery"},
+                                 format="json")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["kind"], "refusal")
         self.assertNotIn("strokes", response.json())
@@ -1253,8 +1279,13 @@ class IllustratorEndpointTests(GeminiTestCase):
 
 GATE_IMAGE = ('{"kind":"image","label":"fox",'
               '"image_prompt":"A clean black-and-white line drawing of a fox"}')
-GATE_REFUSAL = ('{"kind":"refusal","message":'
-                '"I need a trusted reference to draw that accurately, so I won\'t guess."}')
+GATE_REFUSAL = ('{"kind":"refusal","message":"I can\'t draw that."}')
+GATE_LABELLED = (
+    '{"kind":"image","label":"photosynthesis",'
+    '"aspect_ratio":"4:3",'
+    '"image_prompt":"A clean black-and-white labelled photosynthesis diagram '
+    'with printed labels for sunlight, CO2, water, O2, and glucose"}'
+)
 # A raw traced plan, on the 0..1000 canvas _clean_illustration expects as input.
 TRACED = {
     "kind": "strokes", "label": "fox",
@@ -1271,10 +1302,53 @@ class IllustratorTraceTests(GeminiTestCase):
     def test_gate_refusal_is_returned_without_spending_an_image_call(self):
         self.install(solver=GATE_REFUSAL)
         with patch.object(gemini, "generate_reference_image") as gen:
-            result = gemini.illustrate("draw a labelled circuit", mode="trace")
+            result = gemini.illustrate(
+                "draw graphic violent imagery", mode="trace"
+            )
         self.assertEqual(result["kind"], "refusal")
-        self.assertIn("trusted reference", result["message"])
+        self.assertIn("can't draw", result["message"])
         gen.assert_not_called()
+
+    def test_labelled_diagram_is_gated_then_traced(self):
+        self.install(solver=GATE_LABELLED)
+        with patch.object(gemini, "generate_reference_image", return_value=b"IMG") as gen, \
+             patch.object(gemini.tracer, "trace", return_value={
+                 **TRACED, "label": "photosynthesis",
+             }) as tr:
+            result = gemini.illustrate(
+                "draw a labelled photosynthesis diagram",
+                mode="trace",
+                quality="detailed",
+            )
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["label"], "photosynthesis")
+        self.assertEqual(result["pipeline"], "trace")
+        gen.assert_called_once()
+        self.assertIn("labelled", gen.call_args.args[0].lower())
+        tr.assert_called_once()
+
+    def test_empty_gate_output_synthesizes_prompt_and_continues(self):
+        self.install(solver="Sure, I can help with that.")
+        with patch.object(gemini, "generate_reference_image", return_value=b"IMG") as gen, \
+             patch.object(gemini.tracer, "trace", return_value=TRACED):
+            result = gemini.illustrate(
+                "draw a labelled photosynthesis diagram",
+                mode="trace",
+                quality="balanced",
+            )
+        self.assertEqual(result["kind"], "strokes")
+        self.assertEqual(result["pipeline"], "trace")
+        prompt = gen.call_args.args[0].lower()
+        self.assertIn("photosynthesis", prompt)
+        self.assertIn("label", prompt)
+
+    def test_gate_uses_enough_output_tokens_for_labelled_prompts(self):
+        models = self.install(solver=GATE_IMAGE)
+        with patch.object(gemini, "generate_reference_image", return_value=b"IMG"), \
+             patch.object(gemini.tracer, "trace", return_value=TRACED):
+            gemini.illustrate("draw a fox", mode="trace")
+        config = models.calls[0][2]
+        self.assertGreaterEqual(config.max_output_tokens, 2048)
 
     def test_trace_generates_an_image_then_inks_the_traced_strokes(self):
         self.install(solver=GATE_IMAGE)

@@ -724,10 +724,7 @@ def _clean_illustration(raw: Any, quality: str = "detailed") -> dict[str, Any]:
         message = str(raw.get("message") or "").strip()[:240]
         return {
             "kind": "refusal",
-            "message": message or (
-                "I need a trusted reference to draw that accurately, "
-                "so I won't guess."
-            ),
+            "message": message or "I can't draw that.",
         }
     if kind != "strokes":
         raise ValueError("illustration kind must be strokes or refusal")
@@ -790,8 +787,8 @@ def _illustrate_plan(message: str, quality: str = "quick") -> dict[str, Any]:
     PEN-36 direct path — the model plans ordered stroke geometry itself.
 
     No image is generated: fast, offline-friendly, and the graceful fallback if
-    the trace path fails. Factual/labelled diagrams fail closed as a refusal
-    because this path has no vetted reference to trace.
+    the trace path fails. Educational and labelled diagrams are allowed; only
+    unsafe requests should come back as refusals.
     """
     model = (getattr(settings, "GEMINI_ILLUSTRATOR_MODEL", "") or "").strip() \
         or settings.GEMINI_MODEL
@@ -829,8 +826,8 @@ def _illustrate_plan(message: str, quality: str = "quick") -> dict[str, Any]:
 def _gate_illustration(message: str, quality: str) -> dict[str, Any]:
     """
     Decide refuse-vs-draw for the trace path, and — if allowed — write the image
-    prompt. Keeping the correctness boundary on the text model means an unsafe or
-    factual request is refused *before* any image quota is spent.
+    prompt. Unsafe requests are refused before any image quota is spent;
+    educational and labelled diagrams are allowed through.
     """
     model = (getattr(settings, "GEMINI_ILLUSTRATOR_MODEL", "") or "").strip() \
         or settings.GEMINI_MODEL
@@ -848,7 +845,8 @@ def _gate_illustration(message: str, quality: str) -> dict[str, Any]:
                 system_instruction=illustrator_trace_gate_prompt(quality),
                 temperature=0.2,
                 top_p=0.9,
-                max_output_tokens=800,
+                # Labelled-diagram image prompts need room; 800 truncates mid-JSON.
+                max_output_tokens=2048,
                 response_mime_type="application/json",
             ),
         )
@@ -857,18 +855,32 @@ def _gate_illustration(message: str, quality: str) -> dict[str, Any]:
         raise GeminiError(str(exc)) from exc
 
     _account(model, response)
-    raw = _parse_json_block(_extract_text(response))
+    text = _extract_text(response)
+    try:
+        raw = _parse_json_block(text)
+    except ValueError:
+        logger.warning(
+            "Illustration gate returned unparseable output (%d chars); "
+            "synthesizing image prompt from the request",
+            len(text or ""),
+        )
+        return _synthesized_illustration_gate(message)
+
     if not isinstance(raw, dict):
-        raise GeminiError("Illustration gate returned no decision.")
+        logger.warning("Illustration gate returned non-object JSON; synthesizing")
+        return _synthesized_illustration_gate(message)
+
     kind = str(raw.get("kind") or "").strip().lower()
     if kind == "refusal":
         message_out = str(raw.get("message") or "").strip()[:240]
-        return {"kind": "refusal", "message": message_out or (
-            "I need a trusted reference to draw that accurately, so I won't guess."
-        )}
+        return {"kind": "refusal", "message": message_out or "I can't draw that."}
     prompt = str(raw.get("image_prompt") or "").strip()
     if kind != "image" or not prompt:
-        raise GeminiError("Illustration gate produced no image prompt.")
+        logger.warning(
+            "Illustration gate missing image prompt (kind=%r); synthesizing",
+            kind,
+        )
+        return _synthesized_illustration_gate(message)
     aspect_ratio = str(raw.get("aspect_ratio") or "1:1").strip()
     if aspect_ratio not in ("1:1", "4:3", "3:4", "16:9", "9:16"):
         aspect_ratio = "1:1"
@@ -877,6 +889,35 @@ def _gate_illustration(message: str, quality: str) -> dict[str, Any]:
         "label": str(raw.get("label") or "illustration").strip()[:120] or "illustration",
         "image_prompt": prompt[:1500],
         "aspect_ratio": aspect_ratio,
+    }
+
+
+def _synthesized_illustration_gate(message: str) -> dict[str, Any]:
+    """
+    Keep the trace path alive when the gate model returns empty or broken JSON.
+    The image model still gets a usable brief derived from the user's request.
+    """
+    subject = " ".join(str(message or "").split())[:400] or "the requested subject"
+    wants_labels = any(
+        token in subject.lower()
+        for token in ("label", "labelled", "labeled", "diagram", "schematic")
+    )
+    label_clause = (
+        " Include clear printed black labels next to the named parts, with thin "
+        "leader lines and correct spelling."
+        if wants_labels
+        else " Omit all text and labels."
+    )
+    return {
+        "kind": "image",
+        "label": "illustration",
+        "image_prompt": (
+            f"Clean black-and-white fine-pen line drawing of: {subject}. "
+            "Black ink on plain white background, centred with margin, no colour, "
+            "no filled regions, no gradients, no border, no decorative frame."
+            f"{label_clause}"
+        )[:1500],
+        "aspect_ratio": "1:1",
     }
 
 
@@ -994,12 +1035,12 @@ def illustrate(
     quality: str = "detailed",
 ) -> dict[str, Any]:
     """
-    PEN-36 — turn an imaginative request into ordered pen strokes.
+    PEN-36 — turn a drawing request into ordered pen strokes.
 
     Quick has the model author stroke geometry directly. Balanced and Detailed
     render the subject with an image model and trace it into ink. Trace degrades
     to a Quick plan on any pipeline failure, so the page still gets a drawing;
-    a *refusal* from the gate is returned as-is and never redrawn as a guess.
+    a *refusal* from the gate (unsafe content) is returned as-is.
 
     `mode` remains as a compatibility shim for older callers.
     """
@@ -1030,11 +1071,16 @@ def illustrate(
             "Trace illustration failed; falling back to direct plan",
             exc_info=True,
         )
-        return {
-            **_illustrate_plan(message, quality="quick"),
-            "quality": "quick",
-            "pipeline": "plan_fallback",
-        }
+        try:
+            return {
+                **_illustrate_plan(message, quality="quick"),
+                "quality": "quick",
+                "pipeline": "plan_fallback",
+            }
+        except (GeminiError, ValueError) as exc:
+            raise GeminiError(
+                f"Could not draw that: {exc}"
+            ) from exc
 
 
 SUPPORTED_LANGUAGES = {

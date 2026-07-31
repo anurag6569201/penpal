@@ -19,13 +19,13 @@ Pick who Penpal is from the on-page Penpal control bar:
   Explain, Another way, Harder — or write "check" above your own work to
   find your first wrong line. Detail level (Answer / Compact / Full / Proof)
   switches from the on-page banner or Settings.
-- **Illustrator** — ask for an imaginative sketch and watch Penpal trace it
+- **Illustrator** — ask for a sketch or diagram and watch Penpal trace it
   stroke by stroke in the same ink as your handwriting. The result is native
   PencilKit ink: erasable, lassoable, saved with the page, and removed by one
   undo. Choose Quick, Balanced, or Detailed quality from the on-page banner;
   Detailed is the default and preserves fine two-pixel features at the cost of
-  a slower render. Factual or labelled diagrams are refused for now rather than
-  guessed; they will require a vetted reference-image source.
+  a slower render. Educational and labelled diagrams are allowed; unsafe
+  imagery is refused.
 - **Language Partner** — practise English, Spanish, French, German, Italian or
   Portuguese. Penpal replies in that language; when it is highly confident
   about one grammar or vocabulary issue, it gently underlines the untouched

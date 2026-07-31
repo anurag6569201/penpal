@@ -348,8 +348,8 @@ enum PenpalAPI {
         var isRefusal: Bool { kind == "refusal" }
     }
 
-    /// Plan an imaginative line drawing. Factual diagrams return a structured
-    /// refusal until Penpal has a vetted reference source to trace.
+    /// Plan a line drawing (imaginative or educational/labelled). Unsafe
+    /// requests return a structured refusal.
     static func illustrate(
         message: String,
         quality: String = "detailed",

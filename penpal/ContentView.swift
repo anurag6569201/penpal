@@ -212,7 +212,7 @@ struct ContentView: View {
                 // never talk over work the user is already doing.
                 onboarding.offerIfAppropriate(
                     penpalOn: true,
-                    isMathematician: isMathematician,
+                    usesBoxTrigger: usesBoxTrigger,
                     hasInk: !(store.selectedNote?.drawing.strokes.isEmpty ?? true))
             } else {
                 showMathChips = false
@@ -221,6 +221,12 @@ struct ContentView: View {
         }
         .onChange(of: settings.capability) { _, _ in
             showMathChips = false
+            if penpalOn {
+                onboarding.offerIfAppropriate(
+                    penpalOn: true,
+                    usesBoxTrigger: usesBoxTrigger,
+                    hasInk: !(store.selectedNote?.drawing.strokes.isEmpty ?? true))
+            }
         }
         .onChange(of: store.selectedNoteID) { _, _ in
             showMathChips = false
@@ -316,7 +322,15 @@ struct ContentView: View {
                     // PEN-33 — taught on the page, once, and only when there
                     // is nothing to interrupt.
                     if onboarding.isShowing {
-                        BoxGestureHint { onboarding.dismiss() }
+                        BoxGestureHint(
+                            sample: isIllustrator ? "a red bicycle" : "3x + 5 = 17",
+                            message: isIllustrator
+                                ? "Draw a box around what to draw\nand Penpal sketches it."
+                                : "Draw a box around any problem\nand Penpal solves it.",
+                            accessibilityHint: isIllustrator
+                                ? "Tip: draw a box around what to draw and Penpal sketches it"
+                                : "Tip: draw a box around any problem and Penpal solves it"
+                        ) { onboarding.dismiss() }
                             .padding(.bottom, penpalBarClearance + stackedOverlayGap)
                             .transition(.scale(scale: 0.94).combined(with: .opacity))
                     }
@@ -551,6 +565,7 @@ struct ContentView: View {
     }
 
     private var isMathematician: Bool { settings.capability == "mathematician" }
+    private var usesBoxTrigger: Bool { isMathematician || isIllustrator }
     private var isIllustrator: Bool { settings.capability == "illustrator" }
     private var isLanguagePartner: Bool { settings.capability == "language" }
     private var isDebatePartner: Bool { settings.capability == "debate" }

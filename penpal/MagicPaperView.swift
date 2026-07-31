@@ -2042,10 +2042,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Trigger rules, per mode:
     /// - On-device calculator: "=" when Penpal is off, or Penpal + Companion.
     ///   Penpal + Mathematician never uses it — "=" goes to the brain/LLM.
-    /// - Penpal + Mathematician: the BOX is the only automatic trigger.
-    ///   Nothing else fires while the user is writing — no Solve chip, no
-    ///   idle-pause send — because a problem in this mode is often written
-    ///   across several pauses and interrupting it is worse than waiting.
+    /// - Penpal + Mathematician / Illustrator: the BOX is the only automatic
+    ///   trigger. Nothing else fires while the user is writing — no Solve
+    ///   chip, no idle-pause send / sketch — because a request in these
+    ///   modes is often written across several pauses and interrupting it
+    ///   is worse than waiting.
     /// - Penpal + Companion: replies after the writing pause (as before).
     /// `auto` is true when the idle timer fired; false for an explicit
     /// "reply now" request from the user.
@@ -2082,26 +2083,30 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             }
         }
 
-        // Boxed problem: Penpal + Mathematician only.
-        if mathematicianMode,
+        // Boxed selection: Mathematician solves; Illustrator draws.
+        if (mathematicianMode || illustratorMode),
            let box = InkAnalyzer.detectProblemBox(all: all, newStart: newStart) {
-            solveBoxedProblem(box, all: all)
+            if mathematicianMode {
+                solveBoxedProblem(box, all: all)
+            } else {
+                illustrateBoxedRequest(box, all: all)
+            }
             return
         }
 
-        // MATHEMATICIAN: THE BOX IS THE ONLY AUTOMATIC TRIGGER.
+        // MATHEMATICIAN / ILLUSTRATOR: THE BOX IS THE ONLY AUTOMATIC TRIGGER.
         //
-        // Someone in this mode is writing a problem out — often over several
-        // pauses, often with an "=" partway through. Every automatic trigger
-        // here is an interruption of a question that isn't finished being
-        // asked: the Solve chip pops over the working, or a half-written
-        // problem gets sent to the brain. In this mode the user has ALREADY
-        // told us they want the model, so there is nothing to infer — we just
-        // need to know WHICH problem, and drawing a box says exactly that.
+        // Someone in these modes is writing a request out — often over
+        // several pauses. Every automatic trigger here is an interruption of
+        // something that isn't finished: a half-written prompt gets sent to
+        // the illustrator, or a Solve chip pops over unfinished working. The
+        // user has ALREADY told us they want the model, so there is nothing
+        // to infer — we just need to know WHICH ink, and drawing a box says
+        // exactly that.
         //
-        // Explicit requests (the send button, auto == false) still go through
-        // to the brain below; only idle-timer firing is suppressed.
-        if mathematicianMode, auto {
+        // Explicit requests (typed send, photo, auto == false) still go
+        // through below; only idle-timer firing is suppressed.
+        if (mathematicianMode || illustratorMode), auto {
             // Nothing was consumed visually, but the stroke counter moved —
             // put it back so a later box (or explicit ask) still sees this
             // ink as new, unanswered input.
@@ -2255,19 +2260,16 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 return
             }
 
-            // Illustrator is an explicit mode: recognised writing is a
-            // drawing request, while real function plots stay on-device.
+            // Illustrator idle auto-send is suppressed above (box-only).
+            // This path is for an explicit replyNow(auto: false): recognised
+            // writing is a drawing request; real function plots stay on-device.
             // Route before the calculator so "plot y = x^2" cannot be
             // mistaken for an unfinished arithmetic expression.
             if illustratorMode {
                 let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
-                guard !auto || self.settings.autoReply else {
-                    self.lastReplyStrokeCount = newStart
-                    return
-                }
                 guard !bestText.isEmpty else {
                     self.lastReplyStrokeCount = newStart
-                    if !auto { self.onStatus?("Write what you'd like me to draw.") }
+                    if !auto { self.onStatus?("Write what you'd like me to draw, then box it.") }
                     return
                 }
                 if let body = GraphPlotter.functionBody(in: bestText),
@@ -2604,7 +2606,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     /// Requests a structured line-art plan. Illustrator deliberately does not
     /// use the chat endpoint: prose and ordered geometry are different
-    /// contracts, and factual diagrams must be able to fail closed.
+    /// contracts. Unsafe imagery can still fail closed as a refusal.
     private func requestIllustration(
         _ message: String,
         refusalPlacement: ReplyPlacement? = nil
@@ -2638,7 +2640,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
                 if illustration.isRefusal {
                     let refusal = illustration.message
-                        ?? "I need a trusted reference for that, so I won't guess."
+                        ?? "I can't draw that."
                     store.append(role: "assistant", content: refusal)
                     self.onWritingStateChange?(false)
                     if let placement = refusalPlacement {
@@ -2943,6 +2945,57 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                         "factor", "fraction", "percent", "angle", "area", "volume"]
         let lower = text.lowercased()
         return mathWords.contains { lower.contains($0) }
+    }
+
+    /// Illustrator selection pipeline: the boxed region IS the drawing
+    /// request. OCR the enclosed ink, dissolve the box, then sketch — same
+    /// "box means go" grammar as Mathematician, so a mid-prompt pause never
+    /// fires a half-finished illustration.
+    private func illustrateBoxedRequest(_ box: InkAnalyzer.ProblemBox, all: [PKStroke]) {
+        let enclosed = box.enclosedIndices.map { all[$0] }
+        let boxStrokes = box.boxStrokeIndices.map { all[$0] }
+
+        GestureOnboarding.shared.markLearned()
+
+        renderer.beginAnalyzing(strokes: enclosed)
+        boxStrokes.forEach { renderer.traceBox($0) }
+        setReadingBanner(true)
+
+        let traits = traitCollection
+        Task { @MainActor in
+            defer {
+                self.renderer.endAnalyzing()
+                self.setReadingBanner(false)
+            }
+            let candidates = await InkRecognizer.recognizeCandidates(
+                strokes: enclosed,
+                traits: traits,
+                recognitionLanguages: ["en-US"])
+            let text = (candidates.first ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                self.onStatus?(
+                    "Nothing readable inside the box — write what to draw, then box it."
+                )
+                return
+            }
+
+            // The box was an instruction, not content — clear it before the
+            // sketch lands so the page keeps only the prompt and the drawing.
+            self.dissolveBoxStrokes(boxStrokes)
+
+            if let body = GraphPlotter.functionBody(in: text),
+               self.drawGraph(of: body) {
+                return
+            }
+            guard self.settings.useBrain else {
+                self.onStatus?(
+                    "Illustrator needs the brain — enable it in Settings → Behavior."
+                )
+                return
+            }
+            self.requestIllustration(text)
+        }
     }
 
     /// The selection pipeline: the boxed region IS the question. The ink

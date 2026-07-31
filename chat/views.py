@@ -248,10 +248,10 @@ def import_page(request):
 @permission_classes([AllowAny])
 def illustrate(request):
     """
-    PEN-36 — turn an imaginative request into ordered pen strokes.
+    PEN-36 — turn a drawing request into ordered pen strokes.
 
-    Factual/labelled requests return a structured refusal until a vetted
-    reference-image source is available; they are never guessed as line art.
+    Educational and labelled diagrams are allowed. Only unsafe requests return
+    a structured refusal.
     """
     denied = access.check(request)
     if denied is not None:

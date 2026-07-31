@@ -53,9 +53,10 @@ final class GestureOnboarding: ObservableObject {
     private init() {}
 
     /// Called when the page becomes ready. `hasInk` guards the "never
-    /// interrupt real work" rule.
-    func offerIfAppropriate(penpalOn: Bool, isMathematician: Bool, hasInk: Bool) {
-        guard penpalOn, isMathematician, !hasInk,
+    /// interrupt real work" rule. Box-trigger modes are Mathematician and
+    /// Illustrator — both wait for a box instead of auto-firing on a pause.
+    func offerIfAppropriate(penpalOn: Bool, usesBoxTrigger: Bool, hasInk: Bool) {
+        guard penpalOn, usesBoxTrigger, !hasInk,
               !hasLearned, timesShown < Self.maxShows else { return }
         timesShown += 1
         withAnimation(.easeOut(duration: 0.4)) { isShowing = true }
@@ -80,10 +81,16 @@ final class GestureOnboarding: ObservableObject {
 }
 
 /// A hand-drawn hint that sits on the page: a dashed box around a sample
-/// problem, with one line of explanation. Rendered in ink-like strokes so it
+/// prompt, with one line of explanation. Rendered in ink-like strokes so it
 /// belongs to the paper rather than floating above it as chrome.
 struct BoxGestureHint: View {
 
+    /// Sample ink shown inside the dashed box.
+    var sample: String = "3x + 5 = 17"
+    /// One or two lines explaining what boxing does in the current mode.
+    var message: String = "Draw a box around any problem\nand Penpal solves it."
+    var accessibilityHint: String =
+        "Tip: draw a box around any problem and Penpal solves it"
     var onDismiss: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -92,7 +99,7 @@ struct BoxGestureHint: View {
     var body: some View {
         VStack(spacing: 14) {
             ZStack {
-                Text("3x + 5 = 17")
+                Text(sample)
                     .font(.system(size: 22, weight: .regular, design: .serif))
                     .foregroundStyle(Pen.inkPrimary.opacity(0.75))
                     .padding(.horizontal, 22)
@@ -106,7 +113,7 @@ struct BoxGestureHint: View {
             }
             .fixedSize()
 
-            Text("Draw a box around any problem\nand Penpal solves it.")
+            Text(message)
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Pen.inkFaded)
@@ -131,7 +138,7 @@ struct BoxGestureHint: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Tip: draw a box around any problem and Penpal solves it")
+        .accessibilityLabel(accessibilityHint)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: "Dismiss", onDismiss)
     }
