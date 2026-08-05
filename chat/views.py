@@ -16,6 +16,7 @@ from .gemini import (
     GeminiError,
     SUPPORTED_LANGUAGES,
     debate_turn as gemini_debate_turn,
+    generate_interactive_block,
     generate_reply,
     grade_working,
     illustrate as gemini_illustrate,
@@ -23,6 +24,7 @@ from .gemini import (
     import_page as gemini_import_page,
     language_turn as gemini_language_turn,
     practice_problem,
+    repair_interactive_block,
     stream_math_reply,
     solve_math_image,
     solve_worksheet,
@@ -550,6 +552,87 @@ def practice(request):
                         status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     return Response({**result, "model": settings.GEMINI_MODEL})
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def interactive(request):
+    """Generate one isolated browser block and its consent manifest."""
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    message = str(data.get("message") or data.get("text") or "")[:MAX_MESSAGE_CHARS]
+    history = data.get("history") or []
+    if not message.strip():
+        return Response({"error": "message is required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(history, list):
+        return Response({"error": "history must be a list"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    capability = str(data.get("capability") or "interactive").strip().lower()
+    conversation_id = str(data.get("conversation_id") or "")[:100]
+    try:
+        result = generate_interactive_block(
+            message,
+            history=_clean_history(history),
+            capability=capability,
+            language=str(data.get("language") or "")[:40],
+            math_detail=str(data.get("math_detail") or "compact")[:20],
+        )
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({
+        **result,
+        "conversation_id": conversation_id,
+        "model": settings.GEMINI_MODEL,
+        "capability": capability,
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def repair_interactive(request):
+    """Investigate privacy-bounded diagnostics and return a full replacement."""
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    html = str(data.get("html") or "")
+    manifest = data.get("manifest")
+    diagnostics = data.get("diagnostics")
+    if not html.strip():
+        return Response({"error": "html is required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if manifest is not None and not isinstance(manifest, dict):
+        return Response({"error": "manifest must be an object"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(diagnostics, list) or not diagnostics:
+        return Response({"error": "diagnostics must be a non-empty list"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        result = repair_interactive_block(
+            html=html,
+            manifest=manifest,
+            diagnostics=diagnostics,
+            title=str(data.get("title") or "Interactive Block")[:80],
+        )
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return Response({
+        **result,
+        "model": settings.GEMINI_MODEL,
+        "capability": "interactive",
+    })
 
 
 @api_view(["POST"])

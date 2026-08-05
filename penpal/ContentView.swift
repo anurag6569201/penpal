@@ -24,6 +24,10 @@ struct MagicPaper: UIViewRepresentable {
     var onThinkingChange: (Bool) -> Void
     var onReadingChange: (Bool) -> Void
     var onStatus: (String) -> Void
+    var onInteractivePermissionRequest: (
+        InteractivePermissionPrompt,
+        @escaping (InteractivePermissionDecision) -> Void
+    ) -> Void
     var onDrawingChange: (PKDrawing) -> Void
     var onUndoRedoChange: (Bool, Bool) -> Void
     var onTypedTextsChange: ([TypedNoteText]) -> Void
@@ -51,6 +55,7 @@ struct MagicPaper: UIViewRepresentable {
         view.onThinkingChange = onThinkingChange
         view.onReadingChange = onReadingChange
         view.onStatus = onStatus
+        view.onInteractivePermissionRequest = onInteractivePermissionRequest
         view.onDrawingChange = onDrawingChange
         view.onUndoRedoChange = onUndoRedoChange
         view.onTypedTextsChange = onTypedTextsChange
@@ -60,6 +65,12 @@ struct MagicPaper: UIViewRepresentable {
         view.onPageEditModeChange = onPageEditModeChange
         view.onMarkupOpened = onMarkupOpened
     }
+}
+
+private struct PendingInteractivePermission: Identifiable {
+    let prompt: InteractivePermissionPrompt
+    let completion: (InteractivePermissionDecision) -> Void
+    var id: UUID { prompt.id }
 }
 
 struct ContentView: View {
@@ -91,6 +102,8 @@ struct ContentView: View {
     @State private var showMathChips = false
     @State private var statusMessage = ""
     @State private var showStatus = false
+    @State private var activePermission: PendingInteractivePermission?
+    @State private var permissionQueue: [PendingInteractivePermission] = []
     @State private var showShare = false
     @State private var shareItems: [Any] = []
     @State private var photoItem: PhotosPickerItem?
@@ -207,7 +220,7 @@ struct ContentView: View {
         }
         .onChange(of: penpalOn) { _, on in
             if on {
-                proxy.view?.syncReplyBaselineToCurrentInk()
+                proxy.view?.prepareForPenpalActivation()
                 // PEN-33: offer the box hint only on an empty page, so it can
                 // never talk over work the user is already doing.
                 onboarding.offerIfAppropriate(
@@ -258,6 +271,11 @@ struct ContentView: View {
         .sheet(isPresented: $showShare) {
             ActivityView(items: shareItems)
         }
+        .sheet(item: $activePermission) { pending in
+            InteractivePermissionView(prompt: pending.prompt) { decision in
+                finishPermission(pending, decision: decision)
+            }
+        }
         .sheet(item: studioSheetItem) { block in
             BlockStudioView(block: block, expanded: $studioFullScreen, onSave: studioSave)
                 .presentationBackground(Pen.paper)
@@ -285,6 +303,35 @@ struct ContentView: View {
         }
     }
 
+    private func enqueuePermission(
+        _ prompt: InteractivePermissionPrompt,
+        completion: @escaping (InteractivePermissionDecision) -> Void
+    ) {
+        let pending = PendingInteractivePermission(
+            prompt: prompt,
+            completion: completion
+        )
+        if activePermission == nil {
+            activePermission = pending
+        } else {
+            permissionQueue.append(pending)
+        }
+    }
+
+    private func finishPermission(
+        _ pending: PendingInteractivePermission,
+        decision: InteractivePermissionDecision
+    ) {
+        guard activePermission?.id == pending.id else { return }
+        activePermission = nil
+        pending.completion(decision)
+        guard !permissionQueue.isEmpty else { return }
+        let next = permissionQueue.removeFirst()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            activePermission = next
+        }
+    }
+
     // MARK: - Editor detail
 
     private var editorDetail: some View {
@@ -303,6 +350,7 @@ struct ContentView: View {
                             settings: settings,
                             activityPhase: penpalActivityPhase,
                             statusText: penpalStatusText,
+                            onAsk: { proxy.view?.replyNow() },
                             onVisionCamera: openVisionCamera,
                             onVisionPhoto: { showVisionPhotos = true },
                             onClose: {
@@ -693,6 +741,9 @@ struct ContentView: View {
                     statusMessage = message
                     showStatus = true
                     isThinking = false
+                },
+                onInteractivePermissionRequest: { prompt, completion in
+                    enqueuePermission(prompt, completion: completion)
                 },
                 onDrawingChange: { drawing in
                     store.updateSelectedDrawing(drawing)

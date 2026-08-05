@@ -8,6 +8,22 @@ enum HandwritingSizeMode: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 }
 
+enum PenpalWritingPace: String, CaseIterable, Codable, Identifiable {
+    case natural
+    case timed
+    case instant
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .natural: "Natural"
+        case .timed: "Timed"
+        case .instant: "Instant"
+        }
+    }
+}
+
 /// One persisted source of truth for layout, rendering and Pencil capture.
 @MainActor
 final class HandwritingSettings: ObservableObject {
@@ -34,6 +50,11 @@ final class HandwritingSettings: ObservableObject {
     /// is writing with right now, instead of a fixed reply color.
     @Published var activeToolColor: UIColor?
     @Published var autoReply: Bool { didSet { save() } }
+    /// Seconds of quiet handwriting before a conversational auto reply.
+    @Published var autoReplyDelay: Double { didSet { save() } }
+    /// Whether reply ink writes naturally, targets a duration, or appears now.
+    @Published var writingPace: PenpalWritingPace { didSet { save() } }
+    @Published var timedWritingSeconds: Double { didSet { save() } }
     @Published var diagnostics: Bool { didSet { save() } }
     /// Paper background: "ruled" | "grid" | "dots" | "blank".
     @Published var paperStyle: String { didSet { save() } }
@@ -45,8 +66,8 @@ final class HandwritingSettings: ObservableObject {
     @Published var apiBaseURL: String { didSet { save() } }
     /// When on, typed messages go to Gemini via Django.
     @Published var useBrain: Bool { didSet { save() } }
-    /// What Penpal IS right now: companion, mathematician, illustrator,
-    /// language partner, or debate partner.
+    /// What Penpal IS right now: companion, mathematician, interactive,
+    /// illustrator, language partner, or debate partner.
     @Published var capability: String { didSet { save() } }
     /// BCP-47 locale practised by Language Partner.
     @Published var targetLanguage: String { didSet { save() } }
@@ -81,6 +102,13 @@ final class HandwritingSettings: ObservableObject {
         inkColorName = defaults.string(forKey: "penpal.settings.inkColor") ?? "indigo"
         customColorHex = defaults.string(forKey: "penpal.settings.customColorHex") ?? "#3B3B3B"
         autoReply = defaults.object(forKey: "penpal.settings.autoReply") as? Bool ?? true
+        autoReplyDelay = defaults.object(forKey: "penpal.settings.autoReplyDelay") as? Double ?? 2
+        writingPace = PenpalWritingPace(
+            rawValue: defaults.string(forKey: "penpal.settings.writingPace") ?? ""
+        ) ?? .natural
+        timedWritingSeconds = defaults.object(
+            forKey: "penpal.settings.timedWritingSeconds"
+        ) as? Double ?? 5
         diagnostics = defaults.object(forKey: "penpal.settings.detect") as? Bool ?? false
         paperStyle = defaults.string(forKey: "penpal.settings.paperStyle") ?? "blank"
         replyStyle = defaults.string(forKey: "penpal.settings.replyStyle") ?? "hand"
@@ -114,6 +142,18 @@ final class HandwritingSettings: ObservableObject {
         sizeMode == .manual ? CGFloat(min(42, max(10, manualSize))) : detected
     }
 
+    /// Nil keeps the captured hand tempo; zero means no animation.
+    var replyWritingDuration: TimeInterval? {
+        switch writingPace {
+        case .natural:
+            nil
+        case .timed:
+            min(30, max(1, timedWritingSeconds))
+        case .instant:
+            0
+        }
+    }
+
     private func save() {
         let d = UserDefaults.standard
         d.set(sizeMode.rawValue, forKey: "penpal.settings.sizeMode")
@@ -129,6 +169,9 @@ final class HandwritingSettings: ObservableObject {
         d.set(inkColorName, forKey: "penpal.settings.inkColor")
         d.set(customColorHex, forKey: "penpal.settings.customColorHex")
         d.set(autoReply, forKey: "penpal.settings.autoReply")
+        d.set(autoReplyDelay, forKey: "penpal.settings.autoReplyDelay")
+        d.set(writingPace.rawValue, forKey: "penpal.settings.writingPace")
+        d.set(timedWritingSeconds, forKey: "penpal.settings.timedWritingSeconds")
         d.set(diagnostics, forKey: "penpal.settings.detect")
         d.set(paperStyle, forKey: "penpal.settings.paperStyle")
         d.set(replyStyle, forKey: "penpal.settings.replyStyle")

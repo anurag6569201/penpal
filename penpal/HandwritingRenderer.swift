@@ -38,6 +38,8 @@ final class HandwritingRenderer: UIView {
     private let penNib = CAShapeLayer()
     private var generation = 0
     private var generationActive = false
+    /// Per-write multiplier used by the "finish within" response setting.
+    private var activeDurationScale = 1.0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -76,6 +78,7 @@ final class HandwritingRenderer: UIView {
     // MARK: - Public
 
     func write(_ strokes: [InkStroke], baseWidth: CGFloat,
+               targetDuration: TimeInterval? = nil,
                onStrokeFinished: ((Int) -> Void)? = nil,
                completion: (() -> Void)? = nil) {
         generation += 1
@@ -83,6 +86,20 @@ final class HandwritingRenderer: UIView {
         currentWriteLayers.removeAll()
         strokeFinishedHandler = onStrokeFinished
         let gen = generation
+        if let targetDuration, targetDuration <= 0 {
+            // The owner bakes each stroke into PencilKit in this callback, so
+            // no temporary renderer layers are needed for an instant reply.
+            for index in strokes.indices { onStrokeFinished?(index) }
+            generationActive = false
+            completion?()
+            return
+        }
+        if let targetDuration {
+            let estimated = estimatedWritingDuration(strokes)
+            activeDurationScale = max(0.02, min(20, targetDuration / estimated))
+        } else {
+            activeDurationScale = 1
+        }
         penDot.fillColor = inkColor.cgColor
         penDot.isHidden = false
         // A large animated nib makes the result read like a UI effect. Keep only
@@ -353,25 +370,61 @@ final class HandwritingRenderer: UIView {
 
     // MARK: - Box gesture feedback (boxed problems)
 
-    /// Quick draw-on trace of the box stroke — "I see your box." Registered
-    /// with the analyzing layers so endAnalyzing cleans it up automatically.
-    func traceBox(_ stroke: PKStroke) {
-        guard let (path, width, color) = Self.ghostPath(for: stroke) else { return }
-        let trace = CAShapeLayer()
-        trace.name = "boxTrace"
-        trace.path = path.cgPath
-        trace.fillColor = nil
-        trace.strokeColor = color.withAlphaComponent(0.55).cgColor
-        trace.lineWidth = width + 1.5
-        trace.lineCap = .round
-        trace.lineJoin = .round
-        trace.opacity = 0.9
-        layer.insertSublayer(trace, below: penDot)
-        ponderLayers.append(trace)
+    /// A brighter breathing trace of the user's exact box. Multi-stroke boxes
+    /// share one container so the tiny scale change moves as one shape rather
+    /// than making each side drift independently.
+    func traceBox(_ strokes: [PKStroke]) {
+        let geometries = strokes.compactMap(Self.ghostPath(for:))
+        guard !geometries.isEmpty else { return }
+        let boxBounds = geometries.reduce(CGRect.null) {
+            $0.union($1.0.bounds)
+        }
+        guard !boxBounds.isNull else { return }
 
-        drawOn(trace, duration: 0.35)
-        pulse(trace, from: 0.35, to: 0.9, duration: 0.85,
-              begin: CACurrentMediaTime() + 0.4)
+        let glow = CALayer()
+        glow.name = "boxTrace"
+        glow.frame = boxBounds
+        glow.opacity = 0.78
+
+        for (path, width, color) in geometries {
+            var translation = CGAffineTransform(
+                translationX: -boxBounds.minX,
+                y: -boxBounds.minY
+            )
+            let trace = CAShapeLayer()
+            trace.path = path.cgPath.copy(using: &translation)
+            trace.fillColor = nil
+            trace.strokeColor = color.withAlphaComponent(0.52).cgColor
+            trace.lineWidth = width + 0.9
+            trace.lineCap = .round
+            trace.lineJoin = .round
+            trace.shadowColor = color.withAlphaComponent(0.70).cgColor
+            trace.shadowRadius = 5
+            trace.shadowOpacity = 0.72
+            trace.shadowOffset = .zero
+            trace.shadowPath = trace.path
+            glow.addSublayer(trace)
+        }
+
+        layer.insertSublayer(glow, below: penDot)
+        ponderLayers.append(glow)
+
+        let start = CACurrentMediaTime() + 0.02
+        pulse(glow, from: 0.30, to: 0.95, duration: 0.92, begin: start)
+        guard !reduceMotion else { return }
+        let breathe = CABasicAnimation(keyPath: "transform.scale")
+        breathe.fromValue = 0.995
+        breathe.toValue = 1.012
+        breathe.duration = 1.05
+        breathe.autoreverses = true
+        breathe.repeatCount = .infinity
+        breathe.beginTime = start
+        breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        glow.add(breathe, forKey: "boxBreathe")
+    }
+
+    func traceBox(_ stroke: PKStroke) {
+        traceBox([stroke])
     }
 
     /// The box did its job — a ghost of the stroke fades away while the real
@@ -713,6 +766,52 @@ final class HandwritingRenderer: UIView {
 
     // MARK: - Animation
 
+    /// Estimates the current natural write time so a timed response can scale
+    /// stroke travel and pen-lift pauses together instead of merely moving the
+    /// pen faster while leaving long gaps between letters.
+    private func estimatedWritingDuration(_ strokes: [InkStroke]) -> TimeInterval {
+        let tempoScale = Double(320 / max(40, speed))
+        var total = 0.0
+
+        for (index, raw) in strokes.enumerated() {
+            if raw.isDot {
+                total += 0.08
+            } else if raw.points.count > 1 {
+                let stroke = Self.smoothed(raw, amount: smoothness)
+                if let real = stroke.duration {
+                    total += 0.012 + max(0.04, real * tempoScale)
+                } else {
+                    var length: CGFloat = 0
+                    for pointIndex in 1..<stroke.points.count {
+                        length += hypot(
+                            stroke.points[pointIndex].x - stroke.points[pointIndex - 1].x,
+                            stroke.points[pointIndex].y - stroke.points[pointIndex - 1].y
+                        )
+                    }
+                    total += 0.012 + max(0.04, Double(length / speed))
+                }
+            }
+
+            // writeStroke takes a small pen-lift beat even after the final
+            // stroke before it completes, so include that beat in the target.
+            var pause = 0.065
+            if index + 1 < strokes.count {
+                let next = strokes[index + 1]
+                if let real = next.pauseBefore {
+                    pause = min(1.2, max(0, real * tempoScale))
+                }
+                if next.isWordStart {
+                    pause = max(
+                        pause,
+                        Double(PersonalFontStore.shared.profile.wordPause) * tempoScale
+                    )
+                }
+            }
+            total += pause
+        }
+        return max(0.05, total)
+    }
+
     private func writeStroke(at index: Int, strokes: [InkStroke], baseWidth: CGFloat,
                              gen: Int, completion: @escaping () -> Void) {
         guard generation == gen else { return }
@@ -737,6 +836,7 @@ final class HandwritingRenderer: UIView {
                 }
                 nextStart = nxt.points.first
             }
+            pause *= self.activeDurationScale
             if let ns = nextStart { self.glidePen(from: fromPoint, to: ns, over: pause) }
             DispatchQueue.main.asyncAfter(deadline: .now() + pause) { [weak self] in
                 self?.writeStroke(at: index + 1, strokes: strokes, baseWidth: baseWidth,
@@ -756,9 +856,10 @@ final class HandwritingRenderer: UIView {
             let pop = CABasicAnimation(keyPath: "transform.scale")
             pop.fromValue = 0.2
             pop.toValue = 1
-            pop.duration = 0.08
+            let dotDuration = max(0.008, 0.08 * activeDurationScale)
+            pop.duration = dotDuration
             dot.add(pop, forKey: "pop")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + dotDuration) { [weak self] in
                 self?.finishStroke(index: index, layer: dot, gen: gen)
                 advance(c)
             }
@@ -787,9 +888,9 @@ final class HandwritingRenderer: UIView {
 
         let duration: Double
         if let real = stroke.duration {
-            duration = max(0.04, real * tempoScale)
+            duration = max(0.008, real * tempoScale * activeDurationScale)
         } else {
-            duration = max(0.04, Double(length / speed))
+            duration = max(0.008, Double(length / speed) * activeDurationScale)
         }
 
         // One timing curve drives BOTH the ink reveal and the pen dot, so the
@@ -799,7 +900,7 @@ final class HandwritingRenderer: UIView {
         let keyTimes = Self.travelKeyTimes(stroke)
         // Both animations receive one absolute start time. Adding animations
         // sequentially without this can put the pen a frame ahead of the mask.
-        let leadIn = 0.012
+        let leadIn = 0.012 * activeDurationScale
         let animationStart = CACurrentMediaTime() + leadIn
         let inkLayer: CAShapeLayer
 

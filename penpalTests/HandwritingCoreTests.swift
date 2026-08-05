@@ -116,6 +116,46 @@ final class HandwritingCoreTests: XCTestCase {
         XCTAssertFalse(path!.boundingBox.isEmpty)
     }
 
+    func testReplyWritingPaceResolvesDuration() {
+        let settings = HandwritingSettings.shared
+        let oldPace = settings.writingPace
+        let oldSeconds = settings.timedWritingSeconds
+        defer {
+            settings.writingPace = oldPace
+            settings.timedWritingSeconds = oldSeconds
+        }
+
+        settings.writingPace = .natural
+        XCTAssertNil(settings.replyWritingDuration)
+        settings.writingPace = .instant
+        XCTAssertEqual(settings.replyWritingDuration, 0)
+        settings.writingPace = .timed
+        settings.timedWritingSeconds = 7
+        XCTAssertEqual(settings.replyWritingDuration, 7)
+    }
+
+    func testInstantWritingCommitsEveryStrokeSynchronously() {
+        let renderer = HandwritingRenderer()
+        let strokes = [
+            InkStroke(points: [.zero, CGPoint(x: 12, y: 8)]),
+            InkStroke(points: [CGPoint(x: 20, y: 4)], isDot: true, dotRadius: 1),
+        ]
+        var finished: [Int] = []
+        var completed = false
+
+        renderer.write(
+            strokes,
+            baseWidth: 2,
+            targetDuration: 0,
+            onStrokeFinished: { finished.append($0) },
+            completion: { completed = true }
+        )
+
+        XCTAssertEqual(finished, [0, 1])
+        XCTAssertTrue(completed)
+        XCTAssertFalse(renderer.isWriting)
+    }
+
     // MARK: - Local calculator (no LLM)
 
     func testMathGlyphAsciiNormalization() {

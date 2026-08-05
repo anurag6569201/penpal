@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import html as html_lib
+import ipaddress
+import json
 import logging
 import math
 import re
 import unicodedata
+from urllib.parse import urlparse
 from typing import Any
 
 from django.conf import settings
@@ -18,6 +22,9 @@ from .prompts import (
     DEBATE_SYSTEM_PROMPT,
     IMPORT_SYSTEM_PROMPT,
     ILLUSTRATOR_SYSTEM_PROMPT,
+    INTERACTIVE_REPAIR_PROMPT,
+    INTERACTIVE_REVIEW_PROMPT,
+    INTERACTIVE_SYSTEM_PROMPT,
     LANGUAGE_PRACTICE_SYSTEM_PROMPT,
     MATH_CORRECTOR_NOTE,
     MATH_DETAIL,
@@ -1781,6 +1788,439 @@ def practice_problem(
         "hint": str(raw.get("hint") or "").strip()[:200],
         "skill": str(raw.get("skill") or topic).strip()[:80],
     }
+
+
+_INTERACTIVE_MAX_HTML = 120_000
+_INTERACTIVE_CAPABILITIES = {
+    "companion", "mathematician", "illustrator", "language", "debate", "interactive",
+}
+_INTERACTIVE_FORBIDDEN_MARKUP = re.compile(
+    r"<\s*/?\s*(?:html|head|body|object|embed|base|meta)\b|<!doctype",
+    re.IGNORECASE,
+)
+_INTERACTIVE_NATIVE_BRIDGE = re.compile(
+    r"(?:window\s*\.\s*)?webkit\s*\.\s*messageHandlers",
+    re.IGNORECASE,
+)
+_INTERACTIVE_FORBIDDEN_SCHEME = re.compile(
+    # Match executable/privileged URL schemes, not harmless labels such as
+    # "JavaScript: ready" or "Penpal: permission denied".
+    r"(?:file|penpal)\s*://"
+    r"|javascript\s*:(?!\s)"
+    r"|data\s*:\s*text/html",
+    re.IGNORECASE,
+)
+_INTERACTIVE_URL = re.compile(
+    r"\b(?:https?|wss?)://[^\s\"'<>`]+",
+    re.IGNORECASE,
+)
+_INTERACTIVE_ALLOWED_CAPABILITIES = {
+    "camera", "microphone", "location",
+    "clipboard.read", "clipboard.write",
+    "files.read", "files.write", "downloads", "storage.large",
+}
+_INTERACTIVE_DEPENDENCY_KINDS = {
+    "script", "module", "style", "wasm", "worker", "python",
+}
+
+
+def _public_runtime_host(raw: Any) -> str | None:
+    """Return a normalized public host, rejecting app/local network targets."""
+    value = str(raw or "").strip().lower().rstrip(".")
+    if not value:
+        return None
+    parsed = urlparse(value if "://" in value else f"https://{value}")
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host or host == "localhost" or host.endswith((".local", ".internal")):
+        return None
+    try:
+        address = ipaddress.ip_address(host)
+        return host if address.is_global else None
+    except ValueError:
+        pass
+    if "." not in host:
+        return None
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    if len(host) > 253 or not all(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        for label in host.split(".")
+    ):
+        return None
+    return host
+
+
+def _clean_interactive_manifest(raw: Any, source: str) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    domains: dict[str, str] = {}
+    for item in (raw.get("domains") or [])[:24]:
+        if not isinstance(item, dict):
+            continue
+        host = _public_runtime_host(item.get("host"))
+        if not host:
+            continue
+        reason = " ".join(str(item.get("reason") or "Access this domain.").split())
+        domains[host] = reason[:160]
+
+    dependencies: list[dict[str, str]] = []
+    for item in (raw.get("dependencies") or [])[:24]:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()[:1500]
+        parsed = urlparse(url)
+        host = _public_runtime_host(url)
+        kind = str(item.get("kind") or "script").strip().lower()
+        if (parsed.scheme != "https" or not host or parsed.username
+                or parsed.password or kind not in _INTERACTIVE_DEPENDENCY_KINDS):
+            continue
+        clean = {"url": url, "kind": kind}
+        integrity = str(item.get("integrity") or "").strip()[:200]
+        if integrity:
+            clean["integrity"] = integrity
+        dependencies.append(clean)
+        domains.setdefault(host, f"Load the declared {kind} dependency.")
+
+    # A missing declaration never becomes a silent network grant. Discover
+    # literal public URLs and put their hosts in the consent manifest.
+    for match in _INTERACTIVE_URL.findall(html_lib.unescape(source)):
+        parsed = urlparse(match.rstrip(").,;"))
+        if parsed.scheme in {"http", "ws"}:
+            raise GeminiError("Interactive output used insecure HTTP.")
+        host = _public_runtime_host(match)
+        if not host:
+            raise GeminiError("Interactive output referenced a local or private host.")
+        domains.setdefault(host, "Access an external resource used by this block.")
+
+    capabilities: list[dict[str, str]] = []
+    seen_capabilities: set[str] = set()
+    for item in (raw.get("capabilities") or [])[:16]:
+        if not isinstance(item, dict):
+            continue
+        capability = str(item.get("id") or "").strip().lower()
+        if capability not in _INTERACTIVE_ALLOWED_CAPABILITIES:
+            continue
+        if capability in seen_capabilities:
+            continue
+        seen_capabilities.add(capability)
+        reason = " ".join(str(item.get("reason") or "Use this capability.").split())
+        capabilities.append({"id": capability, "reason": reason[:160]})
+
+    return {
+        "version": 1,
+        "domains": [
+            {"host": host, "reason": reason}
+            for host, reason in sorted(domains.items())
+        ],
+        "capabilities": capabilities,
+        "dependencies": dependencies,
+    }
+
+
+def _clean_interactive_result(raw: Any) -> dict[str, Any]:
+    """Validate model output before it reaches the isolated web runtime."""
+    if not isinstance(raw, dict):
+        raise GeminiError("Interactive output was not an object.")
+
+    source = str(raw.get("html") or "").strip()
+    if not source or "<" not in source:
+        raise GeminiError("Interactive output did not contain HTML.")
+    if len(source) > _INTERACTIVE_MAX_HTML:
+        raise GeminiError("Interactive output was too large.")
+
+    # Decode entities for validation because WebKit will decode them too.
+    inspected = html_lib.unescape(source)
+    if _INTERACTIVE_FORBIDDEN_MARKUP.search(inspected):
+        raise GeminiError("Interactive output used a forbidden HTML element.")
+    if _INTERACTIVE_NATIVE_BRIDGE.search(inspected):
+        raise GeminiError(
+            "Interactive output used window.webkit; use window.penpal.runtime instead."
+        )
+    if _INTERACTIVE_FORBIDDEN_SCHEME.search(inspected):
+        raise GeminiError("Interactive output used a forbidden local or executable URL.")
+
+    try:
+        preferred_height = int(raw.get("preferred_height") or 320)
+    except (TypeError, ValueError):
+        preferred_height = 320
+
+    reply = _clean_reply(str(raw.get("reply") or "I made an interactive block."))
+    title = " ".join(_fold_for_ink(str(raw.get("title") or "Interactive")).split())
+    result = {
+        "reply": reply[:180] or "I made an interactive block.",
+        "title": title[:80] or "Interactive",
+        "html": source,
+        "preferred_height": min(520, max(180, preferred_height)),
+        "manifest": _clean_interactive_manifest(raw.get("manifest"), source),
+    }
+    return result
+
+
+def _needs_agentic_interactive_build(message: str) -> bool:
+    """Route genuinely complex browser apps through a bounded review loop."""
+    lower = message.lower()
+    signals = (
+        "3d", "webgl", "webgpu", "physics", "pendulum", "simulation",
+        "game", "multiplayer", "neural", "classifier", "editor", "dashboard",
+        "pyodide", "python", "webassembly", "worker", "real-time", "realtime",
+        "multiple scenes", "decision boundary", "trajectory",
+    )
+    score = sum(1 for signal in signals if signal in lower)
+    return score >= 2 or len(message) >= 420
+
+
+def _review_interactive_candidate(
+    client: genai.Client,
+    message: str,
+    candidate: dict[str, Any],
+) -> list[str]:
+    """Return concrete repair issues; malformed review fails open."""
+    review_payload = json.dumps(candidate, ensure_ascii=False)
+    last_error = ""
+    for attempt in range(2):
+        try:
+            response = client.models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=[types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(
+                        text=f"USER REQUEST:\n{message}\n\nCANDIDATE:\n{review_payload}"
+                    )],
+                )],
+                config=types.GenerateContentConfig(
+                    system_instruction=INTERACTIVE_REVIEW_PROMPT,
+                    temperature=0.0,
+                    max_output_tokens=4000,
+                    response_mime_type="application/json",
+                    # The review is tiny and deterministic. Disabling visible
+                    # thinking prevents the model consuming its whole response
+                    # budget before emitting the verdict.
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
+            _account(settings.GEMINI_MODEL, response)
+            raw = _parse_json_block(_extract_text(response))
+            if not isinstance(raw, dict) or str(raw.get("verdict")) != "repair":
+                return []
+            issues = raw.get("issues")
+            if not isinstance(issues, list):
+                return []
+            return [" ".join(str(issue).split())[:300]
+                    for issue in issues[:8] if str(issue).strip()]
+        except Exception as exc:  # noqa: BLE001 — valid build remains usable
+            last_error = str(exc)
+            if attempt == 0:
+                continue
+    logger.warning(
+        "Interactive quality review unavailable after retry; "
+        "using the validated candidate: %s",
+        last_error,
+    )
+    return []
+
+
+def generate_interactive_block(
+    message: str,
+    history: list[dict[str, Any]] | None = None,
+    capability: str = "interactive",
+    language: str = "",
+    math_detail: str = "compact",
+) -> dict[str, Any]:
+    """Generate a browser block, using a bounded agent loop when warranted."""
+    message = (message or "").strip()
+    if not message:
+        raise GeminiError("Message is empty.")
+
+    capability = (capability or "interactive").strip().lower()
+    if capability not in _INTERACTIVE_CAPABILITIES:
+        capability = "interactive"
+    context = (
+        f"[Specialty: {capability}]\n"
+        f"[Language: {(language or 'not specified').strip()[:40]}]\n"
+        f"[Math detail: {(math_detail or 'compact').strip()[:20]}]\n"
+        f"{message}"
+    )
+    client = _client()
+    base_contents = _build_contents(history, context)
+    agentic = _needs_agentic_interactive_build(message)
+    feedback: list[str] = []
+    # Keep one spare generation for empty/truncated model responses. Complex
+    # builds get another pass for the actual reviewer-directed repair.
+    attempts = 3 if agentic else 2
+    candidate: dict[str, Any] | None = None
+
+    for attempt in range(attempts):
+        contents = list(base_contents)
+        if feedback:
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part.from_text(
+                    text="Repair the build and return the complete JSON again.\n"
+                         + "\n".join(f"- {issue}" for issue in feedback)
+                )],
+            ))
+        try:
+            response = client.models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=INTERACTIVE_SYSTEM_PROMPT,
+                    temperature=0.35 if attempt == 0 else 0.2,
+                    top_p=0.9,
+                    # Thinking-class Gemini models spend this same budget on
+                    # hidden reasoning. A complex app can otherwise consume
+                    # the full 16k before emitting the first JSON token.
+                    max_output_tokens=32_000,
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(thinking_budget=2048),
+                ),
+            )
+            _account(settings.GEMINI_MODEL, response)
+            candidate = _clean_interactive_result(
+                _parse_json_block(_extract_text(response))
+            )
+        except GeminiError as exc:
+            if candidate is not None:
+                logger.exception("Interactive repair failed; keeping valid draft")
+                break
+            if attempt + 1 < attempts:
+                logger.warning("Retrying invalid interactive build: %s", exc)
+                feedback = [f"The previous build was invalid: {exc}"]
+                continue
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if candidate is not None:
+                logger.exception("Interactive repair failed; keeping valid draft")
+                break
+            if attempt + 1 < attempts:
+                logger.warning("Retrying malformed interactive build: %s", exc)
+                feedback = [
+                    "The previous response was empty, truncated, or malformed. "
+                    "Return one complete JSON object before the output limit."
+                ]
+                continue
+            logger.exception("Interactive block generation failed")
+            raise GeminiError("Gemini returned malformed interactive output.") from exc
+
+        if not agentic:
+            break
+        feedback = _review_interactive_candidate(client, message, candidate)
+        if not feedback:
+            break
+
+    if candidate is None:
+        raise GeminiError("Gemini returned no interactive build.")
+    candidate["build_mode"] = "agentic" if agentic else "single"
+    candidate["iterations"] = attempt + 1
+    return candidate
+
+
+def repair_interactive_block(
+    html: str,
+    manifest: dict[str, Any] | None,
+    diagnostics: list[dict[str, Any]] | None,
+    title: str = "Interactive Block",
+) -> dict[str, Any]:
+    """Investigate and repair one failing block with a bounded agent loop."""
+    html = str(html or "").strip()
+    if not html or len(html) > _INTERACTIVE_MAX_HTML:
+        raise GeminiError("Interactive source is empty or too large.")
+
+    safe_diagnostics: list[dict[str, Any]] = []
+    for item in (diagnostics or [])[:6]:
+        if not isinstance(item, dict):
+            continue
+        safe_diagnostics.append({
+            "kind": " ".join(str(item.get("kind") or "runtime").split())[:40],
+            "message": " ".join(str(item.get("message") or "Unknown failure").split())[:400],
+            "source": str(item.get("source") or "").split("?")[0][:300],
+            "line": item.get("line") if isinstance(item.get("line"), int) else None,
+            "column": item.get("column") if isinstance(item.get("column"), int) else None,
+        })
+    if not safe_diagnostics:
+        raise GeminiError("No runtime diagnostics were supplied.")
+
+    safe_manifest = _clean_interactive_manifest(manifest, html)
+    payload = json.dumps({
+        "title": str(title or "Interactive Block")[:80],
+        "manifest": safe_manifest,
+        "diagnostics": safe_diagnostics,
+        "html": html,
+    }, ensure_ascii=False)
+    base_contents = [types.Content(
+        role="user",
+        parts=[types.Part.from_text(
+            text="Investigate and repair this failing interactive block:\n" + payload
+        )],
+    )]
+    client = _client()
+    candidate: dict[str, Any] | None = None
+    diagnosis = ""
+    feedback: list[str] = []
+
+    for attempt in range(2):
+        contents = list(base_contents)
+        if feedback:
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part.from_text(
+                    text="The repair review found these remaining problems. "
+                         "Return the corrected complete JSON:\n"
+                         + "\n".join(f"- {issue}" for issue in feedback)
+                )],
+            ))
+        try:
+            response = client.models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=(
+                        INTERACTIVE_SYSTEM_PROMPT + "\n\n" + INTERACTIVE_REPAIR_PROMPT
+                    ),
+                    temperature=0.15,
+                    top_p=0.85,
+                    max_output_tokens=32_000,
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(thinking_budget=3072),
+                ),
+            )
+            _account(settings.GEMINI_MODEL, response)
+            raw = _parse_json_block(_extract_text(response))
+            candidate = _clean_interactive_result(raw)
+            if isinstance(raw, dict):
+                diagnosis = " ".join(
+                    str(raw.get("diagnosis") or raw.get("reply") or "").split()
+                )[:400]
+        except Exception as exc:  # noqa: BLE001
+            if candidate is not None:
+                logger.exception("Interactive repair revision failed; keeping first repair")
+                break
+            if attempt == 0:
+                logger.warning("Retrying malformed interactive repair: %s", exc)
+                feedback = [
+                    "The previous repair was empty, malformed, or failed validation."
+                ]
+                continue
+            logger.exception("Interactive self-healing failed")
+            if isinstance(exc, GeminiError):
+                raise
+            raise GeminiError("Gemini could not produce a valid repair.") from exc
+
+        feedback = _review_interactive_candidate(
+            client,
+            "Repair the supplied runtime failures without changing requested behavior.",
+            candidate,
+        )
+        if not feedback:
+            break
+
+    if candidate is None:
+        raise GeminiError("Gemini returned no valid repair.")
+    candidate["diagnosis"] = diagnosis or "Repaired the reported runtime failure."
+    candidate["build_mode"] = "self_heal"
+    candidate["iterations"] = attempt + 1
+    return candidate
 
 
 def generate_reply(

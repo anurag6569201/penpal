@@ -233,6 +233,45 @@ enum CodedPaper {
     </div>
     """
 
+    /// Generated fragments receive browser power through a per-block policy.
+    /// The CSP is rebuilt from consented domains on every load; native
+    /// navigation policy remains the second boundary.
+    static func interactiveDocument(
+        from source: String,
+        contentSecurityPolicy: String = InteractiveRuntimePolicy
+            .contentSecurityPolicy(persistentDomains: [])
+    ) -> String {
+        """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy)">
+        <style>
+          :root { color-scheme: light dark; }
+          html, body { margin: 0; height: 100%; background: transparent; }
+          body {
+            overflow: hidden;
+            font: 15px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+            color: #1c1c1e;
+            -webkit-text-size-adjust: 100%;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+            touch-action: manipulation;
+          }
+          button, input, select { font: inherit; }
+          @media (prefers-color-scheme: dark) { body { color: #ececf0; } }
+        </style>
+        </head>
+        <body data-penpal-kind="interactive">
+        \(source)
+        </body>
+        </html>
+        """
+    }
+
     /// Wraps a code block's source in a tight, transparent document (no page
     /// padding), so the asset fills its frame and blends into the paper.
     static func blockDocument(from source: String) -> String {

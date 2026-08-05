@@ -26,7 +26,7 @@ import SwiftUI
 // MARK: - On-page asset (UIKit)
 
 final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDelegate,
-                           WKScriptMessageHandler {
+                           WKUIDelegate, WKScriptMessageHandler {
 
     /// Documents loaded with `baseURL: nil` get a NULL origin: WebKit then
     /// refuses storage, denies resource loads ("Couldn't open … Permission
@@ -1366,11 +1366,36 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     private(set) var block: CodeBlock
 
     private let webView: WKWebView
+    private var isGeneratedInteractive: Bool {
+        block.resolvedKind == .interactive
+    }
+    private var resolvedContentBaseURL: URL? {
+        guard isGeneratedInteractive else { return Self.contentBaseURL }
+        let host = "block-\(block.id.uuidString.lowercased()).interactive.penpal.invalid"
+        return URL(string: "https://\(host)/")
+    }
+    private var runtimeDomains: [String] {
+        InteractiveRuntimePolicy.normalizedDomains(
+            persistent: block.runtime?.allowedDomains ?? [],
+            session: InteractiveRuntimeStorage.domains(for: block.id)
+        )
+    }
+    private var runtimeCapabilities: [String] {
+        Array(Set(
+            (block.runtime?.allowedCapabilities ?? [])
+            + InteractiveRuntimeStorage.capabilities(for: block.id)
+        )).sorted()
+    }
     private let outline = CAShapeLayer()
     /// Quiet "accepting input" ring shown while the block is active.
     private let activeRing = CAShapeLayer()
     private var handles: [UIView] = []
     private let toolbar = UIStackView()
+    private let repairStatusPill = UIView()
+    private let repairStatusStack = UIStackView()
+    private let repairStatusLabel = UILabel()
+    private let repairStatusSpinner = UIActivityIndicatorView(style: .medium)
+    private var repairStatusHide: DispatchWorkItem?
     private lazy var contextButton = makeMenuButton(
         system: block.resolvedKind.toolbarIcon,
         menu: makeContextMenu()
@@ -1385,6 +1410,19 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     var onDuplicate: ((CodeBlockView) -> Void)?
     var onBringForward: ((CodeBlockView) -> Void)?
     var onSendBackward: ((CodeBlockView) -> Void)?
+    var onPermissionRequest: ((
+        InteractivePermissionPrompt,
+        @escaping (InteractivePermissionDecision) -> Void
+    ) -> Void)?
+    var onRepairNeeded: ((CodeBlockView, [InteractiveRuntimeDiagnostic]) -> Void)?
+    private var lastRuntimeHeartbeat = Date()
+    private var runtimePromptCount = 0
+    private var runtimeDiagnostics: [InteractiveRuntimeDiagnostic] = []
+    private var repairDebounce: DispatchWorkItem?
+    private var repairInFlight = false
+    private var runtimeWatchdog: Timer?
+    private var repairRollbackBlock: CodeBlock?
+    private var repairStabilityCheck: DispatchWorkItem?
 
     private var isEditing = false
     private let minSize = CGSize(width: 80, height: 60)
@@ -1455,27 +1493,69 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         self.block = block
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
+        let generatedInteractive = block.resolvedKind == .interactive
+        if generatedInteractive {
+            // One durable WebKit profile per block: browser storage survives a
+            // reopen, while the UUID-bound store and origin prevent any block
+            // from seeing another block or Penpal's own data.
+            config.websiteDataStore = InteractiveRuntimeStorage.dataStore(
+                for: block.id
+            )
+        }
         // A block is meant to RUN — be explicit rather than relying on the
         // default, which has changed across WebKit versions.
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        config.userContentController.addUserScript(WKUserScript(
-            source: Self.editingBridgeJavaScript,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        ))
+        if generatedInteractive {
+            let persistentDomains = block.runtime?.allowedDomains ?? []
+            let sessionDomains = InteractiveRuntimeStorage.domains(for: block.id)
+            let domains = InteractiveRuntimePolicy.normalizedDomains(
+                persistent: persistentDomains,
+                session: sessionDomains
+            )
+            let capabilities = Array(Set(
+                (block.runtime?.allowedCapabilities ?? [])
+                + InteractiveRuntimeStorage.capabilities(for: block.id)
+            )).sorted()
+            config.userContentController.addUserScript(WKUserScript(
+                source: InteractiveRuntimeBridge.javaScript(
+                    domains: domains,
+                    capabilities: capabilities
+                ),
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
+        } else {
+            config.userContentController.addUserScript(WKUserScript(
+                source: Self.editingBridgeJavaScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            ))
+        }
         webView = WKWebView(frame: .zero, configuration: config)
         super.init(frame: block.frame)
-        config.userContentController.add(self, name: "penpalBlockChanged")
+        if generatedInteractive {
+            config.userContentController.add(self, name: "penpalRuntime")
+        } else {
+            config.userContentController.add(self, name: "penpalBlockChanged")
+        }
         setup()
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         reload()
+        if generatedInteractive { startRuntimeWatchdog() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
+        repairDebounce?.cancel()
+        repairStabilityCheck?.cancel()
+        repairStatusHide?.cancel()
+        runtimeWatchdog?.invalidate()
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "penpalBlockChanged")
+        webView.configuration.userContentController
+            .removeScriptMessageHandler(forName: "penpalRuntime")
     }
 
     private func setup() {
@@ -1502,6 +1582,30 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         if #available(iOS 16.4, *) { webView.isInspectable = true }
         #endif
         addSubview(webView)
+
+        repairStatusPill.backgroundColor = UIColor(Pen.paperRaised)
+            .withAlphaComponent(0.96)
+        repairStatusPill.layer.cornerRadius = 15
+        repairStatusPill.layer.cornerCurve = .continuous
+        repairStatusPill.layer.shadowColor = UIColor.black.cgColor
+        repairStatusPill.layer.shadowOpacity = 0.14
+        repairStatusPill.layer.shadowRadius = 7
+        repairStatusPill.layer.shadowOffset = CGSize(width: 0, height: 2)
+        repairStatusPill.isUserInteractionEnabled = false
+        repairStatusPill.isHidden = true
+
+        repairStatusSpinner.hidesWhenStopped = true
+        repairStatusSpinner.color = UIColor(Pen.inkAccent)
+        repairStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        repairStatusLabel.textColor = UIColor(Pen.inkPrimary)
+        repairStatusLabel.numberOfLines = 1
+        repairStatusStack.axis = .horizontal
+        repairStatusStack.alignment = .center
+        repairStatusStack.spacing = 7
+        repairStatusStack.addArrangedSubview(repairStatusSpinner)
+        repairStatusStack.addArrangedSubview(repairStatusLabel)
+        repairStatusPill.addSubview(repairStatusStack)
+        addSubview(repairStatusPill)
 
         // Live ring (normal mode, active only). Below the ink visually, like
         // the block itself — it marks the block, it doesn't float over ink.
@@ -1586,7 +1690,83 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if isGeneratedInteractive {
+            lastRuntimeHeartbeat = .now
+            scheduleRepairStabilityCheck()
+        }
         applyBlockMode()
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard isGeneratedInteractive else {
+            decisionHandler(.allow)
+            return
+        }
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.cancel)
+            return
+        }
+        if url.scheme == "about" {
+            decisionHandler(.allow)
+            return
+        }
+        if let allowed = resolvedContentBaseURL,
+           url.scheme == allowed.scheme,
+           url.host == allowed.host {
+            decisionHandler(.allow)
+            return
+        }
+        if navigationAction.targetFrame?.isMainFrame == false,
+           url.scheme == "https",
+           let host = url.host,
+           runtimeDomains.contains(host.lowercased()) {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        guard !isGeneratedInteractive else { return nil }
+        if navigationAction.targetFrame == nil {
+            webView.load(navigationAction.request)
+        }
+        return nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        guard isGeneratedInteractive else {
+            decisionHandler(.prompt)
+            return
+        }
+        let granted = Set(runtimeCapabilities)
+        let permitted: Bool
+        switch type {
+        case .camera:
+            permitted = granted.contains("camera")
+        case .microphone:
+            permitted = granted.contains("microphone")
+        case .cameraAndMicrophone:
+            permitted = granted.contains("camera") && granted.contains("microphone")
+        @unknown default:
+            permitted = false
+        }
+        decisionHandler(permitted ? .grant : .deny)
     }
 
     /// WKWebView won't raise the keyboard for a *programmatic* focus unless it
@@ -1721,6 +1901,18 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
                     [weak self] _ in self?.reload()
                 },
             ])
+        case .interactive:
+            return UIMenu(title: "Interactive Block", children: [
+                UIAction(title: "Diagnose & Repair", image: UIImage(systemName: "wand.and.stars")) {
+                    [weak self] _ in self?.requestManualRepair()
+                },
+                UIAction(title: "Edit Source", image: UIImage(systemName: "pencil")) {
+                    [weak self] _ in guard let self else { return }; self.onEditCode?(self)
+                },
+                UIAction(title: "Restart", image: UIImage(systemName: "arrow.clockwise")) {
+                    [weak self] _ in self?.reload()
+                },
+            ])
         case .code:
             return UIMenu(title: "Code Block", children: [
                 UIAction(title: "Edit Source", image: UIImage(systemName: "pencil")) {
@@ -1736,12 +1928,29 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     // MARK: Content
 
     func reload() {
-        webView.loadHTMLString(CodedPaper.blockDocument(from: block.html),
-                               baseURL: Self.contentBaseURL)
+        if isGeneratedInteractive { refreshRuntimeBridge() }
+        let document: String
+        if isGeneratedInteractive {
+            let policy = InteractiveRuntimePolicy.contentSecurityPolicy(
+                persistentDomains: block.runtime?.allowedDomains ?? [],
+                sessionDomains: InteractiveRuntimeStorage.domains(for: block.id)
+            )
+            document = CodedPaper.interactiveDocument(
+                from: block.html,
+                contentSecurityPolicy: policy
+            )
+        } else {
+            document = CodedPaper.blockDocument(from: block.html)
+        }
+        webView.loadHTMLString(document, baseURL: resolvedContentBaseURL)
     }
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
+        if message.name == "penpalRuntime" {
+            handleRuntimeMessage(message)
+            return
+        }
         guard message.name == "penpalBlockChanged",
               let body = message.body as? [String: Any],
               let html = body["html"] as? String,
@@ -1750,6 +1959,323 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         block.html = html
         if block.kind == nil { block.kind = block.resolvedKind }
         onChange?(block)
+    }
+
+    private func refreshRuntimeBridge() {
+        guard isGeneratedInteractive else { return }
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(
+            source: InteractiveRuntimeBridge.javaScript(
+                domains: runtimeDomains,
+                capabilities: runtimeCapabilities
+            ),
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+    }
+
+    private func handleRuntimeMessage(_ message: WKScriptMessage) {
+        guard isGeneratedInteractive,
+              let body = message.body as? [String: Any],
+              let type = body["type"] as? String else { return }
+        if type == "heartbeat" {
+            lastRuntimeHeartbeat = .now
+            return
+        }
+        if type == "diagnostic" {
+            guard let value = body["value"] as? String,
+                  let data = value.data(using: .utf8),
+                  let diagnostic = try? JSONDecoder().decode(
+                    InteractiveRuntimeDiagnostic.self,
+                    from: data
+                  ) else { return }
+            enqueueRuntimeDiagnostic(diagnostic)
+            return
+        }
+        guard let requestID = body["id"] as? String,
+              let value = body["value"] as? String else { return }
+        let reason = String((body["reason"] as? String ?? "Requested by this block")
+            .prefix(160))
+
+        let target: InteractivePermissionTarget
+        switch type {
+        case "domain":
+            guard let host = InteractiveRuntimePolicy.normalizePublicHost(value) else {
+                resolveRuntimeRequest(
+                    requestID,
+                    granted: false,
+                    error: "Local and private network targets are unavailable."
+                )
+                return
+            }
+            if runtimeDomains.contains(host) {
+                resolveRuntimeRequest(requestID, granted: true)
+                return
+            }
+            target = .domain(host: host, reason: reason)
+        case "capability":
+            let capability = value.lowercased()
+            guard InteractiveRuntimePolicy.supportedCapabilities.contains(capability) else {
+                resolveRuntimeRequest(
+                    requestID,
+                    granted: false,
+                    error: "That capability is unavailable."
+                )
+                return
+            }
+            if runtimeCapabilities.contains(capability) {
+                resolveRuntimeRequest(requestID, granted: true)
+                return
+            }
+            target = .capability(id: capability, reason: reason)
+        default:
+            resolveRuntimeRequest(requestID, granted: false, error: "Unknown request.")
+            return
+        }
+
+        let prompt = InteractivePermissionPrompt(
+            blockID: block.id,
+            blockTitle: block.runtime?.title ?? "Interactive Block",
+            target: target
+        )
+        if InteractiveRuntimeStorage.isDenied(target, for: block.id) {
+            resolveRuntimeRequest(requestID, granted: false)
+            return
+        }
+        guard runtimePromptCount < 8 else {
+            resolveRuntimeRequest(
+                requestID,
+                granted: false,
+                error: "Too many permission requests."
+            )
+            return
+        }
+        guard let onPermissionRequest else {
+            resolveRuntimeRequest(requestID, granted: false)
+            return
+        }
+        runtimePromptCount += 1
+        onPermissionRequest(prompt) { [weak self] decision in
+            guard let self else { return }
+            switch decision {
+            case .allowOnce:
+                InteractiveRuntimeStorage.allowOnce(target, for: self.block.id)
+            case .alwaysAllow:
+                var runtime = self.block.runtime ?? InteractiveRuntimeMetadata()
+                switch target {
+                case .domain(let host, _):
+                    runtime.allowedDomains.append(host)
+                    runtime.allowedDomains = Array(Set(runtime.allowedDomains)).sorted()
+                case .capability(let id, _):
+                    runtime.allowedCapabilities.append(id)
+                    runtime.allowedCapabilities = Array(Set(runtime.allowedCapabilities)).sorted()
+                }
+                self.block.runtime = runtime
+                self.onChange?(self.block)
+            case .deny:
+                InteractiveRuntimeStorage.deny(target, for: self.block.id)
+            }
+            let granted = decision != .deny
+            if granted { self.refreshRuntimeBridge() }
+            self.resolveRuntimeRequest(requestID, granted: granted)
+            if granted, case .domain = target {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.reload()
+                }
+            }
+        }
+    }
+
+    private func enqueueRuntimeDiagnostic(
+        _ diagnostic: InteractiveRuntimeDiagnostic,
+        force: Bool = false
+    ) {
+        guard force || (block.runtime?.isAutoRepairEnabled ?? true) else { return }
+        if block.runtime?.completedRepairAttempts ?? 0 >= 2 {
+            if !rollbackFailedAutomaticRepairs() {
+                showRepairStatus(
+                    "Repair limit reached",
+                    spinning: false,
+                    hideAfter: 5
+                )
+            }
+            return
+        }
+        guard
+              !repairInFlight,
+              !runtimeDiagnostics.contains(diagnostic) else { return }
+        showRepairStatus("Issue detected", spinning: false)
+        repairStabilityCheck?.cancel()
+        runtimeDiagnostics.append(diagnostic)
+        if runtimeDiagnostics.count > 6 {
+            runtimeDiagnostics.removeFirst(runtimeDiagnostics.count - 6)
+        }
+        repairDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.repairInFlight,
+                  !self.runtimeDiagnostics.isEmpty else { return }
+            self.repairInFlight = true
+            self.showRepairStatus("PenPal repairing…", spinning: true)
+            var runtime = self.block.runtime ?? InteractiveRuntimeMetadata()
+            if self.repairRollbackBlock == nil {
+                self.repairRollbackBlock = self.block
+            }
+            runtime.repairAttempts = runtime.completedRepairAttempts + 1
+            self.block.runtime = runtime
+            self.onChange?(self.block)
+            guard let onRepairNeeded = self.onRepairNeeded else {
+                self.repairInFlight = false
+                self.showRepairStatus(
+                    "Repair unavailable",
+                    spinning: false,
+                    hideAfter: 4
+                )
+                return
+            }
+            onRepairNeeded(self, self.runtimeDiagnostics)
+        }
+        repairDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25, execute: work)
+    }
+
+    private func requestManualRepair() {
+        guard !repairInFlight else { return }
+        var runtime = block.runtime ?? InteractiveRuntimeMetadata()
+        runtime.repairAttempts = 0
+        runtime.lastRepairSummary = nil
+        block.runtime = runtime
+        onChange?(block)
+        enqueueRuntimeDiagnostic(InteractiveRuntimeDiagnostic(
+            kind: "manual",
+            message: "The user requested a proactive code inspection and repair.",
+            source: nil,
+            line: nil,
+            column: nil
+        ), force: true)
+    }
+
+    private func showRepairStatus(
+        _ text: String,
+        spinning: Bool,
+        hideAfter delay: TimeInterval? = nil
+    ) {
+        repairStatusHide?.cancel()
+        repairStatusLabel.text = text
+        if spinning {
+            repairStatusSpinner.startAnimating()
+        } else {
+            repairStatusSpinner.stopAnimating()
+        }
+        repairStatusPill.alpha = 1
+        repairStatusPill.isHidden = false
+        setNeedsLayout()
+        guard let delay else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            UIView.animate(withDuration: 0.2, animations: {
+                self.repairStatusPill.alpha = 0
+            }, completion: { _ in
+                self.repairStatusPill.isHidden = true
+                self.repairStatusPill.alpha = 1
+            })
+        }
+        repairStatusHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func scheduleRepairStabilityCheck() {
+        repairStabilityCheck?.cancel()
+        guard repairRollbackBlock != nil else { return }
+        let source = block.html
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  !self.repairInFlight,
+                  self.runtimeDiagnostics.isEmpty,
+                  self.block.html == source else { return }
+            // The repaired source has stayed healthy long enough to become
+            // the new rollback baseline. Keep the attempt count: resetting it
+            // here caused late recurring errors to trigger endless AI calls.
+            self.repairRollbackBlock = nil
+        }
+        repairStabilityCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
+    }
+
+    @discardableResult
+    func rollbackFailedAutomaticRepairs() -> Bool {
+        guard var rollback = repairRollbackBlock else { return false }
+        repairStabilityCheck?.cancel()
+        repairRollbackBlock = nil
+        var runtime = block.runtime ?? InteractiveRuntimeMetadata()
+        runtime.lastRepairSummary = "Automatic repairs remained unstable, so the previous source was restored."
+        rollback.runtime = runtime
+        apply(rollback)
+        onChange?(block)
+        showRepairStatus("↩ Previous version restored", spinning: false, hideAfter: 5)
+        return true
+    }
+
+    private func startRuntimeWatchdog() {
+        runtimeWatchdog?.invalidate()
+        runtimeWatchdog = Timer.scheduledTimer(
+            withTimeInterval: 4,
+            repeats: true
+        ) { [weak self] _ in
+            guard let self,
+                  self.window != nil,
+                  UIApplication.shared.applicationState == .active,
+                  Date().timeIntervalSince(self.lastRuntimeHeartbeat) > 10 else {
+                return
+            }
+            self.lastRuntimeHeartbeat = .now
+            self.enqueueRuntimeDiagnostic(InteractiveRuntimeDiagnostic(
+                kind: "unresponsive",
+                message: "The JavaScript event loop stopped responding.",
+                source: nil,
+                line: nil,
+                column: nil
+            ))
+        }
+    }
+
+    func completeAutomaticRepair(_ repaired: CodeBlock, summary: String) {
+        repairDebounce?.cancel()
+        repairStabilityCheck?.cancel()
+        runtimeDiagnostics = []
+        repairInFlight = false
+        var repaired = repaired
+        var runtime = repaired.runtime ?? block.runtime ?? InteractiveRuntimeMetadata()
+        runtime.lastRepairSummary = summary
+        repaired.runtime = runtime
+        apply(repaired)
+        onChange?(block)
+        showRepairStatus("✓ Repaired", spinning: false, hideAfter: 4)
+    }
+
+    func automaticRepairFailed(willRetry: Bool = false) {
+        repairDebounce?.cancel()
+        repairStabilityCheck?.cancel()
+        runtimeDiagnostics = []
+        repairInFlight = false
+        showRepairStatus(
+            willRetry ? "Repair failed — retrying…" : "Repair failed",
+            spinning: willRetry,
+            hideAfter: willRetry ? nil : 5
+        )
+    }
+
+    private func resolveRuntimeRequest(
+        _ id: String,
+        granted: Bool,
+        error: String = "Permission denied."
+    ) {
+        let values = [id, error]
+        guard let data = try? JSONEncoder().encode(values),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript(
+            "window.__penpalRuntimeResolve(\(json)[0], \(granted), \(json)[1])"
+        )
     }
 
     private func runBlockCommand(_ command: String) {
@@ -1762,6 +2288,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
     /// Apply an edited model (new code and/or geometry) and re-render.
     func apply(_ newBlock: CodeBlock) {
         let htmlChanged = newBlock.html != block.html
+        let runtimeChanged = newBlock.runtime != block.runtime
         let kindChanged = newBlock.resolvedKind != block.resolvedKind
         block = newBlock
         frame = newBlock.frame
@@ -1770,7 +2297,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
             contextButton.menu = makeContextMenu()
         }
         setNeedsLayout()
-        if htmlChanged { reload() }
+        if htmlChanged || runtimeChanged { reload() }
     }
 
     // MARK: Edit mode
@@ -1903,6 +2430,22 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
                              width: s, height: s)
         }
 
+        let statusFit = repairStatusStack.systemLayoutSizeFitting(
+            UIView.layoutFittingCompressedSize
+        )
+        let statusWidth = min(max(120, statusFit.width + 22), max(60, bounds.width - 16))
+        let statusHeight = max(30, statusFit.height + 10)
+        repairStatusPill.frame = CGRect(
+            x: (bounds.width - statusWidth) / 2,
+            y: 8,
+            width: statusWidth,
+            height: statusHeight
+        )
+        repairStatusStack.frame = repairStatusPill.bounds.insetBy(dx: 11, dy: 5)
+        if !repairStatusPill.isHidden {
+            bringSubviewToFront(repairStatusPill)
+        }
+
         // Size the toolbar to its content so the buttons never clip.
         let fit = toolbar.systemLayoutSizeFitting(
             UIView.layoutFittingCompressedSize,
@@ -1998,6 +2541,7 @@ private extension PageBlockKind {
     var toolbarIcon: String {
         switch self {
         case .code: "chevron.left.forwardslash.chevron.right"
+        case .interactive: "cursorarrow.click.2"
         case .mermaid: "point.3.connected.trianglepath.dotted"
         case .text: "text.quote"
         case .table: "tablecells"

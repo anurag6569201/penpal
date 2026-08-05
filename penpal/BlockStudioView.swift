@@ -26,32 +26,43 @@ struct BlockStudioView: View {
     /// cover. Toggled by the expand button in the toolbar.
     @Binding var expanded: Bool
     @State private var html: String
+    @State private var runtime: InteractiveRuntimeMetadata?
     @State private var mode: Mode
     /// The content as it was when the Studio opened, so Cancel can revert.
     @State private var original: String
+    @State private var originalRuntime: InteractiveRuntimeMetadata?
     @State private var autosaveTask: Task<Void, Never>?
     /// Sheet size when presented as a modal (ignored in full-screen). A normal
     /// medium card by default — the toolbar's expand button is there for when
     /// the user wants the roomy full-screen canvas.
     @State private var detent: PresentationDetent = .medium
 
-    private enum Mode: String, CaseIterable { case design, source }
+    private enum Mode: String, CaseIterable { case design, source, runtime }
 
     init(block: CodeBlock, expanded: Binding<Bool>, onSave: @escaping (CodeBlock) -> Void) {
         self.block = block
         self.onSave = onSave
         _expanded = expanded
         _html = State(initialValue: block.html)
+        _runtime = State(initialValue: block.runtime)
         _original = State(initialValue: block.html)
+        _originalRuntime = State(initialValue: block.runtime)
         // Kinds without live chrome yet still get a useful design surface
         // (editable content), so default everything to the live editor.
-        _mode = State(initialValue: .design)
+        _mode = State(initialValue:
+            block.resolvedKind == .interactive ? .runtime : .design)
     }
 
     /// Persist the given content back to the block on the page.
     private func persist(_ value: String) {
         var updated = block
         updated.html = value
+        var savedRuntime = runtime
+        if value != original {
+            savedRuntime?.repairAttempts = 0
+            savedRuntime?.lastRepairSummary = nil
+        }
+        updated.runtime = savedRuntime
         if updated.kind == nil { updated.kind = updated.resolvedKind }
         onSave(updated)
     }
@@ -72,7 +83,7 @@ struct BlockStudioView: View {
             Group {
                 switch mode {
                 case .design:
-                    LiveBlockEditor(html: $html)
+                    LiveBlockEditor(html: $html, block: block, runtime: runtime)
                 case .source:
                     TextEditor(text: $html)
                         .scrollContentBackground(.hidden)
@@ -81,6 +92,8 @@ struct BlockStudioView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.asciiCapable)
                         .padding(.horizontal, 8)
+                case .runtime:
+                    runtimePanel
                 }
             }
             .background(Pen.paper.ignoresSafeArea())
@@ -95,15 +108,19 @@ struct BlockStudioView: View {
                     Picker("Mode", selection: $mode) {
                         Image(systemName: "wand.and.stars").tag(Mode.design)
                         Image(systemName: "chevron.left.forwardslash.chevron.right").tag(Mode.source)
+                        if block.resolvedKind == .interactive {
+                            Image(systemName: "lock.shield").tag(Mode.runtime)
+                        }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 120)
+                    .frame(width: block.resolvedKind == .interactive ? 180 : 120)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     // Changes are auto-saved as you go, so Cancel explicitly
                     // reverts to how the block was when the Studio opened.
                     Button("Revert") {
                         autosaveTask?.cancel()
+                        runtime = originalRuntime
                         persist(original)
                         dismiss()
                     }
@@ -134,6 +151,137 @@ struct BlockStudioView: View {
         .presentationDragIndicator(.visible)
     }
 
+    private var runtimePanel: some View {
+        List {
+            Section {
+                Toggle("Automatic AI Repair", isOn: Binding(
+                    get: { runtime?.isAutoRepairEnabled ?? true },
+                    set: { enabled in
+                        var next = runtime ?? InteractiveRuntimeMetadata()
+                        next.autoRepairEnabled = enabled
+                        runtime = next
+                        persist(html)
+                    }
+                ))
+                LabeledContent(
+                    "Attempts",
+                    value: "\(runtime?.completedRepairAttempts ?? 0) of 2"
+                )
+                if let summary = runtime?.lastRepairSummary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.footnote)
+                        .foregroundStyle(Pen.inkFaded)
+                }
+                Button("Reset Repair Budget") {
+                    var next = runtime ?? InteractiveRuntimeMetadata()
+                    next.repairAttempts = 0
+                    next.lastRepairSummary = nil
+                    runtime = next
+                    persist(html)
+                }
+            } header: {
+                Text("Self-Healing")
+            } footer: {
+                Text("Only generated source and bounded error details are sent for repair—never the DOM, form values, private storage, or Penpal notes.")
+            }
+
+            Section("Private Browser Storage") {
+                LabeledContent("Isolation", value: "This block only")
+                LabeledContent(
+                    "Quota",
+                    value: ByteCountFormatter.string(
+                        fromByteCount: Int64(runtime?.storageQuotaBytes ?? 5 * 1024 * 1024),
+                        countStyle: .file
+                    )
+                )
+                Button("Clear Block Data", role: .destructive) {
+                    InteractiveRuntimeStorage.clearData(for: block.id)
+                }
+            }
+
+            Section("Allowed Domains") {
+                if (runtime?.allowedDomains ?? []).isEmpty {
+                    Text("No domains always allowed")
+                        .foregroundStyle(Pen.inkFaded)
+                } else {
+                    ForEach(runtime?.allowedDomains ?? [], id: \.self) { host in
+                        HStack {
+                            Label(host, systemImage: "network")
+                            Spacer()
+                            Button(role: .destructive) {
+                                runtime?.allowedDomains.removeAll { $0 == host }
+                                InteractiveRuntimeStorage.revoke(
+                                    .domain(host: host, reason: "Revoked"),
+                                    for: block.id
+                                )
+                                persist(html)
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            Section("Allowed Capabilities") {
+                if (runtime?.allowedCapabilities ?? []).isEmpty {
+                    Text("No capabilities always allowed")
+                        .foregroundStyle(Pen.inkFaded)
+                } else {
+                    ForEach(runtime?.allowedCapabilities ?? [], id: \.self) { item in
+                        HStack {
+                            Label(item, systemImage: "checkmark.shield")
+                            Spacer()
+                            Button(role: .destructive) {
+                                runtime?.allowedCapabilities.removeAll { $0 == item }
+                                InteractiveRuntimeStorage.revoke(
+                                    .capability(id: item, reason: "Revoked"),
+                                    for: block.id
+                                )
+                                persist(html)
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            if let manifest = runtime?.manifest {
+                Section("Requested Dependencies") {
+                    if manifest.dependencies.isEmpty {
+                        Text("No external libraries")
+                            .foregroundStyle(Pen.inkFaded)
+                    } else {
+                        ForEach(manifest.dependencies) { dependency in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(dependency.kind.capitalized)
+                                    .font(.caption.weight(.semibold))
+                                Text(dependency.url)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(Pen.inkFaded)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button("Reset Permissions", role: .destructive) {
+                    runtime?.allowedDomains = []
+                    runtime?.allowedCapabilities = []
+                    InteractiveRuntimeStorage.clearSession(for: block.id)
+                    persist(html)
+                }
+            } footer: {
+                Text("Interactive code never receives Penpal notes, credentials, or another block’s storage.")
+            }
+        }
+        .scrollContentBackground(.hidden)
+    }
+
     private var title: String {
         switch block.resolvedKind {
         case .text: "Text Studio"
@@ -142,6 +290,7 @@ struct BlockStudioView: View {
         case .image: "Image Studio"
         case .mermaid: "Diagram Studio"
         case .web: "Web Studio"
+        case .interactive: "Interactive Studio"
         case .code: "Code Studio"
         case .attachment: "Attachment Studio"
         }
@@ -155,6 +304,8 @@ struct BlockStudioView: View {
 /// on-page `CodeBlockView` so the Studio and the page can never diverge.
 private struct LiveBlockEditor: UIViewRepresentable {
     @Binding var html: String
+    let block: CodeBlock
+    let runtime: InteractiveRuntimeMetadata?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -190,6 +341,9 @@ private struct LiveBlockEditor: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        if block.resolvedKind == .interactive {
+            config.websiteDataStore = InteractiveRuntimeStorage.dataStore(for: block.id)
+        }
         config.userContentController.addUserScript(WKUserScript(
             source: CodeBlockView.editingBridgeJavaScript,
             injectionTime: .atDocumentEnd,
@@ -206,8 +360,7 @@ private struct LiveBlockEditor: UIViewRepresentable {
         if #available(iOS 16.4, *) { web.isInspectable = true }
         #endif
         context.coordinator.lastLoaded = html
-        web.loadHTMLString(CodedPaper.blockDocument(from: html),
-                           baseURL: CodeBlockView.contentBaseURL)
+        web.loadHTMLString(document(), baseURL: contentBaseURL)
         return web
     }
 
@@ -221,12 +374,33 @@ private struct LiveBlockEditor: UIViewRepresentable {
         }
         guard context.coordinator.lastLoaded != html else { return }
         context.coordinator.lastLoaded = html
-        web.loadHTMLString(CodedPaper.blockDocument(from: html),
-                           baseURL: CodeBlockView.contentBaseURL)
+        web.loadHTMLString(document(), baseURL: contentBaseURL)
     }
 
     static func dismantleUIView(_ web: WKWebView, coordinator: Coordinator) {
         web.configuration.userContentController
             .removeScriptMessageHandler(forName: "penpalBlockChanged")
+    }
+
+    private var contentBaseURL: URL? {
+        guard block.resolvedKind == .interactive else {
+            return CodeBlockView.contentBaseURL
+        }
+        let host = "block-\(block.id.uuidString.lowercased()).interactive.penpal.invalid"
+        return URL(string: "https://\(host)/")
+    }
+
+    private func document() -> String {
+        guard block.resolvedKind == .interactive else {
+            return CodedPaper.blockDocument(from: html)
+        }
+        let policy = InteractiveRuntimePolicy.contentSecurityPolicy(
+            persistentDomains: runtime?.allowedDomains ?? [],
+            sessionDomains: InteractiveRuntimeStorage.domains(for: block.id)
+        )
+        return CodedPaper.interactiveDocument(
+            from: html,
+            contentSecurityPolicy: policy
+        )
     }
 }

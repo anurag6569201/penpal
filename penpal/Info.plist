@@ -3,7 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Penpal uses the camera when you ask it about an external page, diagram, or whiteboard.</string>
+	<string>Penpal uses the camera for external pages and for an interactive block only after you approve that block.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Penpal lets an interactive block use the microphone only after you approve that block.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Penpal lets an interactive block use your location only after you approve that block.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

@@ -127,6 +127,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// True while ink is being OCR'd / math-parsed (the slow local read).
     var onReadingChange: ((Bool) -> Void)?
     var onStatus: ((String) -> Void)?
+    var onInteractivePermissionRequest: ((
+        InteractivePermissionPrompt,
+        @escaping (InteractivePermissionDecision) -> Void
+    ) -> Void)?
     var onDrawingChange: ((PKDrawing) -> Void)?
     var onUndoRedoChange: ((Bool, Bool) -> Void)?
     /// Fired whenever the typed (font-style) Penpal texts on this page change,
@@ -217,6 +221,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// baked into the PencilKit drawing so every markup tool can act on it.
     private var pendingBake: (strokes: [InkStroke], baseWidth: CGFloat,
                               bottomY: CGFloat, color: UIColor)?
+    /// Box gesture ink held on the page while its request is in flight. It is
+    /// dissolved at the exact moment the resulting ink starts appearing.
+    private var pendingBoxStrokes: [PKStroke]?
 
     /// Long-press deletion for typed content and any unmigrated legacy reply.
     private enum PenpalHit { case reply(UUID), typed(Int) }
@@ -473,6 +480,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // A reply that was still animating belongs to the previous note —
         // stop it and drop it so it can't leak onto this one.
         pendingBake = nil
+        pendingBoxStrokes = nil
         bakedUpTo = 0
         renderer.cancelWriting()
         renderer.clearInk()
@@ -617,6 +625,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     func clearDrawing() {
         pendingBake = nil
+        pendingBoxStrokes = nil
         bakedUpTo = 0
         renderer.cancelWriting()
         renderer.clearInk()
@@ -635,10 +644,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         publishUndoRedo()
     }
 
-    /// Snapshot stroke count so existing ink isn't treated as new Penpal input
-    /// when the Penpal pen is selected mid-note.
-    func syncReplyBaselineToCurrentInk() {
-        lastReplyStrokeCount = canvas.drawing.strokes.count
+    /// Entering Penpal mode must not consume handwriting created while it was
+    /// off. Stop any old idle timer so that pending ink waits for an explicit
+    /// Ask; the next new stroke can arm auto reply normally.
+    func prepareForPenpalActivation() {
+        idleTimer?.invalidate()
     }
 
     private func publishUndoRedo() {
@@ -774,7 +784,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         scrollToReveal(frame.minY)
 
         let strokes = plot.strokes
-        renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
+        dissolvePendingBoxIfNeeded()
+        renderer.write(
+            strokes,
+            baseWidth: baseWidth,
+            targetDuration: settings.replyWritingDuration,
+            onStrokeFinished: { [weak self] i in
             guard let self, i < strokes.count else { return }
             self.bakeStroke(strokes[i], baseWidth: baseWidth, color: self.bakedInkColor)
         }) { [weak self] in
@@ -829,7 +844,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onWritingStateChange?(true)
         scrollToReveal(frame.minY)
 
-        renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
+        dissolvePendingBoxIfNeeded()
+        renderer.write(
+            strokes,
+            baseWidth: baseWidth,
+            targetDuration: settings.replyWritingDuration,
+            onStrokeFinished: { [weak self] i in
             guard let self, i < strokes.count else { return }
             if !self.bakeStroke(strokes[i], baseWidth: baseWidth,
                                 color: self.bakedInkColor) {
@@ -985,7 +1005,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// the renderer's real state — rather than on a guessed delay — is what
     /// keeps that pacing honest when an answer runs long.
     private func afterWriting(_ body: @escaping () -> Void) {
-        guard renderer.isWriting else { body(); return }
+        guard renderer.isWriting || pendingBake != nil else { body(); return }
         writingCompletionQueue.append(body)
     }
 
@@ -1376,21 +1396,37 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         view.onSendBackward = { [weak self] v in
             self?.moveCodeBlockLayer(v, delta: -1)
         }
+        view.onPermissionRequest = { [weak self] prompt, completion in
+            guard let self, let handler = self.onInteractivePermissionRequest else {
+                completion(.deny)
+                return
+            }
+            handler(prompt, completion)
+        }
+        view.onRepairNeeded = { [weak self] view, diagnostics in
+            self?.repairInteractiveBlock(view, diagnostics: diagnostics)
+        }
         return view
     }
 
     /// Drop a new embedded block near the middle of the current viewport and
     /// enter edit mode so it can be positioned right away.
+    @discardableResult
     func insertCodeBlock(html: String = CodedPaper.blockStarterHTML,
                          kind: PageBlockKind = .code,
                          preferredHeight: CGFloat = 300,
-                         activateForInput: Bool = false) {
+                         activateForInput: Bool = false,
+                         atY requestedY: CGFloat? = nil,
+                         id: UUID = UUID(),
+                         runtime: InteractiveRuntimeMetadata? = nil) -> CGRect {
         let w = min(max(240, bounds.width - 48), 560)
         let h = min(max(100, preferredHeight), 520)
         let x = max(leftMargin, (bounds.width - w) / 2)
-        let y = max(0, canvas.contentOffset.y + max(24, (bounds.height - h) / 2))
-        let block = CodeBlock(html: html, kind: kind,
-                              x: x, y: y, width: w, height: h)
+        let viewportY = canvas.contentOffset.y + max(24, (bounds.height - h) / 2)
+        let y = max(0, requestedY ?? viewportY)
+        let block = CodeBlock(id: id, html: html, kind: kind,
+                              x: x, y: y, width: w, height: h,
+                              runtime: runtime)
         let view = makeCodeBlockView(block)
         canvas.addSubview(view)
         codeBlockViews.append(view)
@@ -1407,6 +1443,29 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
         growForCodeBlocks()
         persistCodeBlocks()
+        return block.frame
+    }
+
+    private func insertGeneratedInteractiveBlock(
+        id: UUID,
+        html: String,
+        preferredHeight: CGFloat,
+        runtime: InteractiveRuntimeMetadata
+    ) {
+        let y = max(lastReplyBottom + lineGap * 1.2, rulesTopInset + lineGap)
+        let frame = insertCodeBlock(
+            html: html,
+            kind: .interactive,
+            preferredHeight: preferredHeight,
+            activateForInput: true,
+            atY: y,
+            id: id,
+            runtime: runtime
+        )
+        lastReplyBottom = frame.maxY
+        ensureRoom(below: frame.maxY + lineGap * 2)
+        scrollToReveal(frame.minY)
+        publishForVoiceOver("Interactive block ready", isAnswer: false)
     }
 
     /// Images use the same embedded-asset model as code/diagram blocks, so
@@ -1575,6 +1634,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     private func removeCodeBlock(_ view: CodeBlockView) {
+        let runtimeID = view.block.resolvedKind == .interactive
+            ? view.block.id : nil
         if activeCodeBlock === view {
             activeCodeBlock = nil
             canvas.activeBlock = nil
@@ -1589,6 +1650,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         view.removeFromSuperview()
         codeBlockViews.removeAll { $0 === view }
         persistCodeBlocks()
+        if let runtimeID {
+            InteractiveRuntimeStorage.remove(blockIDs: [runtimeID])
+        }
     }
 
     private func duplicateCodeBlock(_ view: CodeBlockView) {
@@ -1598,6 +1662,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         copy.x += 24
         copy.y += 24
         copy.createdAt = .now
+        if copy.resolvedKind == .interactive {
+            copy.runtime?.allowedDomains = []
+            copy.runtime?.allowedCapabilities = []
+        }
         let duplicate = makeCodeBlockView(copy)
         canvas.addSubview(duplicate)
         codeBlockViews.insert(duplicate, at: index + 1)
@@ -1806,7 +1874,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // The idle check always runs: the instant calculator ("5+5=") works
         // in ANY mode, even with Penpal off. replyNow(auto:) decides what is
         // actually allowed to respond.
-        idleTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+        let usesImmediateGestureTrigger = penpalEnabled
+            && ["mathematician", "illustrator", "interactive"].contains(settings.capability)
+        let replyDelay = min(30, max(1, settings.autoReplyDelay))
+        let idleDelay = autoReply && !usesImmediateGestureTrigger ? replyDelay : 1.5
+        idleTimer = Timer.scheduledTimer(withTimeInterval: idleDelay, repeats: false) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in self.replyNow(auto: true) }
         }
@@ -1822,12 +1894,17 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     func sendTextMessage(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let wantsInteractive = PenpalAPI.shouldGenerateInteractive(
+            message: trimmed,
+            capability: settings.capability
+        )
         // PEN-17 — "plot x^2" / "y = sin(x)" is drawn here, on device, rather
         // than sent to the brain. Instant, offline, and free.
-        if let body = GraphPlotter.functionBody(in: trimmed), drawGraph(of: body) {
+        if !wantsInteractive,
+           let body = GraphPlotter.functionBody(in: trimmed), drawGraph(of: body) {
             return
         }
-        if settings.capability == "illustrator" {
+        if settings.capability == "illustrator", !wantsInteractive {
             requestIllustration(trimmed)
             return
         }
@@ -1856,6 +1933,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                          isUser: true)
         lastReplyBottom = userBottom
         lastReplyStrokeCount = canvas.drawing.strokes.count
+
+        if wantsInteractive {
+            requestInteractive(trimmed, placement: nil, sourceStrokes: [])
+            return
+        }
 
         if settings.capability == "language" || settings.capability == "debate" {
             let replyY = max(userBottom + lineGap, originY + lineGap)
@@ -1958,6 +2040,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         )
 
         if settings.replyStyle == "font" {
+            dissolvePendingBoxIfNeeded()
             let bottom = writeTypedReply(text, placement: placement)
             lastReplyBottom = bottom
             ensureRoom(below: bottom + lineGap * 2)
@@ -1981,6 +2064,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                                  allowSynthesis: !looksLikeMath(text))
         if sequence.clipped {
             InkUnity.shared.endSentence()
+            abandonPendingBox()
             addPage()
             onStatus?("Added a page — send again.")
             return
@@ -2000,7 +2084,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                   letterCount: max(1, letters))
         InkUnity.shared.endSentence()
 
-        guard !strokes.isEmpty else { return }
+        guard !strokes.isEmpty else {
+            abandonPendingBox()
+            return
+        }
         ensureRoom(below: bottomY + lineGap * 2)
         scrollToReveal(placement.origin.y)
 
@@ -2015,7 +2102,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             guard let self else { return }
             self.renderer.inkColor = bakeColor
             self.beginUndoableAction("Penpal Reply")   // PEN-14
-            self.renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
+            self.dissolvePendingBoxIfNeeded()
+            self.renderer.write(
+                strokes,
+                baseWidth: baseWidth,
+                targetDuration: self.settings.replyWritingDuration,
+                onStrokeFinished: { [weak self] i in
                 // Each finished stroke becomes real canvas ink immediately.
                 guard let self, let pending = self.pendingBake,
                       i < pending.strokes.count else { return }
@@ -2042,11 +2134,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Trigger rules, per mode:
     /// - On-device calculator: "=" when Penpal is off, or Penpal + Companion.
     ///   Penpal + Mathematician never uses it — "=" goes to the brain/LLM.
-    /// - Penpal + Mathematician / Illustrator: the BOX is the only automatic
-    ///   trigger. Nothing else fires while the user is writing — no Solve
-    ///   chip, no idle-pause send / sketch — because a request in these
-    ///   modes is often written across several pauses and interrupting it
-    ///   is worse than waiting.
+    /// - Penpal + Mathematician / Illustrator / Interactive: the BOX is the
+    ///   handwriting trigger. Nothing else fires while the user is writing —
+    ///   no Solve chip, idle-pause send, sketch, or generated block — because
+    ///   a request in these modes is often written across several pauses and
+    ///   interrupting it is worse than waiting.
     /// - Penpal + Companion: replies after the writing pause (as before).
     /// `auto` is true when the idle timer fired; false for an explicit
     /// "reply now" request from the user.
@@ -2060,13 +2152,17 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         guard !renderer.isWriting, pendingBake == nil, !brainBusy else { return }
 
         let all = canvas.drawing.strokes
-        guard all.count > lastReplyStrokeCount else { return }
+        guard all.count > lastReplyStrokeCount else {
+            if !auto { onStatus?("Write something new, then tap Ask.") }
+            return
+        }
         let newStart = lastReplyStrokeCount
         let newStrokes = Array(all[newStart...])
         lastReplyStrokeCount = all.count
 
         let mathematicianMode = penpalEnabled && settings.capability == "mathematician"
         let illustratorMode = penpalEnabled && settings.capability == "illustrator"
+        let interactiveMode = penpalEnabled && settings.capability == "interactive"
         let languageMode = penpalEnabled && settings.capability == "language"
         let debateMode = penpalEnabled && settings.capability == "debate"
 
@@ -2083,14 +2179,26 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             }
         }
 
-        // Boxed selection: Mathematician solves; Illustrator draws.
-        if (mathematicianMode || illustratorMode),
+        // Boxed selection: Mathematician solves, Illustrator draws, and
+        // Interactive builds a live block. These specialties wait for the box
+        // so a pause halfway through a handwritten prompt never sends it.
+        if (mathematicianMode || illustratorMode || interactiveMode),
            let box = InkAnalyzer.detectProblemBox(all: all, newStart: newStart) {
             if mathematicianMode {
                 solveBoxedProblem(box, all: all)
-            } else {
+            } else if illustratorMode {
                 illustrateBoxedRequest(box, all: all)
+            } else {
+                interactiveBoxedRequest(box, all: all)
             }
+            return
+        }
+
+        // Interactive handwriting only requires a box for automatic sends.
+        // The global Ask button is itself explicit intent, so it can safely
+        // submit the new loose ink without guessing whether the user paused.
+        if interactiveMode && auto {
+            lastReplyStrokeCount = newStart
             return
         }
 
@@ -2210,6 +2318,34 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 }
             }
 
+            let interactiveText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+            if self.penpalEnabled,
+               PenpalAPI.shouldGenerateInteractive(
+                   message: interactiveText,
+                   capability: self.settings.capability
+               ) {
+                guard !interactiveText.isEmpty else {
+                    self.lastReplyStrokeCount = newStart
+                    if !auto {
+                        self.onStatus?("Write what you'd like to make interactive.")
+                    }
+                    return
+                }
+                guard self.settings.useBrain else {
+                    self.lastReplyStrokeCount = newStart
+                    self.onStatus?(
+                        "Interactive blocks need the brain — enable it in Settings → Behavior."
+                    )
+                    return
+                }
+                self.requestInteractive(
+                    interactiveText,
+                    placement: placement,
+                    sourceStrokes: inkToRead
+                )
+                return
+            }
+
             if languageMode {
                 let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
                 guard !auto || self.settings.autoReply else {
@@ -2299,6 +2435,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     }
                     self.askBrain(bestText, placement: placement,
                                   capability: "mathematician", fallbackInk: nil)
+                } else if !auto {
+                    guard !bestText.isEmpty else {
+                        self.lastReplyStrokeCount = newStart
+                        self.onStatus?("Write a problem, then tap Ask.")
+                        return
+                    }
+                    guard self.settings.useBrain else {
+                        self.lastReplyStrokeCount = newStart
+                        self.onStatus?(
+                            "Solving this needs the brain — enable it in Settings → Behavior."
+                        )
+                        return
+                    }
+                    self.askBrain(bestText, placement: placement,
+                                  capability: "mathematician", fallbackInk: nil)
                 }
                 return
             }
@@ -2354,7 +2505,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 return
             }
 
-            guard self.penpalEnabled else { return }
+            guard self.penpalEnabled else {
+                // Ink written outside Penpal mode is still the user's newest
+                // turn. Do not consume it during the calculator/gesture idle
+                // scan; preserve it so Ask can send it after Penpal is enabled.
+                self.lastReplyStrokeCount = newStart
+                return
+            }
 
             let bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
 
@@ -2366,7 +2523,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 return
             }
 
-            guard !auto || self.settings.autoReply else { return }
+            guard !auto || self.settings.autoReply else {
+                // An idle detection pass must not consume the ink. Keeping
+                // this cursor at the previous turn is what lets Ask send only
+                // the current handwriting when auto reply is disabled.
+                self.lastReplyStrokeCount = newStart
+                return
+            }
 
             guard !trimmed.isEmpty else {
                 self.renderLocalReply(placement: placement, newStrokes: inkToRead)
@@ -2654,9 +2817,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 let label = illustration.label ?? "illustration"
                 store.append(role: "assistant", content: "I drew \(label).")
                 if !self.drawIllustration(illustration) {
+                    self.abandonPendingBox()
                     self.onWritingStateChange?(false)
                 }
             } catch {
+                self.abandonPendingBox()
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
@@ -2705,6 +2870,228 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 self.onStatus?(PenpalError.message(for: error))
                 if let ink = fallbackInk {
                     self.renderLocalReply(placement: placement, newStrokes: ink)
+                }
+            }
+        }
+    }
+
+    private func requestInteractive(
+        _ message: String,
+        placement: ReplyPlacement?,
+        sourceStrokes: [PKStroke]
+    ) {
+        guard settings.useBrain else {
+            onStatus?(
+                "Interactive blocks need the brain — enable it in Settings → Behavior."
+            )
+            return
+        }
+        onThinkingChange?(true)
+        onWritingStateChange?(true)
+        onStatus?("")
+        brainBusy = true
+
+        Task { @MainActor in
+            let store = ConversationStore.shared
+            do {
+                let result = try await PenpalAPI.interactive(
+                    message: message,
+                    conversationId: store.conversationId,
+                    history: store.historyForAPI(),
+                    baseURL: self.settings.apiBaseURL,
+                    capability: self.settings.capability,
+                    language: self.settings.targetLanguage,
+                    mathDetail: self.settings.mathDetail
+                )
+                let blockID = UUID()
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                let runtime = await self.prepareInteractiveRuntime(
+                    blockID: blockID,
+                    title: result.title,
+                    manifest: result.manifest ?? .empty
+                )
+                store.append(role: "user", content: message)
+                store.append(
+                    role: "assistant",
+                    content: "\(result.reply) [Interactive: \(result.title)]"
+                )
+
+                if let placement {
+                    self.renderReply(
+                        result.reply,
+                        placement: placement,
+                        matchStrokes: sourceStrokes
+                    )
+                } else {
+                    self.writeReplyText(result.reply)
+                }
+                self.afterWriting { [weak self] in
+                    self?.insertGeneratedInteractiveBlock(
+                        id: blockID,
+                        html: result.html,
+                        preferredHeight: CGFloat(result.preferred_height),
+                        runtime: runtime
+                    )
+                }
+                self.brainBusy = false
+            } catch {
+                self.abandonPendingBox()
+                self.brainBusy = false
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
+                self.onStatus?(PenpalError.message(for: error))
+            }
+        }
+    }
+
+    private func prepareInteractiveRuntime(
+        blockID: UUID,
+        title: String,
+        manifest: InteractiveManifest,
+        existing: InteractiveRuntimeMetadata? = nil
+    ) async -> InteractiveRuntimeMetadata {
+        var runtime = existing
+            ?? InteractiveRuntimeMetadata(title: title, manifest: manifest)
+        runtime.title = title
+        runtime.manifest = manifest
+        let requestedDomains = Set(manifest.domains.compactMap {
+            InteractiveRuntimePolicy.normalizePublicHost($0.host)
+        })
+        let requestedCapabilities = Set(manifest.capabilities.map(\.id))
+        runtime.allowedDomains.removeAll { !requestedDomains.contains($0) }
+        runtime.allowedCapabilities.removeAll {
+            !requestedCapabilities.contains($0)
+        }
+        for request in manifest.domains {
+            guard let host = InteractiveRuntimePolicy.normalizePublicHost(request.host) else {
+                continue
+            }
+            let target = InteractivePermissionTarget.domain(
+                host: host,
+                reason: request.reason
+            )
+            if runtime.allowedDomains.contains(host)
+                || InteractiveRuntimeStorage.domains(for: blockID).contains(host)
+                || InteractiveRuntimeStorage.isDenied(target, for: blockID) {
+                continue
+            }
+            let decision = await requestInteractivePermission(
+                blockID: blockID,
+                title: title,
+                target: target
+            )
+            switch decision {
+            case .allowOnce:
+                InteractiveRuntimeStorage.allowOnce(target, for: blockID)
+            case .alwaysAllow:
+                runtime.allowedDomains.append(host)
+            case .deny:
+                InteractiveRuntimeStorage.deny(target, for: blockID)
+            }
+        }
+        for request in manifest.capabilities
+        where InteractiveRuntimePolicy.supportedCapabilities.contains(request.id) {
+            let target = InteractivePermissionTarget.capability(
+                id: request.id,
+                reason: request.reason
+            )
+            if runtime.allowedCapabilities.contains(request.id)
+                || InteractiveRuntimeStorage.capabilities(for: blockID).contains(request.id)
+                || InteractiveRuntimeStorage.isDenied(target, for: blockID) {
+                continue
+            }
+            let decision = await requestInteractivePermission(
+                blockID: blockID,
+                title: title,
+                target: target
+            )
+            switch decision {
+            case .allowOnce:
+                InteractiveRuntimeStorage.allowOnce(target, for: blockID)
+            case .alwaysAllow:
+                runtime.allowedCapabilities.append(request.id)
+            case .deny:
+                InteractiveRuntimeStorage.deny(target, for: blockID)
+            }
+        }
+        runtime.allowedDomains = Array(Set(runtime.allowedDomains)).sorted()
+        runtime.allowedCapabilities = Array(Set(runtime.allowedCapabilities)).sorted()
+        return runtime
+    }
+
+    private func requestInteractivePermission(
+        blockID: UUID,
+        title: String,
+        target: InteractivePermissionTarget
+    ) async -> InteractivePermissionDecision {
+        guard let onInteractivePermissionRequest else { return .deny }
+        let prompt = InteractivePermissionPrompt(
+            blockID: blockID,
+            blockTitle: title,
+            target: target
+        )
+        return await withCheckedContinuation { continuation in
+            onInteractivePermissionRequest(prompt) { decision in
+                continuation.resume(returning: decision)
+            }
+        }
+    }
+
+    private func repairInteractiveBlock(
+        _ view: CodeBlockView,
+        diagnostics: [InteractiveRuntimeDiagnostic]
+    ) {
+        guard settings.useBrain else {
+            view.automaticRepairFailed()
+            return
+        }
+        onThinkingChange?(true)
+        Task { @MainActor in
+            do {
+                let result = try await PenpalAPI.repairInteractive(
+                    block: view.block,
+                    diagnostics: diagnostics,
+                    baseURL: self.settings.apiBaseURL
+                )
+                guard self.codeBlockViews.contains(where: { $0 === view }) else {
+                    view.automaticRepairFailed()
+                    self.onThinkingChange?(false)
+                    return
+                }
+                let manifest = result.manifest
+                    ?? view.block.runtime?.manifest
+                    ?? .empty
+                let runtime = await self.prepareInteractiveRuntime(
+                    blockID: view.block.id,
+                    title: result.title,
+                    manifest: manifest,
+                    existing: view.block.runtime
+                )
+                var repaired = view.block
+                repaired.html = result.html
+                repaired.runtime = runtime
+                let summary = result.diagnosis
+                    ?? "Repaired the reported runtime failure."
+                view.completeAutomaticRepair(repaired, summary: summary)
+                self.onThinkingChange?(false)
+                self.publishForVoiceOver("Interactive block repaired", isAnswer: false)
+            } catch {
+                self.onThinkingChange?(false)
+                let willRetry =
+                    view.block.runtime?.completedRepairAttempts ?? 0 < 2
+                view.automaticRepairFailed(willRetry: willRetry)
+                if willRetry {
+                    // Reproduce once so a transient/empty repair response gets
+                    // one final bounded self-healing attempt.
+                    view.reload()
+                } else {
+                    let rolledBack = view.rollbackFailedAutomaticRepairs()
+                    self.onStatus?(
+                        rolledBack
+                            ? "Automatic repair stayed unstable, so the block restored its previous source."
+                            : "This block detected an error, but its two automatic repair attempts failed."
+                    )
                 }
             }
         }
@@ -2957,16 +3344,15 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
         GestureOnboarding.shared.markLearned()
 
-        renderer.beginAnalyzing(strokes: enclosed)
-        boxStrokes.forEach { renderer.traceBox($0) }
+        // Keep the page itself untouched: only the user's box breathes while
+        // Penpal reads it. No filled wash or oversized selection border.
+        pendingBoxStrokes = boxStrokes
+        renderer.traceBox(boxStrokes)
         setReadingBanner(true)
 
         let traits = traitCollection
         Task { @MainActor in
-            defer {
-                self.renderer.endAnalyzing()
-                self.setReadingBanner(false)
-            }
+            defer { self.setReadingBanner(false) }
             let candidates = await InkRecognizer.recognizeCandidates(
                 strokes: enclosed,
                 traits: traits,
@@ -2974,27 +3360,72 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             let text = (candidates.first ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
+                self.abandonPendingBox()
                 self.onStatus?(
                     "Nothing readable inside the box — write what to draw, then box it."
                 )
                 return
             }
 
-            // The box was an instruction, not content — clear it before the
-            // sketch lands so the page keeps only the prompt and the drawing.
-            self.dissolveBoxStrokes(boxStrokes)
-
             if let body = GraphPlotter.functionBody(in: text),
                self.drawGraph(of: body) {
                 return
             }
             guard self.settings.useBrain else {
+                self.abandonPendingBox()
                 self.onStatus?(
                     "Illustrator needs the brain — enable it in Settings → Behavior."
                 )
                 return
             }
             self.requestIllustration(text)
+        }
+    }
+
+    /// Interactive selection pipeline: OCR the request enclosed by the box,
+    /// remove only the gesture strokes, then generate the live block beneath
+    /// the prompt. Loose handwriting never reaches this path.
+    private func interactiveBoxedRequest(
+        _ box: InkAnalyzer.ProblemBox,
+        all: [PKStroke]
+    ) {
+        let enclosed = box.enclosedIndices.map { all[$0] }
+        let boxStrokes = box.boxStrokeIndices.map { all[$0] }
+
+        GestureOnboarding.shared.markLearned()
+        // The drawn box is the progress indicator; do not highlight its
+        // contents or place a synthetic selection rectangle around them.
+        pendingBoxStrokes = boxStrokes
+        renderer.traceBox(boxStrokes)
+        setReadingBanner(true)
+
+        let traits = traitCollection
+        Task { @MainActor in
+            defer { self.setReadingBanner(false) }
+            let candidates = await InkRecognizer.recognizeCandidates(
+                strokes: enclosed,
+                traits: traits,
+                recognitionLanguages: ["en-US"]
+            )
+            let text = (candidates.first ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                self.abandonPendingBox()
+                self.onStatus?(
+                    "Nothing readable inside the box — write the request, then box it."
+                )
+                return
+            }
+            guard self.settings.useBrain else {
+                self.abandonPendingBox()
+                self.onStatus?(
+                    "Interactive blocks need the brain — enable it in Settings → Behavior."
+                )
+                return
+            }
+
+            self.lastReplyBottom = max(self.lastReplyBottom, box.rect.maxY)
+            self.requestInteractive(text, placement: nil, sourceStrokes: enclosed)
         }
     }
 
@@ -3014,14 +3445,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // patronising.
         GestureOnboarding.shared.markLearned()
 
-        // Pulse the ink inside the box, and trace the box itself so the
-        // user sees the gesture landed before anything else happens.
-        renderer.beginAnalyzing(strokes: enclosed)
-        boxStrokes.forEach { renderer.traceBox($0) }
+        // Only the user's own box glows from dim to light. Highlighting the
+        // enclosed work made the selection look much larger and heavier.
+        pendingBoxStrokes = boxStrokes
+        renderer.traceBox(boxStrokes)
         setReadingBanner(true)
 
         guard settings.useBrain else {
-            renderer.endAnalyzing()
+            abandonPendingBox()
             setReadingBanner(false)
             onStatus?("Boxed problems need the brain — enable it in Settings → Behavior.")
             return
@@ -3034,7 +3465,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let region = box.rect.insetBy(dx: -10, dy: -10)
         guard !enclosed.isEmpty,
               let png = Self.renderInkImage(strokes: content, region: region) else {
-            renderer.endAnalyzing()
+            abandonPendingBox()
             setReadingBanner(false)
             onStatus?("Nothing readable inside the box — write the problem, then box it.")
             return
@@ -3044,10 +3475,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onStatus?("")
 
         Task { @MainActor in
-            defer {
-                self.renderer.endAnalyzing()
-                self.setReadingBanner(false)
-            }
+            defer { self.setReadingBanner(false) }
             let store = ConversationStore.shared
             let history = store.historyForAPI()
             do {
@@ -3063,9 +3491,6 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 store.append(role: "assistant", content: reply)
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
-                // The box was an instruction, not content — dissolve it as
-                // the answer starts writing, leaving only real work on the page.
-                self.dissolveBoxStrokes(boxStrokes)
                 self.writeBoxedReply(reply, boxStroke: boxStroke,
                                      boxRect: box.rect, all: all,
                                      matchStrokes: enclosed)
@@ -3080,7 +3505,15 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     mood: self.settings.companionMood,
                     customMood: self.settings.customMoodText,
                     mathDetail: self.settings.mathDetail)
-                _ = Outbox.shared.enqueueIfOffline(item, error: error)
+                let queued = Outbox.shared.enqueueIfOffline(item, error: error)
+                if queued {
+                    // Keep the pending association so the box dissolves if
+                    // the outbox delivers during this session, but stop the
+                    // processing glow while offline.
+                    self.renderer.endAnalyzing()
+                } else {
+                    self.abandonPendingBox()
+                }
                 self.onStatus?(PenpalError.message(for: error))
             }
         }
@@ -3756,6 +4189,23 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         return UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
     }
 
+    /// Ends the breathing box cue and removes the gesture stroke just as the
+    /// reply begins. Calling this from every output pipeline also covers
+    /// instant replies, handwriting, graphs, and illustrations.
+    private func dissolvePendingBoxIfNeeded() {
+        guard let boxStrokes = pendingBoxStrokes else { return }
+        pendingBoxStrokes = nil
+        renderer.endAnalyzing()
+        dissolveBoxStrokes(boxStrokes)
+    }
+
+    /// A failed read/request leaves the user's box available to retry; only
+    /// its temporary glow is cleared.
+    private func abandonPendingBox() {
+        pendingBoxStrokes = nil
+        renderer.endAnalyzing()
+    }
+
     /// Removes the box gesture stroke(s) from the canvas while the renderer
     /// fades ghosts of them — the gesture served its purpose; the page keeps
     /// only actual work. Handles boxes drawn as one loop or several segments.
@@ -3780,7 +4230,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onDrawingChange?(canvas.drawing)
         // PEN-14: one undo puts the ink back. Essential for strike-through,
         // where a false positive would otherwise silently eat the user's work.
-        registerUndo(name: actionName, restoring: before, redoing: canvas.drawing)
+        // If reply writing already opened an outer action, that snapshot also
+        // contains the box and should own the single undo entry.
+        if actionSnapshot == nil {
+            registerUndo(name: actionName, restoring: before, redoing: canvas.drawing)
+        }
     }
 
     /// Places a reply directly below the boxed problem, aligned to the box.
@@ -3871,6 +4325,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let needsUnicodeFont = purpose.typesetsUnsupportedUnicode
             && text.unicodeScalars.contains { !$0.isASCII }
         if (settings.replyStyle == "font" || needsUnicodeFont), !purpose.forcesCanvasInk {
+            dissolvePendingBoxIfNeeded()
             let bottom = writeTypedReply(text, placement: placement, color: bakeColor)
             lastReplyBottom = bottom
             ensureRoom(below: bottom + lineGap * 2)
@@ -3904,6 +4359,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                                  allowSynthesis: !looksLikeMath(text))
         if sequence.clipped {
             InkUnity.shared.endSentence()
+            abandonPendingBox()
             addPage()
             onStatus?("Added a page — write again.")
             completion?()
@@ -3964,7 +4420,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                   letterCount: max(1, letters))
         InkUnity.shared.endSentence()
 
-        guard !strokes.isEmpty else { completion?(); return }
+        guard !strokes.isEmpty else {
+            abandonPendingBox()
+            completion?()
+            return
+        }
         ensureRoom(below: bottomY + lineGap * 2)
         scrollToReveal(placement.origin.y)
 
@@ -3999,7 +4459,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             // PEN-14: open one action around the whole reply. Fifty baked
             // strokes collapse to a single undo the user would call "the reply".
             self.beginUndoableAction(purpose.undoName)
-            self.renderer.write(strokes, baseWidth: baseWidth, onStrokeFinished: { [weak self] i in
+            self.dissolvePendingBoxIfNeeded()
+            self.renderer.write(
+                strokes,
+                baseWidth: baseWidth,
+                targetDuration: self.settings.replyWritingDuration,
+                onStrokeFinished: { [weak self] i in
                 guard let self, let pending = self.pendingBake,
                       i < pending.strokes.count else { return }
                 if !self.bakeStroke(pending.strokes[i], baseWidth: pending.baseWidth,

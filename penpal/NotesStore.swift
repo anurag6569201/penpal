@@ -174,6 +174,7 @@ nonisolated struct ReplyInk: Identifiable, Codable, Hashable {
 /// mode it has no border, background or shadow — it's just part of the page.
 nonisolated enum PageBlockKind: String, Codable, Hashable {
     case code
+    case interactive
     case mermaid
     case text
     case table
@@ -197,6 +198,9 @@ nonisolated struct PageBlock: Identifiable, Codable, Hashable {
     var width: CGFloat
     var height: CGFloat
     var createdAt: Date
+    /// Browser authority belongs to this block only. Missing metadata means
+    /// the legacy offline runtime with no grants.
+    var runtime: InteractiveRuntimeMetadata?
 
     init(id: UUID = UUID(),
          html: String,
@@ -205,6 +209,7 @@ nonisolated struct PageBlock: Identifiable, Codable, Hashable {
          y: CGFloat,
          width: CGFloat,
          height: CGFloat,
+         runtime: InteractiveRuntimeMetadata? = nil,
          createdAt: Date = .now) {
         self.id = id
         self.html = html
@@ -213,6 +218,7 @@ nonisolated struct PageBlock: Identifiable, Codable, Hashable {
         self.y = y
         self.width = width
         self.height = height
+        self.runtime = runtime
         self.createdAt = createdAt
     }
 
@@ -221,6 +227,9 @@ nonisolated struct PageBlock: Identifiable, Codable, Hashable {
     var resolvedKind: PageBlockKind {
         if let kind { return kind }
         let source = html.lowercased()
+        if source.contains("data-penpal-kind=\"interactive\"") {
+            return .interactive
+        }
         if source.contains("data-penpal-kind=\"attachment\"") {
             return .attachment
         }
@@ -700,10 +709,14 @@ final class NotesStore: ObservableObject {
     func deleteNote(_ id: UUID, permanently: Bool = false) {
         guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
         if permanently || notes[idx].isDeleted {
+            let runtimeIDs = (notes[idx].codeBlocks ?? [])
+                .filter { $0.resolvedKind == .interactive }
+                .map(\.id)
             for att in notes[idx].attachments {
                 try? FileManager.default.removeItem(at: attachmentsDir.appendingPathComponent(att.filename))
             }
             notes.remove(at: idx)
+            InteractiveRuntimeStorage.remove(blockIDs: runtimeIDs)
         } else {
             notes[idx].deletedAt = .now
             notes[idx].modifiedAt = .now
@@ -754,12 +767,18 @@ final class NotesStore: ObservableObject {
 
     func emptyRecentlyDeleted() {
         let deleted = notes.filter(\.isDeleted)
+        let runtimeIDs = deleted.flatMap { note in
+            (note.codeBlocks ?? [])
+                .filter { $0.resolvedKind == .interactive }
+                .map(\.id)
+        }
         for note in deleted {
             for att in note.attachments {
                 try? FileManager.default.removeItem(at: attachmentsDir.appendingPathComponent(att.filename))
             }
         }
         notes.removeAll { $0.isDeleted }
+        InteractiveRuntimeStorage.remove(blockIDs: runtimeIDs)
         if let sel = selectedNoteID, !notes.contains(where: { $0.id == sel }) {
             selectedNoteID = visibleNotes().first?.id
         }

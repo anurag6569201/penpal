@@ -24,7 +24,11 @@ from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIClient
 
 from . import access, gemini, mathengine, routing, telemetry
-from .prompts import MATHEMATICIAN_SYSTEM_PROMPT, build_system_prompt
+from .prompts import (
+    INTERACTIVE_SYSTEM_PROMPT,
+    MATHEMATICIAN_SYSTEM_PROMPT,
+    build_system_prompt,
+)
 from .views import _clean_history
 
 
@@ -257,6 +261,11 @@ class PromptTests(SimpleTestCase):
         prompt = build_system_prompt(capability="companion", mood="custom",
                                      custom_mood="a salty old sailor")
         self.assertIn("a salty old sailor", prompt)
+
+    def test_interactive_prompt_requires_declared_browser_authority(self):
+        self.assertIn("HTML fragment", INTERACTIVE_SYSTEM_PROMPT)
+        self.assertIn("manifest.domains", INTERACTIVE_SYSTEM_PROMPT)
+        self.assertIn("WebAssembly", INTERACTIVE_SYSTEM_PROMPT)
 
 
 # --------------------------------------------------------------------------
@@ -494,6 +503,170 @@ class CompanionTests(GeminiTestCase):
 
 
 # --------------------------------------------------------------------------
+# gemini — interactive block path
+# --------------------------------------------------------------------------
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model")
+class InteractiveBlockTests(GeminiTestCase):
+
+    VALID = (
+        '{"reply":"Try the slider.","title":"Wave explorer",'
+        '"html":"<div id=\\"wave\\"><input type=\\"range\\"></div>'
+        '<style>#wave{padding:8px}</style><script>const x=1;</script>",'
+        '"preferred_height":320}'
+    )
+
+    def test_generates_a_bounded_fragment_with_specialty_context(self):
+        models = self.install(solver=self.VALID)
+        result = gemini.generate_interactive_block(
+            "show a wave", capability="mathematician", language="en-US")
+        self.assertEqual(result["title"], "Wave explorer")
+        self.assertEqual(result["preferred_height"], 320)
+        sent = models.part_text(models.last_parts("solver"))
+        self.assertIn("[Specialty: mathematician]", sent)
+        self.assertIn("[Language: en-US]", sent)
+
+    def test_height_is_clamped(self):
+        self.install(solver=self.VALID.replace(
+            '"preferred_height":320', '"preferred_height":900'))
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertEqual(result["preferred_height"], 520)
+
+    def test_empty_model_output_is_retried(self):
+        responses = iter(["", self.VALID])
+        models = self.install(solver=lambda _contents: next(responses))
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertEqual(result["title"], "Wave explorer")
+        self.assertEqual(result["iterations"], 2)
+        self.assertEqual(len(models.of_kind("solver")), 2)
+
+    def test_external_resources_are_added_to_consent_manifest(self):
+        external = self.VALID.replace(
+            '<div id=\\"wave\\">',
+            '<div id=\\"wave\\"><img src=\\"https://example.com/x.png\\">')
+        self.install(solver=external)
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertEqual(
+            result["manifest"]["domains"][0]["host"], "example.com")
+
+    def test_browser_apis_are_allowed_inside_the_runtime(self):
+        source = self.VALID.replace(
+            "const x=1;", "fetch('/private');")
+        self.install(solver=source)
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertIn("fetch(", result["html"])
+
+    def test_private_network_targets_are_rejected(self):
+        unsafe = self.VALID.replace(
+            "const x=1;", "fetch('https://127.0.0.1/private');")
+        self.install(solver=unsafe)
+        with self.assertRaises(gemini.GeminiError):
+            gemini.generate_interactive_block("show a wave")
+
+    def test_native_message_handlers_remain_forbidden(self):
+        unsafe = self.VALID.replace(
+            "const x=1;", "window.webkit.messageHandlers.secret.postMessage(1);")
+        self.install(solver=unsafe)
+        with self.assertRaises(gemini.GeminiError):
+            gemini.generate_interactive_block("show a wave")
+
+    def test_harmless_authority_words_in_ui_text_are_allowed(self):
+        source = self.VALID.replace(
+            '<div id=\\"wave\\">',
+            '<div id=\\"wave\\"><p>JavaScript: ready. Penpal: isolated.</p>')
+        self.install(solver=source)
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertIn("JavaScript: ready", result["html"])
+
+    def test_local_and_executable_url_schemes_remain_forbidden(self):
+        for value in ("file:///private/data", "javascript:alert(1)"):
+            with self.subTest(value=value):
+                source = self.VALID.replace("const x=1;", f"const x='{value}';")
+                self.install(solver=source)
+                with self.assertRaises(gemini.GeminiError):
+                    gemini.generate_interactive_block("show a wave")
+
+    def test_manifest_is_normalized_and_unknown_capabilities_are_removed(self):
+        manifest = (
+            ',"manifest":{"version":1,'
+            '"domains":[{"host":"HTTPS://CDN.JSDELIVR.NET/path","reason":"Library"}],'
+            '"capabilities":[{"id":"clipboard.write","reason":"Copy"},'
+            '{"id":"penpal.notes","reason":"Steal"}],'
+            '"dependencies":[{"url":"https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js",'
+            '"kind":"script"}]}'
+        )
+        source = self.VALID[:-1] + manifest + "}"
+        self.install(solver=source)
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertEqual(
+            result["manifest"]["domains"][0]["host"], "cdn.jsdelivr.net")
+        self.assertEqual(
+            result["manifest"]["capabilities"][0]["id"], "clipboard.write")
+        self.assertEqual(len(result["manifest"]["capabilities"]), 1)
+
+    def test_complex_build_uses_bounded_agent_review_and_repair(self):
+        responses = iter([
+            self.VALID,
+            '{"verdict":"repair","issues":["Add a reset control."]}',
+            self.VALID.replace("Wave explorer", "Wave explorer repaired"),
+            '{"verdict":"approved","issues":[]}',
+        ])
+        models = self.install(solver=lambda _contents: next(responses))
+        result = gemini.generate_interactive_block(
+            "Build a 3D physics simulation with WebGL and trajectories.")
+        self.assertEqual(result["build_mode"], "agentic")
+        self.assertEqual(result["iterations"], 2)
+        self.assertEqual(result["title"], "Wave explorer repaired")
+        self.assertEqual(len(models.of_kind("solver")), 4)
+
+    def test_runtime_diagnostics_drive_a_reviewed_self_healing_repair(self):
+        repaired = self.VALID[:-1] + (
+            ',"diagnosis":"A missing symbol stopped initialization."}'
+        )
+        responses = iter([
+            repaired,
+            '{"verdict":"approved","issues":[]}',
+        ])
+        models = self.install(solver=lambda _contents: next(responses))
+        result = gemini.repair_interactive_block(
+            html="<script>missingSymbol()</script>",
+            manifest={"version": 1, "domains": [], "capabilities": [],
+                      "dependencies": []},
+            diagnostics=[{
+                "kind": "javascript",
+                "message": "ReferenceError: missingSymbol is not defined",
+                "source": "https://block.invalid/",
+                "line": 1,
+                "column": 9,
+            }],
+        )
+        self.assertEqual(result["build_mode"], "self_heal")
+        self.assertIn("missing symbol", result["diagnosis"])
+        self.assertEqual(len(models.of_kind("solver")), 2)
+
+    def test_empty_quality_review_is_retried_without_losing_repair(self):
+        repaired = self.VALID[:-1] + (
+            ',"diagnosis":"Fixed the initialization order."}'
+        )
+        responses = iter([
+            repaired,
+            "",
+            '{"verdict":"approved","issues":[]}',
+        ])
+        models = self.install(solver=lambda _contents: next(responses))
+        result = gemini.repair_interactive_block(
+            html="<script>startTooEarly()</script>",
+            manifest={},
+            diagnostics=[{
+                "kind": "javascript",
+                "message": "ReferenceError: startTooEarly is not defined",
+            }],
+        )
+        self.assertEqual(result["build_mode"], "self_heal")
+        self.assertEqual(len(models.of_kind("solver")), 3)
+
+
+# --------------------------------------------------------------------------
 # views — input validation (BB-06)
 # --------------------------------------------------------------------------
 
@@ -595,6 +768,75 @@ class EndpointTests(GeminiTestCase):
         response = self.api.post("/api/chat/", {"message": "hi"}, format="json")
         self.assertEqual(response.status_code, 503)
         self.assertIn("error", response.json())
+
+    # -- interactive -------------------------------------------------------
+
+    def test_interactive_returns_a_structured_block(self):
+        self.install(solver=InteractiveBlockTests.VALID)
+        response = self.api.post(
+            "/api/interactive/",
+            {"message": "make a wave simulation", "capability": "mathematician"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["title"], "Wave explorer")
+        self.assertEqual(response.json()["capability"], "mathematician")
+        self.assertIn("<script>", response.json()["html"])
+
+    def test_interactive_validates_message_and_history(self):
+        self.install(solver=InteractiveBlockTests.VALID)
+        self.assertEqual(
+            self.api.post("/api/interactive/", {}, format="json").status_code,
+            400,
+        )
+        self.assertEqual(
+            self.api.post(
+                "/api/interactive/",
+                {"message": "make a quiz", "history": "nope"},
+                format="json",
+            ).status_code,
+            400,
+        )
+
+    def test_interactive_repair_returns_a_full_replacement(self):
+        repaired = InteractiveBlockTests.VALID[:-1] + (
+            ',"diagnosis":"Replaced an undefined initializer."}'
+        )
+        responses = iter([
+            repaired,
+            '{"verdict":"approved","issues":[]}',
+        ])
+        self.install(solver=lambda _contents: next(responses))
+        response = self.api.post(
+            "/api/interactive/repair/",
+            {
+                "title": "Wave",
+                "html": "<script>missing()</script>",
+                "manifest": {
+                    "version": 1,
+                    "domains": [],
+                    "capabilities": [],
+                    "dependencies": [],
+                },
+                "diagnostics": [{
+                    "kind": "javascript",
+                    "message": "ReferenceError: missing is not defined",
+                    "line": 1,
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["build_mode"], "self_heal")
+        self.assertIn("undefined initializer", response.json()["diagnosis"])
+
+    def test_interactive_repair_requires_diagnostics(self):
+        response = self.api.post(
+            "/api/interactive/repair/",
+            {"html": "<div>Broken</div>", "diagnostics": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
 
     # -- solve-math --------------------------------------------------------
 
@@ -2468,6 +2710,11 @@ class AccessControlTests(GeminiTestCase):
 
     def test_all_expensive_endpoints_are_protected(self):
         for path, body in (("/api/chat/", {"message": "hi"}),
+                           ("/api/interactive/", {"message": "make a quiz"}),
+                           ("/api/interactive/repair/",
+                            {"html": "<div>x</div>",
+                             "diagnostics": [{"kind": "runtime",
+                                              "message": "failed"}]}),
                            ("/api/solve-math/", {"image": _b64(PNG)}),
                            ("/api/read-math/", {"image": _b64(PNG)}),
                            ("/api/illustrate/", {"message": "draw a cat"}),

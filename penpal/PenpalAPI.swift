@@ -45,6 +45,20 @@ enum PenpalAPI {
         let capability: String?
     }
 
+    struct InteractiveBlockResponse: Decodable {
+        let reply: String
+        let title: String
+        let html: String
+        let preferred_height: Int
+        let manifest: InteractiveManifest?
+        let build_mode: String?
+        let iterations: Int?
+        let diagnosis: String?
+        let conversation_id: String?
+        let model: String?
+        let capability: String?
+    }
+
     enum APIError: LocalizedError {
         case badURL
         case http(Int, String)
@@ -117,6 +131,136 @@ enum PenpalAPI {
         let reply = parsed.reply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !reply.isEmpty else { throw APIError.emptyReply }
         return reply
+    }
+
+    static func shouldGenerateInteractive(message: String, capability: String) -> Bool {
+        if capability == "interactive" { return true }
+        let text = message
+            .folding(options: [.caseInsensitive, .diacriticInsensitive],
+                     locale: Locale(identifier: "en_US_POSIX"))
+            .lowercased()
+        let explicitIntents = [
+            "interactive", "simulate", "simulation", "animate", "animation",
+            "visualization", "visualisation", "explorable", "playground",
+            "build a quiz", "make a quiz", "create a quiz",
+            "build a tool", "make a tool", "create a tool",
+        ]
+        return explicitIntents.contains { text.contains($0) }
+    }
+
+    static func interactive(
+        message: String,
+        conversationId: String,
+        history: [ChatRequest.Turn],
+        baseURL: String,
+        capability: String,
+        language: String,
+        mathDetail: String
+    ) async throws -> InteractiveBlockResponse {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/interactive/") else {
+            throw APIError.badURL
+        }
+
+        struct Body: Encodable {
+            let message: String
+            let conversation_id: String
+            let history: [ChatRequest.Turn]
+            let capability: String
+            let language: String
+            let math_detail: String
+        }
+        struct ErrorBody: Decodable { let error: String? }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.setValue(conversationId, forHTTPHeaderField: "X-Conversation-Id")
+        // Complex blocks may use a bounded build → review → repair loop.
+        request.timeoutInterval = 180
+        request.httpBody = try JSONEncoder().encode(Body(
+            message: message,
+            conversation_id: conversationId,
+            history: history,
+            capability: capability,
+            language: language,
+            math_detail: mathDetail
+        ))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200...299).contains(code) {
+            let parsed = try? JSONDecoder().decode(ErrorBody.self, from: data)
+            throw APIError.http(
+                code,
+                parsed?.error ?? String(data: data, encoding: .utf8) ?? "no body"
+            )
+        }
+
+        let parsed = try JSONDecoder().decode(InteractiveBlockResponse.self, from: data)
+        guard !parsed.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError.emptyReply
+        }
+        return parsed
+    }
+
+    static func repairInteractive(
+        block: CodeBlock,
+        diagnostics: [InteractiveRuntimeDiagnostic],
+        baseURL: String
+    ) async throws -> InteractiveBlockResponse {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/interactive/repair/") else {
+            throw APIError.badURL
+        }
+        struct Body: Encodable {
+            let title: String
+            let html: String
+            let manifest: InteractiveManifest
+            let diagnostics: [InteractiveRuntimeDiagnostic]
+        }
+        struct ErrorBody: Decodable { let error: String? }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.timeoutInterval = 180
+        request.httpBody = try JSONEncoder().encode(Body(
+            title: block.runtime?.title ?? "Interactive Block",
+            html: block.html,
+            manifest: block.runtime?.manifest ?? .empty,
+            diagnostics: Array(diagnostics.prefix(6))
+        ))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(code) else {
+            let parsed = try? JSONDecoder().decode(ErrorBody.self, from: data)
+            throw APIError.http(
+                code,
+                parsed?.error ?? String(data: data, encoding: .utf8) ?? "no body"
+            )
+        }
+        let parsed = try JSONDecoder().decode(InteractiveBlockResponse.self, from: data)
+        guard !parsed.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError.emptyReply
+        }
+        return parsed
     }
 
     /// Boxed problems: send the ink image straight to the Mathematician —

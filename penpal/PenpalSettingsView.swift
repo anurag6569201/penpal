@@ -314,8 +314,6 @@ struct PenpalSettingsView: View {
                            value: settings.smoothness < 0.02 ? "Off"
                                : "\(Int((settings.smoothness * 100).rounded()))%")
             Slider(value: $settings.smoothness, in: 0...1, step: 0.05)
-            LabeledContent("Speed", value: "\(Int(settings.speedLevel))")
-            Slider(value: $settings.speedLevel, in: 1...10, step: 1)
             LabeledContent("Variation", value: "\(Int(settings.variation))")
             Slider(value: $settings.variation, in: 0...10, step: 1)
             Toggle("Apple Pencil only", isOn: $settings.pencilOnly)
@@ -553,10 +551,40 @@ struct PenpalSettingsView: View {
 
         Section {
             Toggle("Auto reply (Penpal pen)", isOn: $settings.autoReply)
+            if settings.autoReply {
+                LabeledContent(
+                    "Reply after",
+                    value: "\(Int(settings.autoReplyDelay.rounded())) sec"
+                )
+                Slider(value: $settings.autoReplyDelay, in: 1...30, step: 1)
+            }
+
+            Picker("Writing pace", selection: $settings.writingPace) {
+                ForEach(PenpalWritingPace.allCases) { pace in
+                    Text(pace.title).tag(pace)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            switch settings.writingPace {
+            case .natural:
+                LabeledContent("Natural speed", value: "\(Int(settings.speedLevel))")
+                Slider(value: $settings.speedLevel, in: 1...10, step: 1)
+            case .timed:
+                LabeledContent(
+                    "Finish within",
+                    value: "\(Int(settings.timedWritingSeconds.rounded())) sec"
+                )
+                Slider(value: $settings.timedWritingSeconds, in: 1...30, step: 1)
+            case .instant:
+                Text("The complete response appears as ink immediately.")
+                    .font(.caption)
+                    .foregroundStyle(Pen.inkFaded)
+            }
         } header: {
             Label("Replies", systemImage: "arrowshape.turn.up.left")
         } footer: {
-            Text("Only runs when the Penpal pen is selected in the markup tray. Normal pens never trigger a reply.")
+            Text("Auto reply only runs in Penpal mode. You can always tap Ask on the Penpal bar to send just the new ink yourself.")
         }
 
         Section {

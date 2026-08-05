@@ -11,6 +11,7 @@ enum PenpalControlOptions {
     static let capabilities: [(tag: String, title: String, icon: String)] = [
         ("companion", "Companion", "heart.text.square"),
         ("mathematician", "Mathematician", "x.squareroot"),
+        ("interactive", "Interactive", "cursorarrow.click.2"),
         ("illustrator", "Illustrator", "pencil.and.outline"),
         ("language", "Language Partner", "character.bubble"),
         ("debate", "Debate Partner", "arrow.left.arrow.right"),
@@ -51,6 +52,7 @@ struct PenpalControlBar: View {
     @ObservedObject var settings: HandwritingSettings
     var activityPhase: InkThinkingIndicator.Phase?
     var statusText: String?
+    var onAsk: () -> Void
     var onVisionCamera: () -> Void
     var onVisionPhoto: () -> Void
     var onClose: () -> Void
@@ -122,6 +124,18 @@ struct PenpalControlBar: View {
                     moodMenu
                 }
             }
+
+            Button(action: onAsk) {
+                Label("Ask", systemImage: "paperplane.fill")
+                    .padding(.horizontal, 9)
+                    .frame(height: 32)
+                    .foregroundStyle(Pen.inkAccent)
+                    .background(Pen.inkAccent.opacity(0.10), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(activityPhase != nil)
+            .accessibilityLabel("Ask Penpal")
+            .accessibilityHint("Sends only the handwriting added since the last reply")
 
             Menu {
                 Button("Take Photo", systemImage: "camera") {
