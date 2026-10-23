@@ -81,7 +81,7 @@ nonisolated enum NotebookBackup {
         let output = outputDirectory.appendingPathComponent(filename(for: contents.exportedAt))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .secondsSince1970
         try encoder.encode(Archive(contents: contents, attachments: attachments))
             .write(to: output, options: .atomic)
         return output
@@ -91,7 +91,30 @@ nonisolated enum NotebookBackup {
     /// library. Restoring is then a non-destructive merge in `NotesStore`.
     static func read(from archive: URL) throws -> NotebookBackupRestore {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            // Version 1 originally wrote ISO-8601 strings. Keep accepting
+            // those archives while writing numeric timestamps so subsecond
+            // Date precision survives a backup round trip.
+            if let seconds = try? container.decode(Double.self) {
+                return Date(timeIntervalSince1970: seconds)
+            }
+            let value = try container.decode(String.self)
+            for options: ISO8601DateFormatter.Options in [
+                [.withInternetDateTime, .withFractionalSeconds],
+                [.withInternetDateTime]
+            ] {
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = options
+                if let date = formatter.date(from: value) {
+                    return date
+                }
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Backup contains an invalid ISO-8601 date."
+            )
+        }
         let decoded: Archive
         do {
             decoded = try decoder.decode(Archive.self, from: Data(contentsOf: archive))
