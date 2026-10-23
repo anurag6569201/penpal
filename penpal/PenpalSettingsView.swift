@@ -25,6 +25,10 @@ struct PenpalSettingsView: View {
     @State private var showImportChoices = false
     @State private var showReplaceConfirm = false
     @State private var importError: String?
+    @StateObject private var notes = NotesStore.shared
+    @State private var showBackupImporter = false
+    @State private var pendingBackupURL: URL?
+    @State private var showRestoreConfirm = false
     var onStatus: (String) -> Void
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -68,6 +72,19 @@ struct PenpalSettingsView: View {
                 .padding(.top, 10)
 
                 Form {
+                    Section {
+                        HStack(spacing: 16) {
+                            PenBrandMark(size: 64)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Make room for your thoughts.")
+                                    .font(.system(.title3, design: .serif))
+                                Text("Your notebook, your way.")
+                                    .font(Pen.sub).foregroundStyle(Pen.inkFaded)
+                            }
+                        }
+                        .padding(.vertical, 8)
+                        .listRowBackground(Pen.paperRaised)
+                    }
                     switch tab {
                     case .style: styleSettings
                     case .page: pageSettings
@@ -80,7 +97,7 @@ struct PenpalSettingsView: View {
             // Sheets don't reliably inherit the app-root .tint() — without
             // this, every native control (segmented picker, sliders,
             // toggles) falls back to a default grey/white selection instead
-            // of the app's own indigo, which is the "random white patch"
+            // of the app's own teal, which is the "random white patch"
             // the settings sheet was showing.
             .tint(Pen.inkAccent)
             .navigationTitle("Penpal Settings")
@@ -106,6 +123,24 @@ struct PenpalSettingsView: View {
                     do {
                         pendingImportURL = try Self.stagingCopy(of: url)
                         showImportChoices = true
+                    } catch {
+                        importError = error.localizedDescription
+                    }
+                case .failure(let error):
+                    importError = error.localizedDescription
+                }
+            }
+            .fileImporter(
+                isPresented: $showBackupImporter,
+                allowedContentTypes: [Self.notebookBackupType],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    do {
+                        pendingBackupURL = try Self.stagingCopy(of: url)
+                        showRestoreConfirm = true
                     } catch {
                         importError = error.localizedDescription
                     }
@@ -141,6 +176,20 @@ struct PenpalSettingsView: View {
                 }
             } message: {
                 Text("The letters you’ve trained on this hand will be overwritten. Notes are not affected.")
+            }
+            .confirmationDialog(
+                "Restore notebook backup?",
+                isPresented: $showRestoreConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Merge backup") {
+                    restoreNotebookBackup()
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingBackupURL = nil
+                }
+            } message: {
+                Text("This adds notes that aren’t already on this iPad. It never replaces or deletes your current notes.")
             }
             .alert("Couldn’t import", isPresented: Binding(
                 get: { importError != nil },
@@ -550,15 +599,31 @@ struct PenpalSettingsView: View {
         }
 
         Section {
-            Toggle("Auto reply (Penpal pen)", isOn: $settings.autoReply)
-            if settings.autoReply {
-                LabeledContent(
-                    "Reply after",
-                    value: "\(Int(settings.autoReplyDelay.rounded())) sec"
-                )
-                Slider(value: $settings.autoReplyDelay, in: 1...30, step: 1)
+            Button {
+                exportNotebookBackup()
+            } label: {
+                Label("Export notebook backup", systemImage: "externaldrive.badge.checkmark")
             }
+            Button {
+                showBackupImporter = true
+            } label: {
+                Label("Restore notebook backup…", systemImage: "externaldrive.badge.plus")
+            }
+        } header: {
+            Label("Notes & recovery", systemImage: "externaldrive")
+        } footer: {
+            Text("A backup is one portable `.penpalbackup` file containing your notes and attachments. Keep it in Files, iCloud Drive, Google Drive, or an external disk. Restoring merges safely; it never overwrites this iPad’s library.")
+        }
 
+        Section {
+            Picker("Writing indicator", selection: $settings.writingIndicator) {
+                ForEach(PenpalWritingIndicator.allCases) { indicator in
+                    Text(indicator.title).tag(indicator)
+                }
+            }
+            Text("A small Penpal nib follows the ink, then lifts away. With Reduce Motion, it rests beside the start of the reply. Instant replies show no indicator.")
+                .font(Pen.caption)
+                .foregroundStyle(Pen.inkFaded)
             Picker("Writing pace", selection: $settings.writingPace) {
                 ForEach(PenpalWritingPace.allCases) { pace in
                     Text(pace.title).tag(pace)
@@ -584,7 +649,7 @@ struct PenpalSettingsView: View {
         } header: {
             Label("Replies", systemImage: "arrowshape.turn.up.left")
         } footer: {
-            Text("Auto reply only runs in Penpal mode. You can always tap Ask on the Penpal bar to send just the new ink yourself.")
+            Text("Penpal never replies on its own. Tap Ask, or box a question, to send it — pausing while you write is never treated as sending. This controls how the reply is drawn once you do.")
         }
 
         Section {
@@ -596,11 +661,13 @@ struct PenpalSettingsView: View {
         } header: {
             Label("Debug", systemImage: "waveform.path.ecg")
         } footer: {
-            Text("Gestures: box a problem to solve it · double-underline your working to have it checked · strike through ink to delete it.")
+            Text("Gestures: box a question to send it (or tap Ask) · double-underline your working to have it checked · strike through ink to delete it.")
         }
     }
 
     // MARK: - Glyph bank transfer
+
+    private static let notebookBackupType = UTType(filenameExtension: "penpalbackup") ?? .data
 
     /// Copies a security-scoped picker URL into tmp so later dialogs don't
     /// race the scope being revoked.
@@ -633,6 +700,42 @@ struct PenpalSettingsView: View {
             shareItems = [url]
             showShare = true
             onStatus("Exported \(PersonalFontStore.shared.trainingSummary).")
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func exportNotebookBackup() {
+        do {
+            let url = try notes.exportNotebookBackup()
+            shareItems = [url]
+            showShare = true
+            onStatus("Notebook backup is ready to save.")
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func restoreNotebookBackup() {
+        guard let url = pendingBackupURL else { return }
+        defer { pendingBackupURL = nil }
+        do {
+            let summary = try notes.restoreNotebookBackup(from: url)
+            var message = "Restored \(summary.importedNotes) note"
+                + (summary.importedNotes == 1 ? "" : "s")
+            if summary.importedFolders > 0 {
+                message += " and \(summary.importedFolders) folder"
+                    + (summary.importedFolders == 1 ? "" : "s")
+            }
+            if summary.skippedExistingNotes > 0 {
+                message += ". \(summary.skippedExistingNotes) existing note"
+                    + (summary.skippedExistingNotes == 1 ? " was" : "s were") + " kept"
+            }
+            if summary.skippedMissingAttachments > 0 {
+                message += ". \(summary.skippedMissingAttachments) missing attachment"
+                    + (summary.skippedMissingAttachments == 1 ? " was" : "s were") + " skipped"
+            }
+            onStatus(message + ".")
         } catch {
             importError = error.localizedDescription
         }

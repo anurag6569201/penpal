@@ -2,12 +2,12 @@
 //  DesignSystem.swift
 //  penpal
 //
-//  The "Warm Paper" design language — see DESIGN.md for the reasoning.
+//  The "Ink Studio" design language — see DESIGN.md for the reasoning.
 //
 //  One metaphor, applied everywhere: a good notebook and a fountain pen.
 //  Components take SEMANTIC tokens from here and never name raw colours,
 //  so a palette change is one edit and the app can never drift into three
-//  slightly different indigos.
+//  slightly different accents.
 //
 
 import SwiftUI
@@ -20,7 +20,7 @@ enum Pen {
     /// Warm cream in light mode, true AMOLED black in dark mode — the
     /// deepest layer, the canvas itself.
     static let paper = Color(
-        light: Color(red: 0.980, green: 0.969, blue: 0.941),
+        light: Color(red: 247/255, green: 244/255, blue: 237/255),
         dark: .black)
 
     /// Cards, sheets, toolbars — sits ON the paper, so it needs to read as
@@ -30,22 +30,25 @@ enum Pen {
     /// still reads as black at a glance) so elevation comes from the
     /// surface itself, not only from a shadow that barely shows on OLED.
     static let paperRaised = Color(
-        light: Color(red: 0.992, green: 0.986, blue: 0.970),
-        dark: Color(red: 0.055, green: 0.052, blue: 0.062))
+        light: Color(red: 255/255, green: 253/255, blue: 249/255),
+        dark: Color(red: 14/255, green: 13/255, blue: 16/255))
 
     /// Text and drawn ink.
     static let inkPrimary = Color(
-        light: Color(red: 0.169, green: 0.165, blue: 0.200),
-        dark: Color(red: 0.925, green: 0.918, blue: 0.894))
+        light: Color(red: 26/255, green: 43/255, blue: 42/255),
+        dark: Color(red: 236/255, green: 234/255, blue: 228/255))
 
     /// Penpal's presence: actions, its pen, its highlights. ONE accent per
     /// screen — a page with three accent colours is a dashboard.
     static let inkAccent = Color(
-        light: Color(red: 0.290, green: 0.306, blue: 0.620),
-        dark: Color(red: 0.545, green: 0.561, blue: 0.851))
+        light: Color(red: 27/255, green: 93/255, blue: 86/255),
+        dark: Color(red: 126/255, green: 206/255, blue: 185/255))
+
+    static let accentWash = inkAccent.opacity(0.10)
+    static let onAccent = Color(light: .white, dark: Color(red: 10/255, green: 36/255, blue: 31/255))
 
     /// Secondary text. Derived, not a separate hue.
-    static let inkFaded = inkPrimary.opacity(0.55)
+    static let inkFaded = inkPrimary.opacity(0.68)
 
     /// Verified / success. Appears only as MEANING, never decoration.
     static let inkPositive = Color(
@@ -62,24 +65,23 @@ enum Pen {
 
     // MARK: Typography — stationery, not software.
 
-    /// The wordmark and brand moments: the product's promise is handwriting,
-    /// so the brand is written, not set.
+    /// An editorial serif wordmark complements the handwritten page.
     static func brand(_ size: CGFloat = 44) -> Font {
-        Font.custom("SnellRoundhand-Bold", size: size)
+        Font.system(size: size, weight: .semibold, design: .serif)
     }
 
     /// Serif headings read as print on paper.
-    static let titleSerif = Font.system(size: 28, weight: .semibold, design: .serif)
-    static let headline = Font.system(size: 17, weight: .semibold)
-    static let body = Font.system(size: 17)
-    static let sub = Font.system(size: 15)
-    static let caption = Font.system(size: 13)
+    static let titleSerif = Font.system(.title, design: .serif, weight: .semibold)
+    static let headline = Font.system(.headline)
+    static let body = Font.system(.body)
+    static let sub = Font.system(.subheadline)
+    static let caption = Font.system(.footnote)
 
     // MARK: Shape & depth
 
     /// Continuous corners only — paper has soft corners.
     static let radiusControl: CGFloat = 10
-    static let radiusCard: CGFloat = 16
+    static let radiusCard: CGFloat = 20
     static let radiusSheet: CGFloat = 22
 
     /// The standard spring. One curve everywhere is what makes the app feel
@@ -115,20 +117,22 @@ extension Color {
 /// Filled accent capsule. ONE per screen, maximum — it marks the single
 /// thing we most want the user to do.
 struct PenPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Pen.headline)
-            .foregroundStyle(.white)
+            .foregroundStyle(Pen.onAccent)
             .frame(maxWidth: .infinity, minHeight: Pen.touchTarget)
             .background(Pen.inkAccent, in: Capsule())
             .opacity(configuration.isPressed ? 0.85 : 1)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(Pen.spring, value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
+            .animation(reduceMotion ? nil : Pen.spring, value: configuration.isPressed)
     }
 }
 
 /// Tinted border capsule for meaningful-but-secondary actions.
 struct PenSecondaryButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Pen.headline)
@@ -138,8 +142,8 @@ struct PenSecondaryButtonStyle: ButtonStyle {
                 Capsule().strokeBorder(Pen.inkAccent.opacity(0.45), lineWidth: 1.5))
             .contentShape(Capsule())
             .opacity(configuration.isPressed ? 0.7 : 1)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(Pen.spring, value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
+            .animation(reduceMotion ? nil : Pen.spring, value: configuration.isPressed)
     }
 }
 
@@ -204,5 +208,37 @@ struct RuledPaperBackground: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .ignoresSafeArea()
+    }
+}
+
+// MARK: - Brand signature
+
+/// Use the master silhouette as a template so it stays crisp in either appearance.
+/// The supplied master includes its own optical clear space; do not crop it.
+struct PenBrandMark: View {
+    var size: CGFloat = 40
+    var body: some View {
+        Image("PenpalMark")
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .foregroundStyle(Pen.inkAccent)
+            .accessibilityHidden(true)
+    }
+}
+
+struct PenBrandSignature: View {
+    @ScaledMetric(relativeTo: .title2) private var markSize: CGFloat = 44
+    var body: some View {
+        HStack(spacing: 4) {
+            PenBrandMark(size: markSize)
+            Text("penpal")
+                .font(.system(.title2, design: .serif, weight: .semibold))
+                .tracking(-0.7)
+                .foregroundStyle(Pen.inkPrimary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Penpal")
     }
 }

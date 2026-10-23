@@ -15,6 +15,8 @@ enum PenpalControlOptions {
         ("illustrator", "Illustrator", "pencil.and.outline"),
         ("language", "Language Partner", "character.bubble"),
         ("debate", "Debate Partner", "arrow.left.arrow.right"),
+        // PEN-40 — composes a whole page from several of the above at once.
+        ("arranger", "Arranger", "square.grid.2x2"),
     ]
 
     static let moods: [(tag: String, title: String, icon: String)] = [
@@ -104,16 +106,47 @@ struct PenpalControlBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             if activityPhase != nil || statusText != nil {
                 statusSection
-                Divider().frame(height: 24)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Pen.paperRaised, in: Capsule())
             }
+            ViewThatFits(in: .horizontal) {
+                dockControls
+                ScrollView(.horizontal, showsIndicators: false) { dockControls }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 48)
+            .background(Pen.paperRaised, in: Capsule())
+            .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
+        }
+        .font(.subheadline.weight(.medium))
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: 720)
+        .padding(.horizontal, 16)
+        .alert("Custom Companion Mood", isPresented: $showCustomMoodEditor) {
+            TextField("Describe Penpal's personality", text: $customMoodDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                let mood = customMoodDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                settings.customMoodText = mood
+                settings.companionMood = "custom"
+            }
+            .disabled(customMoodDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Keep it short and vivid.")
+        }
+    }
 
+    private var dockControls: some View {
+        HStack(spacing: 6) {
             capabilityMenu
 
             if hasSecondaryControls {
-                Divider().frame(height: 24)
+                Divider().frame(height: 20)
                 if isMathematician {
                     detailMenu
                 } else if isIllustrator {
@@ -126,16 +159,18 @@ struct PenpalControlBar: View {
             }
 
             Button(action: onAsk) {
-                Label("Ask", systemImage: "paperplane.fill")
-                    .padding(.horizontal, 9)
-                    .frame(height: 32)
-                    .foregroundStyle(Pen.inkAccent)
-                    .background(Pen.inkAccent.opacity(0.10), in: Capsule())
+                Label("Ask Penpal", systemImage: "sparkle")
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .foregroundStyle(Pen.onAccent)
+                    .background(Pen.inkAccent, in: Capsule())
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(activityPhase != nil)
             .accessibilityLabel("Ask Penpal")
-            .accessibilityHint("Sends only the handwriting added since the last reply")
+            .accessibilityHint("Sends the new handwriting. You can also draw a box around a question.")
 
             Menu {
                 Button("Take Photo", systemImage: "camera") {
@@ -147,7 +182,7 @@ struct PenpalControlBar: View {
             } label: {
                 Image(systemName: "camera.viewfinder")
                     .font(.body)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Pen.inkPrimary)
@@ -165,30 +200,13 @@ struct PenpalControlBar: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
-                    .frame(width: 30, height: 30)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Pen.inkFaded)
             .accessibilityLabel("Turn off Penpal mode")
         }
-        .font(.footnote.weight(.medium))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Pen.paperRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.25), lineWidth: 1))
-        .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
-        .alert("Custom Companion Mood", isPresented: $showCustomMoodEditor) {
-            TextField("Describe Penpal's personality", text: $customMoodDraft)
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                let mood = customMoodDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                settings.customMoodText = mood
-                settings.companionMood = "custom"
-            }
-            .disabled(customMoodDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Keep it short and vivid.")
-        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder
@@ -223,10 +241,12 @@ struct PenpalControlBar: View {
             }
         } label: {
             Label(selectedCapability.title, systemImage: selectedCapability.icon)
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .foregroundStyle(Color.white)
-                .background(Pen.inkAccent, in: Capsule())
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .foregroundStyle(Pen.inkAccent)
+                .background(Pen.accentWash, in: Capsule())
+                .frame(height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Penpal capability, \(selectedCapability.title)")
@@ -250,7 +270,7 @@ struct PenpalControlBar: View {
         } label: {
             Label(selectedMoodTitle, systemImage: "theatermasks")
                 .padding(.horizontal, 8)
-                .frame(height: 32)
+                .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Companion mood, \(selectedMoodTitle)")
@@ -269,7 +289,7 @@ struct PenpalControlBar: View {
         } label: {
             Label(selectedDetailTitle, systemImage: "list.number")
                 .padding(.horizontal, 8)
-                .frame(height: 32)
+                .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Solution detail, \(selectedDetailTitle)")
@@ -289,7 +309,7 @@ struct PenpalControlBar: View {
         } label: {
             Label(selectedLanguageTitle, systemImage: "globe")
                 .padding(.horizontal, 8)
-                .frame(height: 32)
+                .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Practice language, \(selectedLanguageTitle)")
@@ -311,7 +331,7 @@ struct PenpalControlBar: View {
         } label: {
             Label(selectedIllustratorQualityTitle, systemImage: "sparkles")
                 .padding(.horizontal, 8)
-                .frame(height: 32)
+                .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(

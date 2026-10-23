@@ -326,6 +326,7 @@ struct CalibrationView: View {
     @State private var saveMessage = ""
     @State private var saveIsWarning = false
     @State private var showTips = false
+    @State private var showTargetPicker = false
     @State private var trainMode: TrainMode = .words
 
     @State private var extraChars: [Character] =
@@ -339,6 +340,16 @@ struct CalibrationView: View {
     @State private var selectedTarget: String = "the"
 
     private var isWordTarget: Bool { selectedTarget.count > 1 }
+
+    private var targetKindLabel: String {
+        switch trainMode {
+        case .words: "word"
+        case .letters: "letter"
+        case .joins: "join"
+        case .math: "math symbol"
+        case .marks: "punctuation mark"
+        }
+    }
 
     private func targets(for mode: TrainMode) -> [String] {
         switch mode {
@@ -458,6 +469,9 @@ struct CalibrationView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .sheet(isPresented: $showTargetPicker) {
+                targetPickerSheet
+            }
         }
     }
 
@@ -521,17 +535,30 @@ struct CalibrationView: View {
                 }
                 .disabled(currentIndex <= 0)
 
-                VStack(spacing: 2) {
-                    Text(selectedTarget)
-                        .font(.system(size: isWordTarget ? 34 : 44,
-                                      weight: .semibold, design: .rounded))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.4)
-                    Text("\(currentIndex + 1) of \(targets.count) · \(trainedCount) trained")
-                        .font(.caption2)
-                        .foregroundStyle(Pen.inkFaded)
+                Button {
+                    showTargetPicker = true
+                } label: {
+                    VStack(spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(selectedTarget)
+                                .font(.system(size: isWordTarget ? 34 : 44,
+                                              weight: .semibold, design: .rounded))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.4)
+                            Image(systemName: "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Pen.inkFaded)
+                        }
+                        Text("\(currentIndex + 1) of \(targets.count) · \(trainedCount) trained")
+                            .font(.caption2)
+                            .foregroundStyle(Pen.inkFaded)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Choose \(targetKindLabel) to train")
+                .accessibilityValue(selectedTarget)
 
                 Button { step(1) } label: {
                     Image(systemName: "chevron.right.circle.fill")
@@ -548,6 +575,7 @@ struct CalibrationView: View {
             GuidedCanvas(proxy: proxy,
                          targetText: selectedTarget)
                 .frame(height: GuidedCanvasView.cellHeight)
+                .padding(.vertical, 8)
                 .overlay(alignment: .topTrailing) {
                     if justSavedFlash {
                         Text(saveMessage)
@@ -591,33 +619,6 @@ struct CalibrationView: View {
                     .foregroundStyle(samples > 0 ? Pen.inkPositive : Pen.inkFaded)
             }
 
-            if trainMode == .letters || trainMode == .words {
-                HStack(spacing: 8) {
-                    TextField(trainMode == .words
-                              ? "Add words — your name, words you write a lot…"
-                              : "Add letters…",
-                              text: $customInput)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                    Button("Add") { addCustom() }
-                        .buttonStyle(.bordered)
-                        .disabled(customInput.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(
-                    minimum: (trainMode == .words || trainMode == .joins) ? 58 : 36),
-                    spacing: 5)], spacing: 5) {
-                    ForEach(Array(targets.enumerated()), id: \.offset) { _, t in
-                        chip(t,
-                             selected: selectedTarget == t,
-                             trained: isTrained(t)) {
-                            selectTarget(t)
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -659,6 +660,68 @@ struct CalibrationView: View {
         }
     }
 
+    private var targetPickerTitle: String {
+        switch trainMode {
+        case .words: "Choose a Word"
+        case .letters: "Choose a Letter"
+        case .joins: "Choose a Join"
+        case .math: "Choose a Math Symbol"
+        case .marks: "Choose a Mark"
+        }
+    }
+
+    /// Keep selectable targets away from the active handwriting surface, with
+    /// larger tap targets for choosing the intended word.
+    private var targetPickerSheet: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                if trainMode == .words || trainMode == .letters {
+                    HStack(spacing: 8) {
+                        TextField(trainMode == .words
+                                  ? "Add words you write often…"
+                                  : "Add letters…",
+                                  text: $customInput)
+                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
+                        Button("Add", action: addCustom)
+                            .buttonStyle(.bordered)
+                            .disabled(customInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    .padding(.horizontal, 16)
+                }
+
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(
+                        minimum: trainMode == .words ? 104 : 64), spacing: 10)], spacing: 10) {
+                        ForEach(Array(targets.enumerated()), id: \.offset) { _, target in
+                            chip(target,
+                                 selected: selectedTarget == target,
+                                 trained: isTrained(target)) {
+                                selectTarget(target)
+                                showTargetPicker = false
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .padding(.top, 12)
+            .background(Pen.paper.ignoresSafeArea())
+            .navigationTitle(targetPickerTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showTargetPicker = false }
+                }
+            }
+            .tint(Pen.inkAccent)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
     @ViewBuilder
     private var sampleStrip: some View {
         if currentVariants.isEmpty {
@@ -697,13 +760,14 @@ struct CalibrationView: View {
             Text(label)
                 .font(.system(.callout, design: .rounded))
                 .lineLimit(1)
-                .minimumScaleFactor(0.55)
-                .padding(.horizontal, 4)
-                .frame(maxWidth: .infinity, minHeight: 30)
+                .minimumScaleFactor(0.7)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: 48)
                 .background(selected ? Pen.inkAccent.opacity(0.28)
                             : trained ? Pen.inkPositive.opacity(0.18)
                             : Pen.inkFaded.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 7))
+                .contentShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
     }

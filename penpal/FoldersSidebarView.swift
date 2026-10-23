@@ -31,11 +31,16 @@ struct FoldersSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Folders")
-                    .font(.title.bold())
-                Spacer()
+            HStack(spacing: 14) {
+                PenBrandMark(size: 46)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Your library").font(Pen.titleSerif)
+                    Text("Space for every side of you.")
+                        .font(Pen.sub).foregroundStyle(Pen.inkFaded)
+                }
+                Spacer(minLength: 0)
             }
+            .accessibilityElement(children: .combine)
             .padding(.horizontal, 18)
             .padding(.top, 16)
             .padding(.bottom, 6)

@@ -189,6 +189,95 @@ enum CodedPaper {
     </div>
     """
 
+    // MARK: - Generated block bodies (PEN-40)
+
+    /// Model text is untrusted markup. Everything generated goes through here
+    /// before it reaches a web view, so a stray `<script>` in a table cell is
+    /// content, not code.
+    static func escapeHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+
+    /// Build a table from pipe-delimited lines, first row treated as the
+    /// header. Markdown separator rows (`---|---`) are dropped so a model
+    /// that answers in markdown still lands correctly.
+    static func tableBlockHTML(from body: String) -> String {
+        let rows = body
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map { line -> [String] in
+                line.split(separator: "|", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+            }
+            .filter { cells in
+                // A markdown rule row carries no information.
+                !cells.allSatisfy { $0.isEmpty || $0.allSatisfy { c in c == "-" || c == ":" } }
+            }
+        guard let header = rows.first else { return tableBlockHTML }
+
+        let headCells = header
+            .map { "<th>\(escapeHTML($0))</th>" }
+            .joined()
+        let bodyRows = rows.dropFirst().map { cells -> String in
+            // Ragged rows are padded so the grid stays rectangular.
+            let padded = cells + Array(repeating: "",
+                                       count: max(0, header.count - cells.count))
+            let tds = padded.prefix(header.count)
+                .map { "<td>\(escapeHTML($0))</td>" }
+                .joined()
+            return "<tr>\(tds)</tr>"
+        }.joined()
+
+        return tableBlockHTML
+            .replacingOccurrences(
+                of: "<thead><tr><th>Column 1</th><th>Column 2</th><th>Column 3</th></tr></thead>",
+                with: "<thead><tr>\(headCells)</tr></thead>")
+            .replacingOccurrences(
+                of: "<tbody><tr><td></td><td></td><td></td></tr><tr><td></td><td></td><td></td></tr></tbody>",
+                with: "<tbody>\(bodyRows)</tbody>")
+    }
+
+    /// Build a checklist from one item per line, tolerating the bullet and
+    /// numbering styles a model reaches for unprompted.
+    static func checklistBlockHTML(from body: String) -> String {
+        let items = body
+            .split(separator: "\n")
+            .map { line -> String in
+                var text = line.trimmingCharacters(in: .whitespaces)
+                for marker in ["- [ ] ", "- [x] ", "- ", "* ", "• "] {
+                    if text.hasPrefix(marker) {
+                        text = String(text.dropFirst(marker.count))
+                        break
+                    }
+                }
+                // "1. Step" / "2) Step"
+                if let dot = text.firstIndex(where: { $0 == "." || $0 == ")" }),
+                   text[text.startIndex..<dot].allSatisfy(\.isNumber),
+                   dot > text.startIndex {
+                    text = String(text[text.index(after: dot)...])
+                        .trimmingCharacters(in: .whitespaces)
+                }
+                return text
+            }
+            .filter { !$0.isEmpty }
+        guard !items.isEmpty else { return checklistBlockHTML }
+
+        let rendered = items.map {
+            "<div class=\"item\"><input type=\"checkbox\">"
+            + "<span class=\"penpal-item-text\">\(escapeHTML($0))</span></div>"
+        }.joined()
+
+        return checklistBlockHTML.replacingOccurrences(
+            of: "<div class=\"item\"><input type=\"checkbox\"><span class=\"penpal-item-text\">First item</span></div>\n      <div class=\"item\"><input type=\"checkbox\"><span class=\"penpal-item-text\">Second item</span></div>\n      <div class=\"item\"><input type=\"checkbox\"><span class=\"penpal-item-text\">Third item</span></div>",
+            with: rendered)
+    }
+
     static func imageBlockHTML(base64JPEG: String) -> String {
         """
         <div id="penpal-content">

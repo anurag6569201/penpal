@@ -63,6 +63,7 @@ struct NavigationDrawerView: View {
         }
         .shadow(color: .black.opacity(0.18), radius: 24, x: 8, y: 8)
         .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape, onClose)
         .onChange(of: isPresented) { _, open in
             // Every time it opens, land on the notes list (no slide animation).
             if open { page = .notes }

@@ -2,10 +2,46 @@
 //  NotesListView.swift
 //  penpal
 //
-//  Apple Notes style list + gallery, multi-select, rename, trash management.
+//  Ink Studio library: search, notes, gallery, and collection management.
 //
 
 import SwiftUI
+import UIKit
+
+private struct NoteThumbnailView<Placeholder: View>: View {
+    let note: Note
+    @ViewBuilder var placeholder: () -> Placeholder
+    @State private var image: UIImage?
+
+    private var cacheKey: String {
+        "\(note.id.uuidString)-\(note.modifiedAt.timeIntervalSinceReferenceDate)-\(note.drawingData.count)"
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: cacheKey) {
+            guard !note.drawingData.isEmpty else {
+                image = nil
+                return
+            }
+            let data = note.drawingData
+            let key = cacheKey
+            let rendered = await Task.detached(priority: .utility) {
+                Note.makeThumbnail(drawingData: data, cacheKey: key)
+            }.value
+            guard !Task.isCancelled else { return }
+            image = rendered
+        }
+    }
+}
 
 struct NotesListView: View {
     @ObservedObject var store: NotesStore
@@ -15,6 +51,7 @@ struct NotesListView: View {
     var onSelectNote: (UUID) -> Void
     var onNewNote: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewMode: ViewMode = .list
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
@@ -23,26 +60,31 @@ struct NotesListView: View {
     @State private var showMoveSheet = false
     @State private var confirmEmptyTrash = false
     @State private var confirmDeleteSelected = false
+    @State private var tagTarget: Note?
+    @State private var tagText = ""
+    @State private var searchText = ""
+    @State private var searchTask: Task<Void, Never>?
 
     enum ViewMode { case list, gallery }
 
-    private let selectionYellow = Color(red: 0.99, green: 0.79, blue: 0.11)
+    private let selectionAccent = Pen.inkAccent
 
     private var isTrash: Bool { store.recentlyDeletedSelected }
 
     var body: some View {
+        let visibleNotes = store.visibleNotes()
         VStack(spacing: 0) {
-            listTopBar
-            if !selecting && (!store.visibleNotes().isEmpty || !store.searchQuery.isEmpty) {
-                sidebarHeader
+            listTopBar(visibleNotes: visibleNotes)
+            if !selecting && (!visibleNotes.isEmpty || !store.searchQuery.isEmpty) {
+                sidebarHeader(hasVisibleNotes: !visibleNotes.isEmpty)
             }
             Group {
-                if store.visibleNotes().isEmpty {
+                if visibleNotes.isEmpty {
                     emptyState
                 } else if viewMode == .list {
-                    listView
+                    listView(notes: visibleNotes)
                 } else {
-                    galleryView
+                    galleryView(notes: visibleNotes)
                 }
             }
         }
@@ -50,8 +92,8 @@ struct NotesListView: View {
         // The enclosing NavigationDrawerView already supplies a solid
         // Pen.paperRaised backing — a translucent material here would stack
         // into a greyer blur over true black in dark mode.
-        .overlay(alignment: .bottom) {
-            if selecting { selectionBar } else { newNoteBar }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selecting { selectionBar } else { newNoteBar(noteCount: visibleNotes.count) }
         }
         .onChange(of: store.selectedFolderID) { _, _ in
             selecting = false
@@ -69,6 +111,21 @@ struct NotesListView: View {
                 }
                 renameTarget = nil
             }
+        }
+        .alert("Tags", isPresented: Binding(
+            get: { tagTarget != nil },
+            set: { if !$0 { tagTarget = nil } }
+        )) {
+            TextField("Course, exam, revision", text: $tagText)
+            Button("Cancel", role: .cancel) { tagTarget = nil }
+            Button("Save") {
+                if let id = tagTarget?.id {
+                    store.updateTags(tagText.split(separator: ",").map(String.init), for: id)
+                }
+                tagTarget = nil
+            }
+        } message: {
+            Text("Separate tags with commas. Tags make notes easy to find without moving them out of their folders.")
         }
         .sheet(isPresented: $showMoveSheet) {
             moveSheet
@@ -91,12 +148,13 @@ struct NotesListView: View {
 
     // MARK: Top bar (in-body, so it stays within the sidebar)
 
-    private var listTopBar: some View {
-        HStack(spacing: 12) {
+    private func listTopBar(visibleNotes: [Note]) -> some View {
+        let allSelected = !visibleNotes.isEmpty && selectedIDs.count == visibleNotes.count
+        return HStack(spacing: 12) {
             if selecting {
                 Button(allSelected ? "Deselect All" : "Select All") {
                     if allSelected { selectedIDs = [] }
-                    else { selectedIDs = Set(store.visibleNotes().map(\.id)) }
+                    else { selectedIDs = Set(visibleNotes.map(\.id)) }
                 }
                 Spacer(minLength: 0)
                 Text("\(selectedIDs.count) Selected")
@@ -109,12 +167,17 @@ struct NotesListView: View {
                 Button(action: onBack) {
                     Label("Folders", systemImage: "chevron.left")
                         .labelStyle(.titleAndIcon)
+                        .frame(minHeight: 44)
                 }
-                Spacer(minLength: 8)
+                .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 16)
                 Text(folderTitle)
-                    .font(.headline)
+                    .font(.system(.title3, design: .serif, weight: .semibold))
+                    .foregroundStyle(Pen.inkPrimary)
                     .lineLimit(1)
-                Spacer(minLength: 0)
+                    .truncationMode(.tail)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityAddTraits(.isHeader)
             }
         }
         .tint(Pen.inkAccent)
@@ -129,14 +192,25 @@ struct NotesListView: View {
     /// in the navigation bar. In the floating drawer, `.searchable` and nav-bar
     /// toolbar items were surfacing in the app's top bar to the right of the
     /// panel; keeping them in the body guarantees they stay within the sidebar.
-    private var sidebarHeader: some View {
+    private func sidebarHeader(hasVisibleNotes: Bool) -> some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(Pen.inkFaded)
-                TextField("Search", text: $store.searchQuery)
+                TextField("Find a thought", text: $searchText)
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
+                    .onChange(of: searchText) { _, value in
+                        searchTask?.cancel()
+                        searchTask = Task {
+                            try? await Task.sleep(nanoseconds: 200_000_000)
+                            guard !Task.isCancelled else { return }
+                            store.searchQuery = value
+                        }
+                    }
+                    .onChange(of: store.searchQuery) { _, value in
+                        if searchText != value { searchText = value }
+                    }
                 if !store.searchQuery.isEmpty {
                     Button {
                         store.searchQuery = ""
@@ -148,7 +222,7 @@ struct NotesListView: View {
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(minHeight: 44)
             .background(Pen.inkPrimary.opacity(0.06),
                         in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
@@ -156,11 +230,11 @@ struct NotesListView: View {
                 Button("Select Notes", systemImage: "checkmark.circle") {
                     selecting = true
                 }
-                .disabled(store.visibleNotes().isEmpty)
+                .disabled(!hasVisibleNotes)
 
                 Button(viewMode == .list ? "View as Gallery" : "View as List",
                        systemImage: viewMode == .list ? "square.grid.2x2" : "list.bullet") {
-                    withAnimation { viewMode = viewMode == .list ? .gallery : .list }
+                    withAnimation(reduceMotion ? nil : Pen.spring) { viewMode = viewMode == .list ? .gallery : .list }
                 }
 
                 if isTrash {
@@ -168,25 +242,22 @@ struct NotesListView: View {
                     Button("Recover All", systemImage: "arrow.uturn.backward") {
                         store.recoverAllDeleted()
                     }
-                    .disabled(store.visibleNotes().isEmpty)
+                    .disabled(!hasVisibleNotes)
                     Button("Delete All", systemImage: "trash", role: .destructive) {
                         confirmEmptyTrash = true
                     }
-                    .disabled(store.visibleNotes().isEmpty)
+                    .disabled(!hasVisibleNotes)
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.title3)
                     .foregroundStyle(Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
             }
         }
         .padding(.horizontal, 14)
         .padding(.top, 8)
         .padding(.bottom, 6)
-    }
-
-    private var allSelected: Bool {
-        !store.visibleNotes().isEmpty && selectedIDs.count == store.visibleNotes().count
     }
 
     private func endSelecting() {
@@ -200,9 +271,9 @@ struct NotesListView: View {
 
     // MARK: List
 
-    private var listView: some View {
+    private func listView(notes: [Note]) -> some View {
         List {
-            ForEach(groupedNotes, id: \.title) { group in
+            ForEach(groupedNotes(from: notes), id: \.title) { group in
                 Section {
                     ForEach(group.notes) { note in
                         listRow(note)
@@ -211,12 +282,12 @@ struct NotesListView: View {
                     }
                 } header: {
                     Text(group.title)
-                        .font(.title3.weight(.bold))
+                        .font(.caption.weight(.semibold))
+                        .tracking(1.2)
                         .foregroundStyle(Pen.inkPrimary)
                         .textCase(nil)
                 }
             }
-            Color.clear.frame(height: 64).listRowSeparator(.hidden)
         }
         .listStyle(.plain)
         .environment(\.defaultMinListRowHeight, 10)
@@ -228,7 +299,7 @@ struct NotesListView: View {
             if selecting {
                 Image(systemName: selectedIDs.contains(note.id) ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(selectedIDs.contains(note.id) ? selectionYellow : Pen.inkFaded)
+                    .foregroundStyle(selectedIDs.contains(note.id) ? selectionAccent : Pen.inkFaded)
             }
             rowContent(note)
         }
@@ -243,7 +314,7 @@ struct NotesListView: View {
         .swipeActions(edge: .trailing) { swipeButtons(note) }
         .listRowBackground(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isSel ? selectionYellow : Color.clear)
+                .fill(isSel ? Pen.accentWash : Color.clear)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
         )
@@ -261,11 +332,22 @@ struct NotesListView: View {
                     Text(note.preview).foregroundStyle(Pen.inkFaded).lineLimit(1)
                 }
                 .font(.subheadline)
+                if !note.normalizedTags.isEmpty {
+                    Text(note.normalizedTags.map { "#\($0)" }.joined(separator: "  "))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Pen.inkAccent)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
-            if let thumb = note.thumbnail {
-                Image(uiImage: thumb)
-                    .resizable().scaledToFill()
+            if note.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.caption)
+                    .foregroundStyle(Pen.inkAccent)
+                    .accessibilityLabel("Pinned")
+            }
+            if !note.drawingData.isEmpty {
+                NoteThumbnailView(note: note) { EmptyView() }
                     .frame(width: 46, height: 46)
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -276,15 +358,15 @@ struct NotesListView: View {
 
     // MARK: Gallery
 
-    private var galleryView: some View {
+    private func galleryView(notes: [Note]) -> some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 20) {
-                ForEach(store.visibleNotes()) { note in
+                ForEach(notes) { note in
                     galleryCard(note)
                 }
             }
             .padding(16)
-            .padding(.bottom, 64)
+            .padding(.bottom, 12)
         }
     }
 
@@ -295,9 +377,14 @@ struct NotesListView: View {
                     .fill(Pen.paperRaised)
                     .aspectRatio(0.78, contentMode: .fit)
                     .overlay {
-                        if let thumb = note.thumbnail {
-                            Image(uiImage: thumb)
-                                .resizable().scaledToFill()
+                        if !note.drawingData.isEmpty {
+                            NoteThumbnailView(note: note) {
+                                Text(note.preview)
+                                    .font(.caption2)
+                                    .foregroundStyle(Pen.inkFaded)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            }
                         } else {
                             Text(note.preview)
                                 .font(.caption2)
@@ -310,15 +397,21 @@ struct NotesListView: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .strokeBorder(store.selectedNoteID == note.id && !selecting
-                                          ? selectionYellow : Pen.inkPrimary.opacity(0.08),
+                                          ? selectionAccent : Pen.inkPrimary.opacity(0.08),
                                           lineWidth: store.selectedNoteID == note.id && !selecting ? 3 : 1)
                     )
 
                 if selecting {
                     Image(systemName: selectedIDs.contains(note.id) ? "checkmark.circle.fill" : "circle")
                         .font(.title2)
-                        .foregroundStyle(selectedIDs.contains(note.id) ? selectionYellow : .white)
+                        .foregroundStyle(selectedIDs.contains(note.id) ? selectionAccent : .white)
                         .background(Circle().fill(.black.opacity(0.25)))
+                        .padding(8)
+                }
+                if note.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption)
+                        .foregroundStyle(Pen.inkAccent)
                         .padding(8)
                 }
             }
@@ -354,6 +447,13 @@ struct NotesListView: View {
                 selectedIDs = [note.id]
                 showMoveSheet = true
             }
+            Button(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin") {
+                store.setPinned(!note.pinned, for: note.id)
+            }
+            Button("Edit Tags", systemImage: "tag") {
+                tagTarget = note
+                tagText = note.normalizedTags.joined(separator: ", ")
+            }
             Button("Delete", systemImage: "trash", role: .destructive) {
                 store.deleteNote(note.id)
             }
@@ -384,14 +484,21 @@ struct NotesListView: View {
 
     // MARK: Bottom bars
 
-    private var newNoteBar: some View {
-        HStack {
-            Spacer()
-            Text("\(store.visibleNotes().count) Notes")
-                .font(.footnote).foregroundStyle(Pen.inkFaded)
-            Spacer()
+    private func newNoteBar(noteCount: Int) -> some View {
+        VStack(spacing: 10) {
+            if !isTrash {
+                Button {
+                    Pen.tapHaptic()
+                    onNewNote()
+                } label: {
+                    Label("New note", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(PenPrimaryButtonStyle())
+            }
+            Text("\(noteCount) notes in this space")
+                .font(Pen.caption).foregroundStyle(Pen.inkFaded)
         }
-        .padding(.vertical, 10)
+        .padding(16)
         .background(Pen.paperRaised)
     }
 
@@ -455,26 +562,36 @@ struct NotesListView: View {
     // MARK: Empty state
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: isTrash ? "trash" : "note.text")
-                .font(.system(size: 44)).foregroundStyle(.tertiary)
-            Text(isTrash ? "No Deleted Notes" : "No Notes")
-                .font(.title3.weight(.semibold)).foregroundStyle(Pen.inkFaded)
-            if !isTrash {
-                Button("Create Note", action: onNewNote).buttonStyle(.bordered)
+        let searching = !store.searchQuery.isEmpty
+        return VStack(spacing: 16) {
+            Image(systemName: searching ? "magnifyingglass" : (isTrash ? "trash" : "pencil.and.outline"))
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(Pen.inkAccent)
+                .frame(width: 80, height: 80)
+                .background(Pen.accentWash, in: RoundedRectangle(cornerRadius: 24))
+            Text(searching ? "No matching thoughts" : (isTrash ? "Nothing here for now" : "A little room to think"))
+                .font(.system(.title2, design: .serif)).foregroundStyle(Pen.inkPrimary)
+            Text(searching ? "Try a different title or tag." : (isTrash ? "Deleted notes will appear here." : "Start with a question, a sketch, or whatever is on your mind."))
+                .font(Pen.sub).foregroundStyle(Pen.inkFaded)
+                .multilineTextAlignment(.center)
+            if searching {
+                Button("Clear search") { store.searchQuery = "" }
+                    .buttonStyle(PenQuietButtonStyle())
             }
         }
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Pen.paper)
+        .background(Pen.paperRaised)
     }
 
     // MARK: Grouping
 
     private struct NoteGroup { let title: String; let notes: [Note] }
 
-    private var groupedNotes: [NoteGroup] {
+    private func groupedNotes(from notes: [Note]) -> [NoteGroup] {
         let cal = Calendar.current
-        let notes = store.visibleNotes()
+        let pinned = notes.filter(\.pinned)
+        let unpinned = notes.filter { !$0.pinned }
         var today: [Note] = []
         var yesterday: [Note] = []
         var previous7: [Note] = []
@@ -486,7 +603,7 @@ struct NotesListView: View {
 
         // Group by creation date so sections always match the (stable,
         // created-newest-first) list order — editing a note no longer moves it.
-        for note in notes {
+        for note in unpinned {
             if cal.isDateInToday(note.createdAt) { today.append(note) }
             else if cal.isDateInYesterday(note.createdAt) { yesterday.append(note) }
             else if let days = cal.dateComponents([.day], from: note.createdAt, to: .now).day, days < 7 {
@@ -503,6 +620,7 @@ struct NotesListView: View {
         }
 
         var groups: [NoteGroup] = []
+        if !pinned.isEmpty { groups.append(.init(title: "Pinned", notes: pinned)) }
         if !today.isEmpty { groups.append(.init(title: "Today", notes: today)) }
         if !yesterday.isEmpty { groups.append(.init(title: "Yesterday", notes: yesterday)) }
         if !previous7.isEmpty { groups.append(.init(title: "Previous 7 Days", notes: previous7)) }

@@ -28,7 +28,12 @@
 import PencilKit
 import UIKit
 
-enum NoteExporter {
+nonisolated struct NoteDrawingShareFiles: Sendable {
+    var pdf: URL?
+    var image: URL?
+}
+
+nonisolated enum NoteExporter {
 
     /// Margin around the ink, in points.
     private static let margin: CGFloat = 48
@@ -102,6 +107,22 @@ enum NoteExporter {
 
     // MARK: - Formats
 
+    /// Produces shareable files from the persisted drawing data. This entry
+    /// point is safe to run on a user-initiated background task so large pages
+    /// don't freeze the editor while their PDF and preview are rendered.
+    static func shareFiles(drawingData: Data,
+                           title: String,
+                           paperStyle: String) -> NoteDrawingShareFiles {
+        guard let drawing = try? PKDrawing(data: drawingData),
+              !drawing.strokes.isEmpty else {
+            return NoteDrawingShareFiles(pdf: nil, image: nil)
+        }
+        return NoteDrawingShareFiles(
+            pdf: pdf(for: drawing, title: title, paperStyle: paperStyle),
+            image: imageFile(for: drawing, title: title, paperStyle: paperStyle)
+        )
+    }
+
     /// A vector PDF of the note. Nil when there is no ink to export.
     static func pdf(for drawing: PKDrawing, title: String,
                     paperStyle: String) -> URL? {
@@ -115,8 +136,7 @@ enum NoteExporter {
         let renderer = UIGraphicsPDFRenderer(
             bounds: CGRect(origin: .zero, size: rect.size), format: format)
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(safeFilename(title)).pdf")
+        let url = exportURL(title: title, fileExtension: "pdf")
         do {
             try renderer.writePDF(to: url) { context in
                 context.beginPage()
@@ -140,6 +160,30 @@ enum NoteExporter {
         return UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in
             draw(drawing, in: rect, paperStyle: paperStyle, scale: 2)
         }
+    }
+
+    /// Writes the flattened image directly to a temporary file. Returning a
+    /// URL keeps the rendered bitmap off the main actor and avoids rebuilding
+    /// a large `UIImage` when the share sheet asks for its preview.
+    private static func imageFile(for drawing: PKDrawing,
+                                  title: String,
+                                  paperStyle: String) -> URL? {
+        guard let data = image(for: drawing, paperStyle: paperStyle)?.pngData() else {
+            return nil
+        }
+        let url = exportURL(title: title, fileExtension: "png")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            print("PNG export failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func exportURL(title: String, fileExtension: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(safeFilename(title))-\(UUID().uuidString).\(fileExtension)")
     }
 
     private static func safeFilename(_ title: String) -> String {

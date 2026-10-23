@@ -265,6 +265,8 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     var title: String
     var body: String
     var drawingData: Data
+    /// Stable canvas width; absent on notes created before proportional layout.
+    var paperWidth: CGFloat?
     var attachments: [NoteAttachment]
     /// Typed Penpal chat texts placed on the page (optional for backward
     /// compatibility with notes saved before this existed).
@@ -282,16 +284,27 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     var createdAt: Date
     var modifiedAt: Date
     var deletedAt: Date?
+    /// Optional for backward compatibility with local libraries written before
+    /// PEN-46. Tags are notebook metadata, not hidden text inserted onto paper.
+    var tags: [String]?
+    /// Optional for the same migration reason. Pinned notes remain in their
+    /// folders; pinning changes retrieval, never ownership.
+    var isPinned: Bool?
     /// PEN-18 — text of Penpal's written replies, kept for search.
     /// The reply is known as text before it is drawn, so indexing it is free.
     /// Optional for backward compatibility with notes saved before this.
     var replyTranscript: [String]?
+    /// A local Vision transcript of the user's ink. This is an index for
+    /// search and accessibility, never a replacement for the original strokes.
+    /// Optional so pre-existing note libraries migrate without a rewrite.
+    var handwritingTranscript: String?
 
     init(id: UUID = UUID(),
          folderID: UUID,
          title: String = "",
          body: String = "",
          drawingData: Data = Data(),
+         paperWidth: CGFloat? = nil,
          attachments: [NoteAttachment] = [],
          typedTexts: [TypedNoteText]? = nil,
          replyInks: [ReplyInk]? = nil,
@@ -300,12 +313,16 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
          htmlContent: String? = nil,
          createdAt: Date = .now,
          modifiedAt: Date = .now,
-         deletedAt: Date? = nil) {
+         deletedAt: Date? = nil,
+         tags: [String]? = nil,
+         isPinned: Bool? = nil,
+         handwritingTranscript: String? = nil) {
         self.id = id
         self.folderID = folderID
         self.title = title
         self.body = body
         self.drawingData = drawingData
+        self.paperWidth = paperWidth
         self.attachments = attachments
         self.typedTexts = typedTexts
         self.replyInks = replyInks
@@ -315,21 +332,51 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
         self.createdAt = createdAt
         self.modifiedAt = modifiedAt
         self.deletedAt = deletedAt
+        self.tags = tags
+        self.isPinned = isPinned
+        self.handwritingTranscript = handwritingTranscript
+    }
+
+    /// Legacy notes have no recorded viewport width. Include every saved
+    /// content type when choosing a page wide enough to preserve their layout.
+    var resolvedPaperWidth: CGFloat {
+        if let paperWidth, paperWidth.isFinite, paperWidth >= 320 {
+            return paperWidth
+        }
+        let ink = drawing
+        var rightEdges: [CGFloat] = [768 - 24]
+        if !ink.strokes.isEmpty { rightEdges.append(ink.bounds.maxX) }
+        rightEdges += (typedTexts ?? []).map(\.maxX)
+        rightEdges += (replyInks ?? []).compactMap { ink in
+            let rect = ink.boundingRect
+            return rect.isNull ? nil : rect.maxX
+        }
+        rightEdges += (codeBlocks ?? []).map { $0.frame.maxX }
+        return (rightEdges.filter { $0.isFinite && $0 >= 0 }.max() ?? 744) + 24
     }
 
     var isDeleted: Bool { deletedAt != nil }
 
     var isCoded: Bool { kind == .coded }
 
-    /// PEN-18 — everything on this page that is already text: typed notes and
-    /// Penpal's replies. Used for search alongside title and body.
-    var searchableText: String {
-        var parts: [String] = []
-        if let typed = typedTexts { parts += typed.map(\.text) }
-        if let transcript = replyTranscript { parts += transcript }
-        if let html = htmlContent, !html.isEmpty { parts.append(html) }
-        if let blocks = codeBlocks { parts += blocks.map(\.html) }
-        return parts.joined(separator: "\n")
+    var normalizedTags: [String] { tags ?? [] }
+    var pinned: Bool { isPinned == true }
+
+    /// Search each persisted text field directly. Joining all page content
+    /// first copies potentially large HTML blocks into a temporary string on
+    /// every query, even when the title or body already matches.
+    func matchesSearch(_ query: String) -> Bool {
+        if displayTitle.localizedCaseInsensitiveContains(query)
+            || body.localizedCaseInsensitiveContains(query)
+            || normalizedTags.contains(where: { $0.localizedCaseInsensitiveContains(query) })
+            || (typedTexts ?? []).contains(where: { $0.text.localizedCaseInsensitiveContains(query) })
+            || (replyTranscript ?? []).contains(where: { $0.localizedCaseInsensitiveContains(query) })
+            || (handwritingTranscript?.localizedCaseInsensitiveContains(query) ?? false)
+            || (htmlContent?.localizedCaseInsensitiveContains(query) ?? false)
+            || (codeBlocks ?? []).contains(where: { $0.html.localizedCaseInsensitiveContains(query) }) {
+            return true
+        }
+        return false
     }
 
     var displayTitle: String {
@@ -375,23 +422,42 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     }
 
     // NSCache is documented thread-safe; safe to share without isolation.
-    nonisolated(unsafe) private static let thumbnailCache = NSCache<NSString, UIImage>()
+    nonisolated(unsafe) private static let thumbnailCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 96
+        cache.totalCostLimit = 24 * 1024 * 1024
+        return cache
+    }()
 
-    var thumbnail: UIImage? {
+    nonisolated static func makeThumbnail(drawingData: Data, cacheKey: String) -> UIImage? {
         guard !drawingData.isEmpty else { return nil }
-        // Decoding the PKDrawing + rasterizing it is expensive; SwiftUI asks
-        // for this on every list refresh, so cache by note id + revision.
-        let key = "\(id.uuidString)-\(modifiedAt.timeIntervalSinceReferenceDate)-\(drawingData.count)" as NSString
+        let key = cacheKey as NSString
         if let hit = Self.thumbnailCache.object(forKey: key) { return hit }
-        let d = drawing
+        let d = (try? PKDrawing(data: drawingData)) ?? PKDrawing()
         guard !d.strokes.isEmpty else { return nil }
-        let bounds = d.bounds.insetBy(dx: -20, dy: -20)
+        var bounds = d.bounds.insetBy(dx: -20, dy: -20)
         guard bounds.width > 1, bounds.height > 1,
               bounds.width.isFinite, bounds.height.isFinite else { return nil }
-        let image = d.image(from: bounds, scale: 1.5)
-        Self.thumbnailCache.setObject(image, forKey: key)
+        // A note can contain many infinite-paper pages. The sidebar and
+        // gallery only need a cover preview, so cap the rasterized region to
+        // one page instead of allocating an image as tall as the whole note.
+        bounds.size.width = min(bounds.width, 1_024)
+        let coverHeight = bounds.width / 0.78
+        bounds.size.height = min(bounds.height, coverHeight)
+        let maxPixels: CGFloat = 384
+        let scale = min(1.5, maxPixels / max(bounds.width, bounds.height))
+        let image = d.image(from: bounds, scale: scale)
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+        Self.thumbnailCache.setObject(image, forKey: key, cost: cost)
         return image
     }
+}
+
+nonisolated struct NotebookBackupRestoreSummary: Equatable {
+    var importedNotes: Int
+    var importedFolders: Int
+    var skippedExistingNotes: Int
+    var skippedMissingAttachments: Int
 }
 
 // MARK: - Store
@@ -409,6 +475,9 @@ final class NotesStore: ObservableObject {
 
     private let saveURL: URL
     private let attachmentsDir: URL
+    // The notebook snapshot is large. Serialize its writes on DebouncedSaver's
+    // utility queue so two saves cannot race and an older snapshot cannot win.
+    private let diskSaver = DebouncedSaver(delay: 0)
     private var saveTask: Task<Void, Never>?
 
     private init() {
@@ -488,26 +557,13 @@ final class NotesStore: ObservableObject {
     /// PEN-18 — search across what's actually ON the page, not just the
     /// title and the sticky note.
     ///
-    /// A note whose entire content is handwriting was previously unfindable:
-    /// title and body are often empty for exactly the pages that matter most
-    /// (a worked-out problem, a solved worksheet). Two of the three kinds of
-    /// page content are already text and cost nothing to index:
-    ///
-    ///   * typed notes placed on the page
-    ///   * **Penpal's replies** — the same insight as the VoiceOver work: the
-    ///     answer arrives as text before it is ever drawn as ink
-    ///
-    /// The user's own handwriting still needs OCR to be searchable, which is
-    /// expensive and deliberately left out; indexing it lazily on save is the
-    /// obvious next step and is tracked separately.
+    /// Search covers typed page content, Penpal replies, tags and the local
+    /// handwriting transcript generated after a quiet pause. The transcript
+    /// is stored separately from the original ink and remains best-effort.
     private func filterSearch(_ notes: [Note]) -> [Note] {
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return notes }
-        return notes.filter { note in
-            note.displayTitle.localizedCaseInsensitiveContains(q)
-                || note.body.localizedCaseInsensitiveContains(q)
-                || note.searchableText.localizedCaseInsensitiveContains(q)
-        }
+        return notes.filter { $0.matchesSearch(q) }
     }
 
     func childFolders(of parentID: UUID?) -> [NoteFolder] {
@@ -589,10 +645,27 @@ final class NotesStore: ObservableObject {
            (existing.codeBlocks ?? []) == (note.codeBlocks ?? []),
            existing.kind == note.kind,
            existing.htmlContent == note.htmlContent,
+           existing.normalizedTags == note.normalizedTags,
+           existing.pinned == note.pinned,
            existing.folderID == note.folderID {
+            // Layout migration should survive reopening without moving an
+            // otherwise untouched note to the top of the recents list.
+            if existing.paperWidth != note.paperWidth {
+                notes[idx].paperWidth = note.paperWidth
+                scheduleSave()
+            }
             return
         }
         var updated = note
+        // The editor does not own OCR. Preserve a completed index when it is
+        // saving the same drawing, and invalidate/rebuild only when the ink
+        // actually changed.
+        if existing.drawingData == note.drawingData {
+            updated.handwritingTranscript = existing.handwritingTranscript
+        } else {
+            updated.handwritingTranscript = nil
+            scheduleHandwritingIndex(for: note.id, drawing: note.drawing)
+        }
         updated.modifiedAt = .now
         notes[idx] = updated
         scheduleSave()
@@ -601,29 +674,90 @@ final class NotesStore: ObservableObject {
     // Live ink updates arrive on every stroke. Serializing the PKDrawing and
     // publishing `notes` (which re-renders the whole list + thumbnails) per
     // stroke makes writing stutter — coalesce into one commit per pause.
-    private var pendingDrawing: (id: UUID, drawing: PKDrawing)?
+    private var pendingDrawing: (id: UUID, drawing: PKDrawing, revision: UUID)?
     private var drawingCommitTask: Task<Void, Never>?
+    private var handwritingIndexTasks: [UUID: Task<Void, Never>] = [:]
+    private var handwritingIndexRevisions: [UUID: UUID] = [:]
 
     func updateSelectedDrawing(_ drawing: PKDrawing) {
         guard let id = selectedNoteID else { return }
-        pendingDrawing = (id, drawing)
+        invalidateHandwritingIndex(for: id)
+        let revision = UUID()
+        pendingDrawing = (id, drawing, revision)
         drawingCommitTask?.cancel()
         drawingCommitTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !Task.isCancelled else { return }
-            self?.commitPendingDrawing()
+            // Coalesce pauses between strokes so an active writing session
+            // does not repeatedly publish the full notes collection.
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled, let self,
+                  let pending = self.pendingDrawing,
+                  pending.revision == revision else { return }
+            // PencilKit's archive grows with the page. Keep that work off the
+            // main actor; the revision check below discards stale snapshots.
+            let data = await Task.detached(priority: .utility) {
+                pending.drawing.dataRepresentation()
+            }.value
+            guard !Task.isCancelled,
+                  self.pendingDrawing?.revision == revision else { return }
+            self.commitPendingDrawing(pending, data: data)
         }
     }
 
     private func commitPendingDrawing() {
         guard let pending = pendingDrawing else { return }
+        commitPendingDrawing(pending, data: pending.drawing.dataRepresentation())
+    }
+
+    private func commitPendingDrawing(
+        _ pending: (id: UUID, drawing: PKDrawing, revision: UUID),
+        data: Data
+    ) {
+        guard pendingDrawing?.revision == pending.revision else { return }
         pendingDrawing = nil
         guard let idx = notes.firstIndex(where: { $0.id == pending.id }) else { return }
-        let newData = pending.drawing.dataRepresentation()
-        guard notes[idx].drawingData != newData else { return }
-        notes[idx].drawingData = newData
+        guard notes[idx].drawingData != data else {
+            if notes[idx].handwritingTranscript == nil {
+                scheduleHandwritingIndex(for: pending.id, drawing: pending.drawing)
+            }
+            return
+        }
+        notes[idx].drawingData = data
+        notes[idx].handwritingTranscript = nil
         notes[idx].modifiedAt = .now
         scheduleSave()
+        scheduleHandwritingIndex(for: pending.id, drawing: pending.drawing)
+    }
+
+    /// OCR runs only after a quiet pause, locally, and on the exact drawing
+    /// revision it saw. A later stroke cancels the older index task, so search
+    /// can never show words from ink the user has subsequently erased.
+    private func scheduleHandwritingIndex(for id: UUID, drawing: PKDrawing) {
+        let revision = UUID()
+        handwritingIndexRevisions[id] = revision
+        handwritingIndexTasks[id]?.cancel()
+        handwritingIndexTasks[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            let transcript = await InkRecognizer.recognize(strokes: drawing.strokes)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !Task.isCancelled,
+                  let self,
+                  let idx = self.notes.firstIndex(where: { $0.id == id }),
+                  self.handwritingIndexRevisions[id] == revision else { return }
+            self.handwritingIndexTasks[id] = nil
+            self.handwritingIndexRevisions[id] = nil
+            guard self.notes[idx].handwritingTranscript != transcript else { return }
+            self.notes[idx].handwritingTranscript = transcript.isEmpty ? nil : transcript
+            self.scheduleSave()
+        }
+    }
+
+    private func invalidateHandwritingIndex(for id: UUID) {
+        handwritingIndexTasks[id]?.cancel()
+        handwritingIndexTasks[id] = nil
+        // This also invalidates OCR that's already running and cannot be
+        // cancelled by Vision while the user is adding another stroke.
+        handwritingIndexRevisions[id] = UUID()
     }
 
     /// AI hand-written replies for the selected note (persisted with it).
@@ -749,6 +883,33 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Tags are deliberately normalized at the storage boundary so search and
+    /// future smart folders do not need to guess whether `Math`, `math`, and
+    /// ` math ` are three different courses.
+    func updateTags(_ rawTags: [String], for id: UUID) {
+        guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        var seen = Set<String>()
+        let cleaned = rawTags.compactMap { raw -> String? in
+            let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tag.isEmpty else { return nil }
+            let key = tag.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard seen.insert(key).inserted else { return nil }
+            return String(tag.prefix(40))
+        }
+        guard notes[idx].normalizedTags != cleaned else { return }
+        notes[idx].tags = cleaned.isEmpty ? nil : cleaned
+        notes[idx].modifiedAt = .now
+        scheduleSave()
+    }
+
+    func setPinned(_ pinned: Bool, for id: UUID) {
+        guard let idx = notes.firstIndex(where: { $0.id == id }),
+              notes[idx].pinned != pinned else { return }
+        notes[idx].isPinned = pinned ? true : nil
+        notes[idx].modifiedAt = .now
+        scheduleSave()
+    }
+
     // MARK: Batch operations (multi-select)
 
     func deleteNotes(_ ids: Set<UUID>, permanently: Bool = false) {
@@ -863,6 +1024,97 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
+    // MARK: Portable backup and recovery
+
+    /// Creates a self-contained `.penpalbackup` archive. The archive includes
+    /// the notebook metadata, PencilKit drawings and attachments; it is safe
+    /// to keep in Files, iCloud Drive, Google Drive or an external disk.
+    func exportNotebookBackup() throws -> URL {
+        flushToDisk()
+        let contents = NotebookBackupContents(
+            folders: folders,
+            notes: notes,
+            selectedFolderID: selectedFolderID,
+            selectedNoteID: selectedNoteID
+        )
+        return try NotebookBackup.write(contents, attachmentsDirectory: attachmentsDir)
+    }
+
+    /// Merges a backup rather than replacing the live library. This is the
+    /// only safe default for recovery: an import must never erase a semester
+    /// of newer local work. Existing note IDs win; a future conflict UI can
+    /// offer side-by-side resolution for an intentionally restored revision.
+    @discardableResult
+    func restoreNotebookBackup(from archive: URL) throws -> NotebookBackupRestoreSummary {
+        flushToDisk()
+        let restore = try NotebookBackup.read(from: archive)
+
+        let importedFolderIDs = Set(restore.contents.folders.map(\.id))
+        let fallbackFolderID = resolveWritableFolderID(nil)
+        var skippedExistingNotes = 0
+        var skippedMissingAttachments = 0
+        var copiedAttachmentURLs: [URL] = []
+        var stagedNotes: [Note] = []
+
+        do {
+            for original in restore.contents.notes {
+                guard !notes.contains(where: { $0.id == original.id }) else {
+                    skippedExistingNotes += 1
+                    continue
+                }
+                var note = original
+                if !importedFolderIDs.contains(note.folderID)
+                    && !folders.contains(where: { $0.id == note.folderID }) {
+                    note.folderID = fallbackFolderID
+                }
+
+                var restoredAttachments: [NoteAttachment] = []
+                for attachment in note.attachments {
+                    guard let data = restore.attachmentData[attachment.filename] else {
+                        skippedMissingAttachments += 1
+                        continue
+                    }
+                    let ext = URL(fileURLWithPath: attachment.filename).pathExtension
+                    let filename = UUID().uuidString + (ext.isEmpty ? "" : ".\(ext)")
+                    let destination = attachmentsDir.appendingPathComponent(filename)
+                    try data.write(to: destination, options: .atomic)
+                    copiedAttachmentURLs.append(destination)
+                    restoredAttachments.append(NoteAttachment(id: attachment.id,
+                                                              filename: filename,
+                                                              createdAt: attachment.createdAt))
+                }
+                note.attachments = restoredAttachments
+                stagedNotes.append(note)
+            }
+        } catch {
+            // A full disk or failed file write must not leave a half-restored
+            // notebook behind. The live metadata has not changed yet, and
+            // every attachment written by this import is ours to remove.
+            for url in copiedAttachmentURLs { try? FileManager.default.removeItem(at: url) }
+            throw error
+        }
+
+        var importedFolders = 0
+        for folder in restore.contents.folders where !folders.contains(where: { $0.id == folder.id }) {
+            folders.append(folder)
+            importedFolders += 1
+        }
+        ensureSystemFolders()
+        notes.append(contentsOf: stagedNotes)
+
+        if selectedFolderID == nil { selectedFolderID = restore.contents.selectedFolderID }
+        if selectedNoteID == nil { selectedNoteID = restore.contents.selectedNoteID }
+        if selectedFolder == nil { selectedFolderID = fallbackFolderID }
+        if selectedNote == nil { selectedNoteID = visibleNotes().first?.id }
+        scheduleSave()
+        return NotebookBackupRestoreSummary(
+            importedNotes: stagedNotes.count,
+            importedFolders: importedFolders,
+            skippedExistingNotes: skippedExistingNotes,
+            skippedMissingAttachments: skippedMissingAttachments
+        )
+    }
+
     // MARK: Persistence
 
     // nonisolated: encoded + written on a background queue by DebouncedSaver.
@@ -899,7 +1151,7 @@ final class NotesStore: ObservableObject {
                             selectedFolderID: selectedFolderID,
                             selectedNoteID: selectedNoteID)
         let url = saveURL
-        Task.detached(priority: .utility) {
+        diskSaver.schedule {
             DebouncedSaver.write(snap, to: url, label: "NotesStore")
         }
     }

@@ -6,6 +6,7 @@ from django.conf import settings
 
 import base64
 import binascii
+import logging
 
 from . import access, telemetry
 import json
@@ -15,6 +16,7 @@ from django.http import StreamingHttpResponse
 from .gemini import (
     GeminiError,
     SUPPORTED_LANGUAGES,
+    arrange_page,
     debate_turn as gemini_debate_turn,
     generate_interactive_block,
     generate_reply,
@@ -38,6 +40,8 @@ from .gemini import (
 # direct token-cost blowup and a trivial denial-of-wallet vector.
 MAX_MESSAGE_CHARS = 4000
 MAX_HISTORY_TURNS = 24
+
+logger = logging.getLogger(__name__)
 MAX_TURN_CHARS = 4000
 
 
@@ -284,6 +288,75 @@ def illustrate(request):
         **result,
         "model": settings.GEMINI_ILLUSTRATOR_MODEL or settings.GEMINI_MODEL,
         "capability": "illustrator",
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def arrange(request):
+    """
+    PEN-40 — plan a whole page and build every section in parallel.
+
+    Returns the composition plan plus each section's content. Deliberately
+    returns no geometry: only the device knows the page width, the user's
+    handwriting size, and how tall the rendered ink will actually be, so it
+    solves the layout itself from the roles, spans and anchors here.
+    """
+    denied = access.check(request)
+    if denied is not None:
+        return denied
+
+    data = request.data if isinstance(request.data, dict) else {}
+    message = str(data.get("message") or data.get("text") or "")[:MAX_MESSAGE_CHARS]
+    history = data.get("history") or []
+    if not message.strip():
+        return Response({"error": "message is required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(history, list):
+        return Response({"error": "history must be a list"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    quality = str(data.get("illustration_quality") or "").strip().lower()
+    if quality not in ("quick", "balanced", "detailed"):
+        quality = ("detailed"
+                   if getattr(settings, "ILLUSTRATOR_TRACE_ENABLED", True)
+                   else "quick")
+
+    # The device reports its writable width so each specialist can be told
+    # the size of the box it is building for. Without it a block is designed
+    # for an imaginary viewport and lands needing a manual resize.
+    try:
+        page_width = float(data.get("page_width") or 0)
+    except (TypeError, ValueError):
+        page_width = 0
+    if not 200 <= page_width <= 4000:
+        page_width = 0
+
+    conversation_id = str(data.get("conversation_id") or "")[:100]
+    try:
+        result = arrange_page(
+            message,
+            history=_clean_history(history),
+            language=str(data.get("language") or "")[:40],
+            math_detail=str(data.get("math_detail") or "compact")[:20],
+            illustration_quality=quality,
+            page_width=page_width,
+        )
+    except GeminiError as exc:
+        return Response({"error": str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except Exception:  # noqa: BLE001 — a bug here must not leak a traceback
+        logger.exception("Unexpected page arrangement failure")
+        return Response(
+            {"error": "The page could not be arranged. Try again."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({
+        **result,
+        "conversation_id": conversation_id,
+        "model": settings.GEMINI_MODEL,
+        "capability": "arranger",
     })
 
 
@@ -586,6 +659,11 @@ def interactive(request):
     except GeminiError as exc:
         return Response({"error": str(exc)},
                         status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except Exception:  # noqa: BLE001 — a bug here must not leak a traceback
+        logger.exception("Unexpected interactive build failure")
+        return Response(
+            {"error": "The interactive build failed unexpectedly. Try again."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     return Response({
         **result,
@@ -628,6 +706,11 @@ def repair_interactive(request):
     except GeminiError as exc:
         return Response({"error": str(exc)},
                         status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except Exception:  # noqa: BLE001 — a bug here must not leak a traceback
+        logger.exception("Unexpected interactive repair failure")
+        return Response(
+            {"error": "The repair failed unexpectedly. Try again."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return Response({
         **result,
         "model": settings.GEMINI_MODEL,

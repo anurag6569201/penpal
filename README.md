@@ -48,12 +48,11 @@ Always on, in any capability:
   Every numbered problem is solved in one pass and each answer is written
   beside its own question, top to bottom, as the pen works down the page.
   Problems that can't be read are named rather than silently skipped.
-- **Box a problem** — draw a box or circle around any written problem and
-  the ink inside is sent to the model as an image, no OCR in between: it
-  sees stacked fractions, exponents, roots and matrices exactly as drawn,
-  states its reading ("Reading as: ..."), and writes the verified answer
-  below the box. Math inside a box goes to the Mathematician even in
-  Companion mode.
+- **Ask or box** — after writing a question, tap Ask on the Penpal bar, or
+  draw a box around the ink. Both send in every mode: Companion replies,
+  Language and Debate respond, Interactive builds a block, Illustrator
+  sketches, and Mathematician solves from the boxed image (no OCR — it sees
+  stacked fractions, exponents, roots and matrices exactly as drawn).
 - **Import a photo** — Insert on Page → Import Page, pick a photo of an
   existing worksheet or notebook page, and Penpal rebuilds it: text and math
   come back as real ink in your own hand, top to bottom; anything that can't

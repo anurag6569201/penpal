@@ -24,6 +24,18 @@ enum PenpalWritingPace: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum PenpalWritingIndicator: String, CaseIterable, Identifiable {
+    case penpal, dot, none
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .penpal: "Penpal"
+        case .dot: "Dot"
+        case .none: "None"
+        }
+    }
+}
+
 /// One persisted source of truth for layout, rendering and Pencil capture.
 @MainActor
 final class HandwritingSettings: ObservableObject {
@@ -49,10 +61,8 @@ final class HandwritingSettings: ObservableObject {
     /// Selecting "active" makes replies always match whatever color the user
     /// is writing with right now, instead of a fixed reply color.
     @Published var activeToolColor: UIColor?
-    @Published var autoReply: Bool { didSet { save() } }
-    /// Seconds of quiet handwriting before a conversational auto reply.
-    @Published var autoReplyDelay: Double { didSet { save() } }
     /// Whether reply ink writes naturally, targets a duration, or appears now.
+    @Published var writingIndicator: PenpalWritingIndicator { didSet { save() } }
     @Published var writingPace: PenpalWritingPace { didSet { save() } }
     @Published var timedWritingSeconds: Double { didSet { save() } }
     @Published var diagnostics: Bool { didSet { save() } }
@@ -101,8 +111,9 @@ final class HandwritingSettings: ObservableObject {
         pencilOnly = defaults.object(forKey: "penpal.settings.pencilOnlyV3") as? Bool ?? true
         inkColorName = defaults.string(forKey: "penpal.settings.inkColor") ?? "indigo"
         customColorHex = defaults.string(forKey: "penpal.settings.customColorHex") ?? "#3B3B3B"
-        autoReply = defaults.object(forKey: "penpal.settings.autoReply") as? Bool ?? true
-        autoReplyDelay = defaults.object(forKey: "penpal.settings.autoReplyDelay") as? Double ?? 2
+        writingIndicator = PenpalWritingIndicator(
+            rawValue: defaults.string(forKey: "penpal.settings.writingIndicator") ?? ""
+        ) ?? .penpal
         writingPace = PenpalWritingPace(
             rawValue: defaults.string(forKey: "penpal.settings.writingPace") ?? ""
         ) ?? .natural
@@ -168,8 +179,11 @@ final class HandwritingSettings: ObservableObject {
         d.set(pencilOnly, forKey: "penpal.settings.pencilOnlyV3")
         d.set(inkColorName, forKey: "penpal.settings.inkColor")
         d.set(customColorHex, forKey: "penpal.settings.customColorHex")
-        d.set(autoReply, forKey: "penpal.settings.autoReply")
-        d.set(autoReplyDelay, forKey: "penpal.settings.autoReplyDelay")
+        // PEN-41 removed auto reply: every capability now waits for Ask or a
+        // box. The old keys are deliberately left unwritten rather than
+        // migrated — a stale value cannot reintroduce the behaviour because
+        // nothing reads them any more.
+        d.set(writingIndicator.rawValue, forKey: "penpal.settings.writingIndicator")
         d.set(writingPace.rawValue, forKey: "penpal.settings.writingPace")
         d.set(timedWritingSeconds, forKey: "penpal.settings.timedWritingSeconds")
         d.set(diagnostics, forKey: "penpal.settings.detect")

@@ -53,8 +53,8 @@ final class GestureOnboarding: ObservableObject {
     private init() {}
 
     /// Called when the page becomes ready. `hasInk` guards the "never
-    /// interrupt real work" rule. Box-trigger modes are Mathematician and
-    /// Illustrator — both wait for a box instead of auto-firing on a pause.
+    /// interrupt real work" rule. Boxing is an explicit send in every
+    /// Penpal mode — same grammar as tapping Ask.
     func offerIfAppropriate(penpalOn: Bool, usesBoxTrigger: Bool, hasInk: Bool) {
         guard penpalOn, usesBoxTrigger, !hasInk,
               !hasLearned, timesShown < Self.maxShows else { return }
@@ -88,9 +88,9 @@ struct BoxGestureHint: View {
     /// Sample ink shown inside the dashed box.
     var sample: String = "3x + 5 = 17"
     /// One or two lines explaining what boxing does in the current mode.
-    var message: String = "Draw a box around any problem\nand Penpal solves it."
+    var message: String = "Write a question, then tap Ask\nor box it."
     var accessibilityHint: String =
-        "Tip: draw a box around any problem and Penpal solves it"
+        "Tip: write a question, then tap Ask or box it"
     var onDismiss: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

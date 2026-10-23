@@ -362,12 +362,13 @@ enum InkAnalyzer {
         return .strikeThrough(targetIndices: hit, strokeIndex: idx)
     }
 
-    // MARK: - Problem box (draw a box/circle around a problem → ask the AI)
+    // MARK: - Problem box (draw a box/circle around ink → send it)
 
     /// A loop the user drew around some of their ink. The rect gives the AI
     /// a visual scope: "the question is HERE". Enclosed strokes are what
-    /// gets sent (as an image). The loop itself may be one stroke or a box
-    /// drawn as 2–4 segments with pen lifts at the corners.
+    /// gets sent — as an image for Mathematician, or OCR'd text for the
+    /// other modes. The loop itself may be one stroke or a box drawn as
+    /// 2–4 segments with pen lifts at the corners.
     struct ProblemBox {
         var rect: CGRect
         var boxStrokeIndices: [Int]  // indices of the loop stroke(s)

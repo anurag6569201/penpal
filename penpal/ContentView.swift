@@ -20,6 +20,7 @@ struct MagicPaper: UIViewRepresentable {
     let proxy: PaperProxy
     var settings: HandwritingSettings
     var penpalEnabled: Bool
+    var pageWidth: CGFloat
     var onWritingStateChange: (Bool) -> Void
     var onThinkingChange: (Bool) -> Void
     var onReadingChange: (Bool) -> Void
@@ -37,15 +38,17 @@ struct MagicPaper: UIViewRepresentable {
     var onPageEditModeChange: (Bool) -> Void
     var onMarkupOpened: () -> Void
 
-    func makeUIView(context: Context) -> MagicPaperView {
-        let view = MagicPaperView()
-        proxy.view = view
-        apply(to: view)
-        return view
+    func makeUIView(context: Context) -> PaperViewport {
+        let viewport = PaperViewport()
+        viewport.pageWidth = pageWidth
+        proxy.view = viewport.paperView
+        apply(to: viewport.paperView)
+        return viewport
     }
 
-    func updateUIView(_ view: MagicPaperView, context: Context) {
-        apply(to: view)
+    func updateUIView(_ viewport: PaperViewport, context: Context) {
+        viewport.pageWidth = pageWidth
+        apply(to: viewport.paperView)
     }
 
     private func apply(to view: MagicPaperView) {
@@ -85,6 +88,8 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @State private var pageWidth: CGFloat = 768
+    @State private var editorToolbarHeight: CGFloat = 56
     @State private var proxy = PaperProxy()
     @State private var navigationDrawerPresented = false
     @State private var toolsVisible = false
@@ -106,6 +111,9 @@ struct ContentView: View {
     @State private var permissionQueue: [PendingInteractivePermission] = []
     @State private var showShare = false
     @State private var shareItems: [Any] = []
+    @State private var isPreparingShare = false
+    @State private var activeLoadingOperation: (id: UUID, message: String)?
+    @State private var isGeneratingPractice = false
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotos = false
     /// PEN-35 — photo import uses its own picker binding, distinct from the
@@ -159,7 +167,10 @@ struct ContentView: View {
     // chrome made Penpal's indigo presence read as a third-party add-on
     // inside someone else's app; now the shell and the pen are one hand.
     private let accent = Pen.inkAccent
-    private let penpalBarClearance: CGFloat = 82
+    private let editorToolbarTopInset: CGFloat = 8
+    private let toolbarToStickyNoteGap: CGFloat = 16
+    @State private var penpalDockHeight: CGFloat = 48
+    private var penpalBarClearance: CGFloat { penpalDockHeight + 12 }
     private let stackedOverlayGap: CGFloat = 54
 
     var body: some View {
@@ -168,7 +179,12 @@ struct ContentView: View {
                 let drawerWidth = min(380, max(280, geometry.size.width - 32))
 
                 ZStack(alignment: .leading) {
-                    editorDetail
+                    editorDetail(
+                        stickyNoteTop: geometry.safeAreaInsets.top
+                            + editorToolbarTopInset
+                            + editorToolbarHeight
+                            + toolbarToStickyNoteGap
+                    )
 
                     Color.black.opacity(navigationDrawerPresented ? 0.16 : 0)
                         .ignoresSafeArea()
@@ -202,6 +218,29 @@ struct ContentView: View {
             }
         }
         .tint(accent)
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay(alignment: .top) {
+            if store.selectedNote != nil && !navigationDrawerPresented {
+                editorFloatingToolbar
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        editorToolbarHeight = height
+                    }
+                    .padding(.top, editorToolbarTopInset)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if !navigationDrawerPresented {
+                sidebarButton
+                    .padding(.leading, 12)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    .zIndex(3)
+            }
+        }
         .animation(reduceMotion ? nil : Pen.spring, value: navigationDrawerPresented)
         .animation(reduceMotion ? nil : Pen.spring, value: showPrefer)
         .onAppear {
@@ -334,7 +373,7 @@ struct ContentView: View {
 
     // MARK: - Editor detail
 
-    private var editorDetail: some View {
+    private func editorDetail(stickyNoteTop: CGFloat) -> some View {
         ZStack(alignment: .bottom) {
             Pen.paper.ignoresSafeArea()
 
@@ -343,7 +382,7 @@ struct ContentView: View {
                     // Coded paper: the note is a rendered HTML page, not a canvas.
                     CodedPaperView(store: store)
                 } else {
-                    noteSurface
+                    noteSurface(stickyNoteTop: stickyNoteTop)
 
                     if penpalOn {
                         PenpalControlBar(
@@ -354,10 +393,14 @@ struct ContentView: View {
                             onVisionCamera: openVisionCamera,
                             onVisionPhoto: { showVisionPhotos = true },
                             onClose: {
-                                withAnimation(Pen.spring) { penpalOn = false }
+                                withAnimation(reduceMotion ? nil : Pen.spring) { penpalOn = false }
                             }
                         )
-                            .padding(.bottom, 20)
+                            .onGeometryChange(for: CGFloat.self) { geometry in
+                                geometry.size.height
+                            } action: { height in
+                                penpalDockHeight = height
+                            }
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
@@ -371,13 +414,9 @@ struct ContentView: View {
                     // is nothing to interrupt.
                     if onboarding.isShowing {
                         BoxGestureHint(
-                            sample: isIllustrator ? "a red bicycle" : "3x + 5 = 17",
-                            message: isIllustrator
-                                ? "Draw a box around what to draw\nand Penpal sketches it."
-                                : "Draw a box around any problem\nand Penpal solves it.",
-                            accessibilityHint: isIllustrator
-                                ? "Tip: draw a box around what to draw and Penpal sketches it"
-                                : "Tip: draw a box around any problem and Penpal solves it"
+                            sample: boxHintSample,
+                            message: boxHintMessage,
+                            accessibilityHint: boxHintAccessibility
                         ) { onboarding.dismiss() }
                             .padding(.bottom, penpalBarClearance + stackedOverlayGap)
                             .transition(.scale(scale: 0.94).combined(with: .opacity))
@@ -392,231 +431,354 @@ struct ContentView: View {
                     }
                 }
             } else {
-                ContentUnavailableView("No Note Selected", systemImage: "note.text",
-                                       description: Text("Choose a note or create one."))
+                noNoteSelectedView
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { editorToolbar }
+        // The editor owns its top controls as a floating overlay so the ruled
+        // page can scroll beneath them without reserving a navigation-bar row.
+        .ignoresSafeArea(.container, edges: .top)
+        .overlay(alignment: .bottom) {
+            if let activeLoadingOperation {
+                operationProgress(activeLoadingOperation.message)
+                    .padding(.bottom, penpalOn ? penpalBarClearance + 12 : 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(4)
+            }
+        }
         .animation(reduceMotion ? nil : Pen.spring, value: penpalOn)
         .animation(reduceMotion ? nil : Pen.spring, value: mathChipsVisible)
+    }
+
+    private func operationProgress(_ message: String) -> some View {
+        HStack(spacing: 9) {
+            ProgressView()
+                .controlSize(.small)
+            Text(message)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Pen.inkPrimary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Pen.paperRaised, in: Capsule())
+        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.1), radius: 10, y: 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(message)
+        .allowsHitTesting(false)
+    }
+
+    private func beginLoadingOperation(_ message: String) -> UUID {
+        let id = UUID()
+        withAnimation(reduceMotion ? nil : Pen.spring) {
+            activeLoadingOperation = (id, message)
+        }
+        return id
+    }
+
+    private func finishLoadingOperation(_ id: UUID) {
+        guard activeLoadingOperation?.id == id else { return }
+        withAnimation(reduceMotion ? nil : Pen.spring) {
+            activeLoadingOperation = nil
+        }
+    }
+
+    /// Keep the app navigable when a folder has no notes. The floating editor
+    /// toolbar only exists while a note is selected, so this state needs its
+    /// own route back to the library and a direct way to create a page.
+    private var noNoteSelectedView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "note.text")
+                .font(.system(size: 42, weight: .regular))
+                .foregroundStyle(Pen.inkAccent)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 6) {
+                Text("No note selected")
+                    .font(Pen.titleSerif)
+                    .foregroundStyle(Pen.inkPrimary)
+                Text("Open the sidebar to choose a note, or start a new one in this folder.")
+                    .font(Pen.sub)
+                    .foregroundStyle(Pen.inkFaded)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(spacing: 10) {
+                Button(action: createNote) {
+                    Label("Create Note", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(PenPrimaryButtonStyle())
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: 380)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Ink-only toolbar actions don't apply when the note is a coded paper.
     private var selectedIsCoded: Bool { store.selectedNote?.isCoded == true }
 
-    @ToolbarContentBuilder
-    private var editorToolbar: some ToolbarContent {
-        // Left: navigation and sticky note share one pill.
-        ToolbarItem(placement: .topBarLeading) {
-            HStack(spacing: 0) {
-                Button {
-                    // Open straight to the notes list of the folder the current
-                    // note lives in, so the drawer lands "where the note is".
-                    if !navigationDrawerPresented, let note = store.selectedNote {
-                        store.selectedFolderID = note.folderID
-                    }
-                    withAnimation(reduceMotion ? nil : Pen.spring) {
-                        navigationDrawerPresented.toggle()
-                    }
-                } label: {
-                    Image(systemName: "sidebar.left")
-                        .foregroundStyle(navigationDrawerPresented ? Pen.inkAccent : Pen.inkPrimary)
-                        .frame(width: 44, height: 40)
-                }
-                .accessibilityLabel(navigationDrawerPresented
-                                    ? "Close Navigation"
-                                    : "Open Folders and Notes")
-
-                Button {
-                    withAnimation(reduceMotion ? nil : Pen.spring) {
-                        stickyHidden.toggle()
-                    }
-                    if !stickyHidden { flushEditor() }
-                } label: {
-                    Image(systemName: stickyHidden ? "note.text.badge.plus" : "chevron.up.circle")
-                        .foregroundStyle(stickyHidden ? Pen.inkPrimary : Pen.inkAccent)
-                        .frame(width: 44, height: 40)
-                }
-                .disabled(store.selectedNote == nil)
-                .accessibilityLabel(stickyHidden ? "Show Sticky Note" : "Hide Sticky Note")
+    /// Keep note controls on the page; the sidebar control lives by itself in
+    /// the top-left corner. Narrow windows retain the scrolling, full-size controls.
+    private var editorFloatingToolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                historyPill
+                Spacer(minLength: 8)
+                pageToolsPill
+                Spacer(minLength: 8)
+                documentPill
             }
-            .buttonStyle(.plain)
-            .frame(width: 104, height: 40, alignment: .center)
-            .background(Pen.paperRaised, in: Capsule())
-        }
-        .sharedBackgroundVisibility(.hidden)
+            .padding(.horizontal, 12)
 
-        ToolbarSpacer(.fixed, placement: .topBarLeading)
-
-        // Left: history gets a separate adjacent pill.
-        ToolbarItem(placement: .topBarLeading) {
-            HStack(spacing: 0) {
-                Button { proxy.view?.undo() } label: {
-                    Image(systemName: "arrow.uturn.backward.circle")
-                        .foregroundStyle(Pen.inkPrimary)
-                        .frame(width: 44, height: 40)
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    historyPill
+                    pageToolsPill
+                    documentPill
                 }
-                .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
-                .keyboardShortcut("z", modifiers: .command)
-
-                Button { proxy.view?.redo() } label: {
-                    Image(systemName: "arrow.uturn.forward.circle")
-                        .foregroundStyle(Pen.inkPrimary)
-                        .frame(width: 44, height: 40)
-                }
-                .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
-                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .padding(.leading, 12)
+                .padding(.trailing, 12)
             }
-            .buttonStyle(.plain)
-            .frame(width: 104, height: 40, alignment: .center)
-            .background(Pen.paperRaised, in: Capsule())
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled()
         }
-        .sharedBackgroundVisibility(.hidden)
+        .accessibilityLabel("Note tools")
+        .frame(height: 56, alignment: .top)
+        .padding(.leading, 64)
+    }
 
-        // Center: tools that act directly on the paper.
-        ToolbarItem(placement: .principal) {
-            HStack(spacing: 0) {
-                Menu {
-                    Button("Import Page", systemImage: "doc.viewfinder") {
-                        showImportPhotos = true
-                    }
-                    Button("Add Attachment", systemImage: "paperclip") {
-                        insertPageBlock(CodedPaper.attachmentBlockHTML, kind: .attachment, height: 280)
-                    }
-                    Divider()
-                    Button("Add Code Block", systemImage: "chevron.left.forwardslash.chevron.right") {
-                        insertPageBlock(CodedPaper.blockStarterHTML, kind: .code, height: 300)
-                    }
-                    Button("Add Diagram", systemImage: "point.3.connected.trianglepath.dotted") {
-                        insertPageBlock(CodedPaper.mermaidBlockHTML, kind: .mermaid, height: 300)
-                    }
-                    Button("Add Text Block", systemImage: "text.quote") {
-                        insertPageBlock(CodedPaper.textBlockHTML, kind: .text, height: 180)
-                    }
-                    Button("Add Table Block", systemImage: "tablecells") {
-                        insertPageBlock(CodedPaper.tableBlockHTML, kind: .table, height: 220)
-                    }
-                    Button("Add Checklist Block", systemImage: "checklist") {
-                        insertPageBlock(CodedPaper.checklistBlockHTML, kind: .checklist, height: 210)
-                    }
-                } label: {
-                    Image(systemName: "paperclip")
-                        .foregroundStyle(Pen.inkPrimary)
-                        .frame(width: 44, height: 40)
-                }
-                .disabled(store.selectedNote == nil || selectedIsCoded)
-                .menuIndicator(.hidden)
-                .accessibilityLabel("Insert on Page")
-
-                Button {
-                    toolsVisible.toggle()
-                    proxy.view?.setToolsVisible(toolsVisible)
-                    if toolsVisible { bodyFocused = false }
-                } label: {
-                    Image(systemName: toolsVisible
-                          ? "pencil.tip.crop.circle.fill"
-                          : "pencil.tip.crop.circle")
-                        .foregroundStyle(toolsVisible ? Pen.inkAccent : Pen.inkPrimary)
-                        .frame(width: 44, height: 40)
-                }
-                .disabled(store.selectedNote == nil || selectedIsCoded)
-                .accessibilityLabel(toolsVisible ? "Hide Markup" : "Show Markup")
-
-                Button {
-                    pageEditMode.toggle()
-                    proxy.view?.setPageEditMode(pageEditMode)
-                    if pageEditMode {
-                        penpalOn = false
-                        toolsVisible = false
-                        proxy.view?.setToolsVisible(false)
-                        bodyFocused = false
-                    }
-                } label: {
-                    Image(systemName: pageEditMode
-                          ? "square.dashed.inset.filled"
-                          : "square.dashed")
-                        .foregroundStyle(pageEditMode ? Pen.inkAccent : Pen.inkPrimary)
-                        .frame(width: 44, height: 40)
-                }
-                .disabled(store.selectedNote == nil || selectedIsCoded)
-                .accessibilityLabel(pageEditMode ? "Stop Arranging" : "Arrange Page")
-
-                Button {
-                    penpalOn.toggle()
-                    if penpalOn {
-                        if !toolsVisible {
-                            toolsVisible = true
-                            proxy.view?.setToolsVisible(true)
-                        }
-                        bodyFocused = false
-                    }
-                } label: {
-                    Image(systemName: "signature")
-                        .foregroundStyle(penpalOn ? Pen.inkAccent : Pen.inkPrimary)
-                        .frame(width: 44, height: 40)
-                }
-                .disabled(store.selectedNote == nil || selectedIsCoded)
-                .accessibilityLabel(penpalOn ? "Turn Off Penpal Mode" : "Turn On Penpal Mode")
+    private var sidebarButton: some View {
+        Button {
+            if let note = store.selectedNote {
+                store.selectedFolderID = note.folderID
             }
-            .buttonStyle(.plain)
-            .frame(width: 192, height: 40, alignment: .center)
-            .background(Pen.paperRaised, in: Capsule())
-        }
-        .sharedBackgroundVisibility(.hidden)
-
-        // Right: document-level actions share one pill.
-        ToolbarItem(placement: .topBarTrailing) {
-            HStack(spacing: 0) {
-                Button(action: shareCurrentNote) {
-                    Image(systemName: "square.and.arrow.up")
-                        .foregroundStyle(Pen.inkPrimary)
-                }
-                .disabled(store.selectedNote == nil)
-                .frame(width: 44, height: 40)
-
-                Menu {
-                    Button {
-                        createNote()
-                    } label: {
-                        Label("New Note", systemImage: "square.and.pencil")
-                    }
-                    Button {
-                        createCodedNote()
-                    } label: {
-                        Label("New Coded Paper", systemImage: "curlybraces.square")
-                    }
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                        .foregroundStyle(Pen.inkPrimary)
-                } primaryAction: {
-                    createNote()
-                }
-                .menuIndicator(.hidden)
-                .frame(width: 44, height: 40)
-
-                Menu {
-                    moreActions
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .foregroundStyle(Pen.inkPrimary)
-                }
-                .disabled(store.selectedNote == nil)
-                .menuIndicator(.hidden)
-                .frame(width: 44, height: 40)
+            withAnimation(reduceMotion ? nil : Pen.spring) {
+                navigationDrawerPresented = true
             }
-            .buttonStyle(.plain)
-            .frame(width: 132, height: 40, alignment: .center)
-            .background(Pen.paperRaised, in: Capsule())
+        } label: {
+            Image(systemName: "sidebar.left")
+                .foregroundStyle(Pen.inkPrimary)
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
         }
-        .sharedBackgroundVisibility(.hidden)
+        .buttonStyle(.plain)
+        .background(Pen.paperRaised, in: Circle())
+        .overlay(Circle().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
+        .accessibilityLabel("Open Folders and Notes")
+    }
+
+    private var historyPill: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(reduceMotion ? nil : Pen.spring) { stickyHidden.toggle() }
+                if !stickyHidden { flushEditor() }
+            } label: {
+                Image(systemName: stickyHidden ? "note.text.badge.plus" : "chevron.up.circle")
+                    .foregroundStyle(stickyHidden ? Pen.inkPrimary : Pen.inkAccent)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil)
+            .accessibilityLabel(stickyHidden ? "Show Sticky Note" : "Hide Sticky Note")
+
+            Button { proxy.view?.undo() } label: {
+                Image(systemName: "arrow.uturn.backward.circle")
+                    .foregroundStyle(Pen.inkPrimary).frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
+            .keyboardShortcut("z", modifiers: .command)
+            .accessibilityLabel("Undo")
+
+            Button { proxy.view?.redo() } label: {
+                Image(systemName: "arrow.uturn.forward.circle")
+                    .foregroundStyle(Pen.inkPrimary).frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .accessibilityLabel("Redo")
+        }
+        .buttonStyle(.plain)
+        .frame(height: 48)
+        .background(Pen.paperRaised, in: Capsule())
+        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
+    }
+
+    private var pageToolsPill: some View {
+        HStack(spacing: 0) {
+            Menu {
+                Button("Import Page", systemImage: "doc.viewfinder") { showImportPhotos = true }
+                Button("Add Attachment", systemImage: "paperclip") {
+                    insertPageBlock(CodedPaper.attachmentBlockHTML, kind: .attachment, height: 280)
+                }
+                Divider()
+                Button("Add Code Block", systemImage: "chevron.left.forwardslash.chevron.right") {
+                    insertPageBlock(CodedPaper.blockStarterHTML, kind: .code, height: 300)
+                }
+                Button("Add Diagram", systemImage: "point.3.connected.trianglepath.dotted") {
+                    insertPageBlock(CodedPaper.mermaidBlockHTML, kind: .mermaid, height: 300)
+                }
+                Button("Add Text Block", systemImage: "text.quote") {
+                    insertPageBlock(CodedPaper.textBlockHTML, kind: .text, height: 180)
+                }
+                Button("Add Table Block", systemImage: "tablecells") {
+                    insertPageBlock(CodedPaper.tableBlockHTML, kind: .table, height: 220)
+                }
+                Button("Add Checklist Block", systemImage: "checklist") {
+                    insertPageBlock(CodedPaper.checklistBlockHTML, kind: .checklist, height: 210)
+                }
+            } label: {
+                Image(systemName: "paperclip").foregroundStyle(Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+            .menuIndicator(.hidden)
+            .accessibilityLabel("Insert on Page")
+
+            Button {
+                toolsVisible.toggle()
+                proxy.view?.setToolsVisible(toolsVisible)
+                if toolsVisible { bodyFocused = false }
+            } label: {
+                Image(systemName: toolsVisible ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle")
+                    .foregroundStyle(toolsVisible ? Pen.inkAccent : Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+            .accessibilityLabel(toolsVisible ? "Hide Markup" : "Show Markup")
+
+            Button {
+                pageEditMode.toggle()
+                proxy.view?.setPageEditMode(pageEditMode)
+                if pageEditMode {
+                    penpalOn = false
+                    toolsVisible = false
+                    proxy.view?.setToolsVisible(false)
+                    bodyFocused = false
+                }
+            } label: {
+                Image(systemName: pageEditMode ? "square.dashed.inset.filled" : "square.dashed")
+                    .foregroundStyle(pageEditMode ? Pen.inkAccent : Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+            .accessibilityLabel(pageEditMode ? "Stop Arranging" : "Arrange Page")
+
+            Button {
+                penpalOn.toggle()
+                if penpalOn {
+                    if !toolsVisible {
+                        toolsVisible = true
+                        proxy.view?.setToolsVisible(true)
+                    }
+                    bodyFocused = false
+                }
+            } label: {
+                Image(systemName: "signature")
+                    .foregroundStyle(penpalOn ? Pen.inkAccent : Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+            .accessibilityLabel(penpalOn ? "Turn Off Penpal Mode" : "Turn On Penpal Mode")
+        }
+        .buttonStyle(.plain)
+        .frame(height: 48)
+        .background(Pen.paperRaised, in: Capsule())
+        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
+    }
+
+    private var documentPill: some View {
+        HStack(spacing: 0) {
+            Button(action: shareCurrentNote) {
+                Group {
+                    if isPreparingShare {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 44, height: 44)
+                    } else {
+                        Image(systemName: "square.and.arrow.up")
+                            .foregroundStyle(Pen.inkPrimary)
+                            .frame(width: 44, height: 44)
+                    }
+                }
+            }
+            .disabled(store.selectedNote == nil || isPreparingShare)
+            .accessibilityLabel(isPreparingShare ? "Preparing Note to Share" : "Share Note")
+
+            Menu {
+                Button { createNote() } label: { Label("New Note", systemImage: "square.and.pencil") }
+                Button { createCodedNote() } label: { Label("New Coded Paper", systemImage: "curlybraces.square") }
+            } label: {
+                Image(systemName: "square.and.pencil").foregroundStyle(Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            } primaryAction: { createNote() }
+            .menuIndicator(.hidden)
+            .accessibilityLabel("New Note")
+
+            Menu { moreActions } label: {
+                Group {
+                    if isGeneratingPractice {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 44, height: 44)
+                    } else {
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundStyle(Pen.inkPrimary)
+                            .frame(width: 44, height: 44)
+                    }
+                }
+            }
+            .disabled(store.selectedNote == nil || isGeneratingPractice)
+            .menuIndicator(.hidden)
+            .accessibilityLabel(isGeneratingPractice ? "Preparing Practice Problem" : "More Note Actions")
+        }
+        .buttonStyle(.plain)
+        .frame(height: 48)
+        .background(Pen.paperRaised, in: Capsule())
+        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
     }
 
     private var isMathematician: Bool { settings.capability == "mathematician" }
-    private var usesBoxTrigger: Bool { isMathematician || isIllustrator }
+    /// Boxing a question is an explicit send in every mode, matching Ask.
+    private var usesBoxTrigger: Bool { true }
     private var isIllustrator: Bool { settings.capability == "illustrator" }
     private var isLanguagePartner: Bool { settings.capability == "language" }
     private var isDebatePartner: Bool { settings.capability == "debate" }
+
+    private var boxHintSample: String {
+        switch settings.capability {
+        case "illustrator": "a red bicycle"
+        case "interactive": "a bouncing ball"
+        case "mathematician": "3x + 5 = 17"
+        case "debate": "schools should start later"
+        case "arranger": "a DC generator, explained"
+        default: "what's on your mind?"
+        }
+    }
+
+    private var boxHintMessage: String {
+        switch settings.capability {
+        case "illustrator":
+            "Write what to draw, then tap Ask\nor box it."
+        case "interactive":
+            "Write a request, then tap Ask\nor box it."
+        case "mathematician":
+            "Write a problem, then tap Ask\nor box it."
+        case "debate":
+            "Write a claim, then tap Ask\nor box it."
+        case "arranger":
+            "Write a topic and Penpal will\nlay out the whole page."
+        default:
+            "Write a question, then tap Ask\nor box it."
+        }
+    }
+
+    private var boxHintAccessibility: String {
+        boxHintMessage.replacingOccurrences(of: "\n", with: " ")
+    }
 
     private var targetLanguageTitle: String {
         PenpalControlOptions.languages.first { $0.tag == settings.targetLanguage }?.title
@@ -714,7 +876,7 @@ struct ContentView: View {
         return nil
     }
 
-    private var noteSurface: some View {
+    private func noteSurface(stickyNoteTop: CGFloat) -> some View {
         // The page (handwriting canvas) fills everything; the heading/note
         // float on top as a compact, left-aligned sticky note that never
         // blocks writing below it.
@@ -723,6 +885,7 @@ struct ContentView: View {
                 proxy: proxy,
                 settings: settings,
                 penpalEnabled: penpalOn,
+                pageWidth: pageWidth,
                 onWritingStateChange: { writing in
                     isWriting = writing
                     if !writing, settings.replyStyle == "hand", penpalOn {
@@ -786,8 +949,11 @@ struct ContentView: View {
 
             if !stickyHidden {
                 stickyNoteCard
-                    .padding(.leading, 20)
-                    .padding(.top, 12)
+                    .padding(.leading, 12)
+                    .padding(.trailing, 20)
+                    // Measure the floating toolbar and safe area so the card
+                    // always starts below them after rotation and resizing.
+                    .padding(.top, stickyNoteTop)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -827,17 +993,14 @@ struct ContentView: View {
                 }
         }
         .padding(14)
-        .frame(width: 300, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(red: 1.0, green: 0.95, blue: 0.62))
-                .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
-        )
+        .frame(maxWidth: 300, alignment: .leading)
+        .background(Pen.paperRaised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 14, x: 0, y: 6)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+                .strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5)
         )
-        .foregroundStyle(.black)
+        .foregroundStyle(Pen.inkPrimary)
     }
 
     // MARK: - Actions
@@ -848,8 +1011,14 @@ struct ContentView: View {
     /// should be the same act as homework, in the same place, with the same
     /// pen. A separate quiz screen would make it feel like a different app.
     private func startPractice() {
-        guard let weakness = planner.due.first else { return }
+        guard !isGeneratingPractice, let weakness = planner.due.first else { return }
+        isGeneratingPractice = true
+        let operationID = beginLoadingOperation("Preparing a practice problem…")
         Task { @MainActor in
+            defer {
+                isGeneratingPractice = false
+                finishLoadingOperation(operationID)
+            }
             do {
                 let item = try await planner.practiceProblem(
                     for: weakness, baseURL: settings.apiBaseURL)
@@ -912,6 +1081,7 @@ struct ContentView: View {
             titleText = note.title
             bodyText = note.body
             loadedNoteID = note.id
+            pageWidth = note.resolvedPaperWidth
             // Switching notes always leaves the page's edit mode.
             pageEditMode = false
             if note.isCoded {
@@ -944,6 +1114,7 @@ struct ContentView: View {
                 // If Penpal is mid-write, bake the reply into the drawing first
                 // so it isn't lost when the note is saved/switched.
                 view.finalizePendingWriting()
+                note.paperWidth = pageWidth
                 note.drawing = view.currentDrawing
                 note.typedTexts = view.currentTypedTexts
                 note.replyInks = view.currentReplyInks
@@ -991,48 +1162,58 @@ struct ContentView: View {
     }
 
     private func shareCurrentNote() {
-        flushEditor()
-        guard let note = store.selectedNote else { return }
-        var items: [Any] = []
-        let text = [note.displayTitle, note.body]
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .joined(separator: "\n\n")
-        if !text.isEmpty { items.append(text) }
-        if note.isCoded, let html = note.htmlContent, !html.isEmpty {
-            items.append(html)
-        }
-        // PEN-21 — export on real paper, in a forced light trait.
-        //
-        // The previous `drawing.image(from:scale:)` rendered onto a
-        // transparent background in the CURRENT appearance, so a note shared
-        // from dark mode was near-white ink on nothing: effectively a blank
-        // page, and the sender had no way to notice before sending it.
-        let drawing = note.drawing
-        if !drawing.strokes.isEmpty {
-            // PDF first — vector, printable, and what "hand this in" expects.
-            if let pdf = NoteExporter.pdf(for: drawing,
-                                          title: note.displayTitle,
-                                          paperStyle: settings.paperStyle) {
-                items.append(pdf)
+        guard !isPreparingShare, let selectedNoteID = store.selectedNoteID else { return }
+        isPreparingShare = true
+        let operationID = beginLoadingOperation("Preparing share…")
+        Task { @MainActor in
+            defer {
+                isPreparingShare = false
+                finishLoadingOperation(operationID)
             }
-            // Plus an image, for apps that won't take a PDF.
-            if let image = NoteExporter.image(for: drawing,
-                                              paperStyle: settings.paperStyle) {
-                items.append(image)
+            // Give SwiftUI a turn to display the spinner before saving the
+            // current canvas and preparing potentially large share files.
+            await Task.yield()
+            guard store.selectedNoteID == selectedNoteID else { return }
+            flushEditor()
+            guard let note = store.selectedNote, note.id == selectedNoteID else { return }
+
+            let text = [note.displayTitle, note.body]
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n\n")
+            let html = note.isCoded ? note.htmlContent : nil
+            let drawingData = note.drawingData
+            let title = note.displayTitle
+            let paperStyle = settings.paperStyle
+            let attachmentURLs = note.attachments.map { store.attachmentURL($0) }
+
+            let drawingFiles = await Task.detached(priority: .userInitiated) {
+                NoteExporter.shareFiles(
+                    drawingData: drawingData,
+                    title: title,
+                    paperStyle: paperStyle
+                )
+            }.value
+
+            var items: [Any] = []
+            if !text.isEmpty { items.append(text) }
+            if let html, !html.isEmpty { items.append(html) }
+            if let pdf = drawingFiles.pdf { items.append(pdf) }
+            if let image = drawingFiles.image { items.append(image) }
+            items.append(contentsOf: attachmentURLs.filter {
+                FileManager.default.fileExists(atPath: $0.path)
+            })
+
+            isPreparingShare = false
+            guard !items.isEmpty else {
+                statusMessage = drawingData.isEmpty
+                    ? "Nothing to share yet."
+                    : "Couldn't prepare this note to share."
+                showStatus = true
+                return
             }
+            shareItems = items
+            showShare = true
         }
-        for att in note.attachments {
-            if let img = UIImage(contentsOfFile: store.attachmentURL(att).path) {
-                items.append(img)
-            }
-        }
-        guard !items.isEmpty else {
-            statusMessage = "Nothing to share yet."
-            showStatus = true
-            return
-        }
-        shareItems = items
-        showShare = true
     }
 
     @MainActor
@@ -1048,6 +1229,8 @@ struct ContentView: View {
     @MainActor
     private func respondToVisionPhoto(_ item: PhotosPickerItem?) async {
         guard let item, store.selectedNoteID != nil else { return }
+        let operationID = beginLoadingOperation("Loading photo…")
+        defer { finishLoadingOperation(operationID) }
         defer { visionPhotoItem = nil }
         let data: Data?
         if let loaded = try? await item.loadTransferable(type: Data.self) {
@@ -1069,6 +1252,8 @@ struct ContentView: View {
     @MainActor
     private func importPageFromPhoto(_ item: PhotosPickerItem?) async {
         guard let item, store.selectedNoteID != nil else { return }
+        let operationID = beginLoadingOperation("Reading page…")
+        defer { finishLoadingOperation(operationID) }
         defer { importPhotoItem = nil }
         let data: Data?
         if let loaded = try? await item.loadTransferable(type: Data.self) {
@@ -1087,6 +1272,8 @@ struct ContentView: View {
     @MainActor
     private func importPhoto(_ item: PhotosPickerItem?) async {
         guard let item, store.selectedNoteID != nil else { return }
+        let operationID = beginLoadingOperation("Adding photo…")
+        defer { finishLoadingOperation(operationID) }
         defer { photoItem = nil }
         do {
             if let data = try await item.loadTransferable(type: Data.self) {

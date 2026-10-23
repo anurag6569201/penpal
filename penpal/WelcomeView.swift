@@ -1,20 +1,4 @@
-//
-//  WelcomeView.swift
-//  penpal
-//
-//  The landing page. Its one job: make clear in three seconds that this is
-//  NOT another AI chat app — so it IS a page. Cream paper, ruled lines, and
-//  the brand written on in script as if a hand just finished it.
-//
-//  Product decisions (see DESIGN.md):
-//   * Copy leads with the promise, not a feature list.
-//   * Google sign-in is a styled STUB (AuthStub) — the real SDK drops in
-//     behind the same button with zero layout work.
-//   * "Use without an account" is a first-class quiet button, always visible,
-//     never shrunk or greyed. A student in a hurry must never be blocked by
-//     auth, and declining must cost nothing.
-//   * Shown once; a choice dismisses it forever.
-//
+// Penpal — Ink Studio welcome. A direct, account-free path to the page.
 
 import Combine
 import SwiftUI
@@ -51,133 +35,97 @@ final class AuthStub: ObservableObject {
 // MARK: - Welcome
 
 struct WelcomeView: View {
-
-    /// Called when the user has made a choice, either way.
     var onFinished: () -> Void
-
-    @StateObject private var auth = AuthStub.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    // Staged entrance: brand writes on, then the rest settles in beneath it.
-    @State private var brandVisible = false
-    @State private var contentVisible = false
+    @State private var appeared = false
 
     var body: some View {
-        ZStack {
-            RuledPaperBackground()
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 32) {
+                    HStack(spacing: 10) {
+                        PenBrandSignature()
+                        Spacer()
+                        Text("A SPACE TO THINK")
+                            .font(.caption2.weight(.semibold)).tracking(2)
+                            .foregroundStyle(Pen.inkFaded)
+                    }
+                    .padding(.bottom, 16)
 
-            VStack(spacing: 0) {
-                Spacer(minLength: 40)
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Your thoughts.\nRoom to grow.")
+                            .font(.system(.largeTitle, design: .serif, weight: .medium))
+                            .accessibilityAddTraits(.isHeader)
+                        Text("A notebook that meets you on the page. Write freely, work through a problem, or explore an idea together.")
+                            .font(Pen.body).foregroundStyle(Pen.inkFaded)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
-                // The brand, written on the top line like a signature.
-                VStack(spacing: 6) {
-                    Text("penpal")
-                        .font(Pen.brand(56))
-                        .foregroundStyle(Pen.inkAccent)
-                        .opacity(brandVisible ? 1 : 0)
-                        .offset(y: brandVisible ? 0 : 8)
-                        .accessibilityAddTraits(.isHeader)
-
-                    Text("paper that thinks back")
-                        .font(Pen.titleSerif)
-                        .foregroundStyle(Pen.inkPrimary)
-                        .opacity(contentVisible ? 1 : 0)
-                }
-                .padding(.bottom, 44)
-
-                // Three proof moments — the product in one glance each.
-                VStack(alignment: .leading, spacing: 22) {
-                    promise(icon: "pencil.and.outline",
-                            title: "Write it, box it, it's solved",
-                            detail: "Draw a box around any problem. Every answer is checked twice before it's written.")
-                    promise(icon: "signature",
-                            title: "Replies in your handwriting",
-                            detail: "Penpal learns your hand and writes back in it — your page stays yours.")
-                    promise(icon: "repeat",
-                            title: "Your mistakes become practice",
-                            detail: "Anything you get wrong quietly comes back a few days later, until it doesn't.")
-                }
-                .padding(26)
-                .frame(maxWidth: 430)
-                .paperCard()
-                .opacity(contentVisible ? 1 : 0)
-                .offset(y: contentVisible ? 0 : 12)
-
-                Spacer(minLength: 28)
-
-                // Auth. Google is a dummy; declining is a first-class path.
-                VStack(spacing: 14) {
-                    Button {
-                        Pen.tapHaptic()
-                        auth.signInWithGoogle()
-                        onFinished()
-                    } label: {
-                        HStack(spacing: 10) {
-                            // Placeholder mark — the branded asset arrives
-                            // with the real SDK.
-                            Text("G")
-                                .font(.system(size: 17, weight: .bold, design: .rounded))
-                                .foregroundStyle(Pen.inkAccent)
-                                .frame(width: 26, height: 26)
-                                .background(.white, in: Circle())
-                            Text("Continue with Google")
+                    VStack(alignment: .leading, spacing: 22) {
+                        HStack {
+                            Label("ON YOUR PAGE", systemImage: "pencil.and.outline")
+                                .font(.caption.weight(.semibold)).tracking(1.5)
+                            Spacer()
+                            Image(systemName: "sparkle")
                         }
+                        .foregroundStyle(Pen.inkAccent)
+                        Text("What if a notebook could\nthink alongside you?")
+                            .font(.system(.title2, design: .serif))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Rectangle().fill(Pen.rule).frame(height: 1)
+                        Label("Your handwriting. A little help. New possibilities.", systemImage: "arrow.turn.down.right")
+                            .font(Pen.sub).foregroundStyle(Pen.inkFaded)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(PenPrimaryButtonStyle())
-                    .accessibilityHint("Signs in with your Google account")
+                    .padding(28)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .paperCard()
 
-                    Button("Use without an account") {
-                        Pen.tapHaptic()
-                        onFinished()
+                    VStack(alignment: .leading, spacing: 20) {
+                        promise("01", title: "Stay with your thought", detail: "Write, sketch, and ask for help without leaving your page.")
+                        promise("02", title: "Make it unmistakably yours", detail: "Teach Penpal your handwriting, then see replies in your own style.")
+                        promise("03", title: "Go a little further", detail: "Explore maths, illustrations, languages, and ideas when you need them.")
                     }
-                    .buttonStyle(PenQuietButtonStyle())
 
-                    // One privacy line: the audience includes minors and
-                    // their parents, and this is the question they have.
-                    Text("Your notes stay on this iPad.")
-                        .font(Pen.caption)
-                        .foregroundStyle(Pen.inkFaded)
+                    VStack(spacing: 12) {
+                        Button {
+                            Pen.tapHaptic()
+                            onFinished()
+                        } label: {
+                            HStack { Text("Open my notebook"); Image(systemName: "arrow.right") }
+                        }
+                        .buttonStyle(PenPrimaryButtonStyle())
+                        Text("Start without an account. Notes are saved on this device.")
+                            .font(Pen.caption).foregroundStyle(Pen.inkFaded)
+                            .multilineTextAlignment(.center)
+                    }
                 }
-                .frame(maxWidth: 430)
-                .padding(.horizontal, 26)
-                .padding(.bottom, 40)
-                .opacity(contentVisible ? 1 : 0)
+                .foregroundStyle(Pen.inkPrimary)
+                .padding(28)
+                .frame(maxWidth: 620)
+                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared || reduceMotion ? 0 : 10)
             }
-            .padding(.horizontal, 24)
+            .background(Pen.paper.ignoresSafeArea())
         }
-        .onAppear(perform: enter)
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.4)) { appeared = true }
+        }
     }
 
-    private func promise(icon: String, title: String, detail: String) -> some View {
+    private func promise(_ number: String, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: 16) {
-            Image(systemName: icon)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Pen.inkAccent)
-                .frame(width: 30)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(Pen.headline)
-                    .foregroundStyle(Pen.inkPrimary)
-                Text(detail)
-                    .font(Pen.sub)
-                    .foregroundStyle(Pen.inkFaded)
+            Text(number).font(.caption.monospacedDigit()).foregroundStyle(Pen.inkAccent)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(Pen.headline)
+                Text(detail).font(Pen.sub).foregroundStyle(Pen.inkFaded)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
     }
-
-    private func enter() {
-        guard !reduceMotion else {
-            brandVisible = true
-            contentVisible = true
-            return
-        }
-        withAnimation(.easeOut(duration: 0.6)) { brandVisible = true }
-        withAnimation(Pen.spring.delay(0.45)) { contentVisible = true }
-    }
 }
 
-#Preview {
-    WelcomeView(onFinished: {})
-}
+#Preview { WelcomeView(onFinished: {}) }

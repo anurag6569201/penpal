@@ -25,7 +25,7 @@ enum InkRecognizer {
                           traits: UITraitCollection? = nil,
                           recognitionLanguages: [String] = ["en-US"]) async -> String {
         guard !strokes.isEmpty else { return "" }
-        guard let cgImage = renderImage(strokes: strokes, traits: traits) else {
+        guard let cgImage = await renderImage(strokes: strokes, traits: traits) else {
             return ""
         }
         return await transcribe(cgImage, languageCorrection: true,
@@ -41,7 +41,7 @@ enum InkRecognizer {
                                     traits: UITraitCollection? = nil,
                                     recognitionLanguages: [String] = ["en-US"]) async -> [String] {
         guard !strokes.isEmpty,
-              let cgImage = renderImage(strokes: strokes, traits: traits) else { return [] }
+              let cgImage = await renderImage(strokes: strokes, traits: traits) else { return [] }
         let corrected = await transcribe(
             cgImage, languageCorrection: true,
             recognitionLanguages: recognitionLanguages)
@@ -60,9 +60,9 @@ enum InkRecognizer {
     /// PNG of the given strokes, dark ink on white — what gets sent to the
     /// vision model for handwritten-maths transcription.
     @MainActor
-    static func pngData(strokes: [PKStroke], traits: UITraitCollection? = nil) -> Data? {
+    static func pngData(strokes: [PKStroke], traits: UITraitCollection? = nil) async -> Data? {
         guard !strokes.isEmpty,
-              let cg = renderImage(strokes: strokes, traits: traits) else { return nil }
+              let cg = await renderImage(strokes: strokes, traits: traits) else { return nil }
         return UIImage(cgImage: cg).pngData()
     }
 
@@ -72,10 +72,21 @@ enum InkRecognizer {
     /// contrast it expects, regardless of the app's light/dark appearance.
     @MainActor
     private static func renderImage(strokes: [PKStroke],
-                                    traits: UITraitCollection?) -> CGImage? {
+                                    traits: UITraitCollection?) async -> CGImage? {
+        let resolved = UIColor.label.resolvedColor(with: traits ?? UITraitCollection.current)
+        let inkIsLight = luminance(of: resolved) > 0.55
+        return await Task.detached(priority: .utility) {
+            rasterize(strokes: strokes, inkIsLight: inkIsLight)
+        }.value
+    }
+
+    nonisolated private static func rasterize(strokes: [PKStroke],
+                                              inkIsLight: Bool) -> CGImage? {
         let drawing = PKDrawing(strokes: strokes)
         let bounds = drawing.bounds
-        guard bounds.width > 2, bounds.height > 2 else { return nil }
+        guard bounds.width > 2, bounds.height > 2,
+              bounds.width.isFinite, bounds.height.isFinite,
+              bounds.minX.isFinite, bounds.minY.isFinite else { return nil }
 
         // Pad so ascenders/descenders aren't clipped and letters have breathing room.
         let pad = max(24, max(bounds.width, bounds.height) * 0.12)
@@ -83,13 +94,10 @@ enum InkRecognizer {
 
         // Scale up small handwriting so Vision sees crisp glyphs.
         let longest = max(rect.width, rect.height)
-        let scale = min(8, max(2, 2000 / max(longest, 1)))
-
-        // Resolve the ink color for the current appearance. In dark mode the pen
-        // ink (.label) is light, so we composite over black then invert to get
-        // dark-on-white either way.
-        let resolved = UIColor.label.resolvedColor(with: traits ?? UITraitCollection.current)
-        let inkIsLight = luminance(of: resolved) > 0.55
+        let desiredScale = min(8, max(2, 2000 / max(longest, 1)))
+        // Infinite-paper notes can have very tall bounds. Keep the OCR bitmap
+        // bounded so a long page cannot allocate an enormous intermediate image.
+        let scale = min(desiredScale, 3_072 / max(longest, 1))
 
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = scale
@@ -116,7 +124,7 @@ enum InkRecognizer {
         return 0.299 * r + 0.587 * g + 0.114 * b
     }
 
-    private static func invert(_ image: CGImage) -> CGImage? {
+    nonisolated private static func invert(_ image: CGImage) -> CGImage? {
         let ci = CIImage(cgImage: image)
         guard let filter = CIFilter(name: "CIColorInvert") else { return nil }
         filter.setValue(ci, forKey: kCIInputImageKey)

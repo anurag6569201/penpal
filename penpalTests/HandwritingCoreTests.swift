@@ -321,3 +321,70 @@ final class HandwritingCoreTests: XCTestCase {
     }
 }
 
+
+// Indicator changes must never change the ink pipeline or leave stale chrome.
+extension HandwritingCoreTests {
+    private func indicatorStroke() -> InkStroke {
+        InkStroke(points: [CGPoint(x: 40, y: 60), CGPoint(x: 80, y: 60)],
+                  widths: [2, 2])
+    }
+
+    func testWritingIndicatorSwitchAndCancellation() throws {
+        let renderer = HandwritingRenderer(frame: .zero)
+        renderer.write([indicatorStroke()], baseWidth: 2)
+        let nib = try XCTUnwrap(renderer.layer.sublayers?.first { $0.name == "penpal.nib" })
+        XCTAssertFalse(nib.isHidden)
+        XCTAssertTrue(renderer.penDot.isHidden)
+        renderer.writingIndicator = .dot
+        XCTAssertTrue(nib.isHidden)
+        XCTAssertFalse(renderer.penDot.isHidden)
+        renderer.writingIndicator = .none
+        XCTAssertTrue(nib.isHidden)
+        XCTAssertTrue(renderer.penDot.isHidden)
+        renderer.cancelWriting()
+        XCTAssertFalse(renderer.isWriting)
+        XCTAssertTrue(nib.animationKeys()?.isEmpty ?? true)
+        XCTAssertTrue(renderer.penDot.animationKeys()?.isEmpty ?? true)
+    }
+
+    func testInstantReplyDoesNotShowIndicatorAndCommitsInk() throws {
+        let renderer = HandwritingRenderer(frame: .zero)
+        var committed: [Int] = []
+        var completed = false
+        renderer.write([indicatorStroke()], baseWidth: 2, targetDuration: 0,
+                       onStrokeFinished: { committed.append($0) },
+                       completion: { completed = true })
+        let nib = try XCTUnwrap(renderer.layer.sublayers?.first { $0.name == "penpal.nib" })
+        XCTAssertEqual(committed, [0])
+        XCTAssertTrue(completed)
+        XCTAssertFalse(renderer.isWriting)
+        XCTAssertTrue(nib.isHidden)
+        XCTAssertTrue(renderer.penDot.isHidden)
+    }
+
+    func testCancelledIndicatorCannotCompleteAnOldReply() async {
+        let renderer = HandwritingRenderer(frame: .zero)
+        let staleCompletion = expectation(description: "Cancelled reply must not finish")
+        staleCompletion.isInverted = true
+        renderer.write([indicatorStroke()], baseWidth: 2, targetDuration: 0.02, completion: {
+            staleCompletion.fulfill()
+        })
+        renderer.cancelWriting()
+        await fulfillment(of: [staleCompletion], timeout: 0.25)
+        XCTAssertFalse(renderer.isWriting)
+    }
+
+    func testWritingCompletionRetiresNibWithoutDelayingInk() async throws {
+        let renderer = HandwritingRenderer(frame: .zero)
+        let completed = expectation(description: "Ink completes")
+        renderer.write([indicatorStroke()], baseWidth: 2, targetDuration: 0.02, completion: {
+            completed.fulfill()
+        })
+        await fulfillment(of: [completed], timeout: 1)
+        let nib = try XCTUnwrap(renderer.layer.sublayers?.first { $0.name == "penpal.nib" })
+        XCTAssertFalse(renderer.isWriting)
+        XCTAssertTrue(nib.isHidden || nib.opacity == 0)
+        XCTAssertTrue(renderer.penDot.isHidden)
+        renderer.cancelWriting()
+    }
+}

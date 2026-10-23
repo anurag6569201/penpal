@@ -36,6 +36,57 @@ final class HandwritingRenderer: UIView {
     private var strokeFinishedHandler: ((Int) -> Void)?
     let penDot = CAShapeLayer()
     private let penNib = CAShapeLayer()
+    private let nibSlit = CAShapeLayer()
+    var writingIndicator: PenpalWritingIndicator = .penpal {
+        didSet {
+            guard oldValue != writingIndicator else { return }
+            updateIndicatorVisibility()
+        }
+    }
+
+    private func updateIndicatorVisibility() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        penDot.isHidden = !generationActive || writingIndicator != .dot
+        penNib.isHidden = !generationActive || writingIndicator != .penpal
+        CATransaction.commit()
+    }
+
+    private func resetPen() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for indicator in [penDot, penNib] {
+            indicator.removeAllAnimations()
+            indicator.isHidden = true
+            indicator.opacity = 1
+        }
+        penNib.transform = CATransform3DMakeRotation(0.45, 0, 0, 1)
+        CATransaction.commit()
+    }
+
+    private func finishPen() {
+        penDot.isHidden = true
+        guard writingIndicator == .penpal, !reduceMotion else {
+            penNib.isHidden = true
+            return
+        }
+        // The nib lifts around its contact point. Never postpone ink completion.
+        let lift = CABasicAnimation(keyPath: "transform.translation.y")
+        lift.fromValue = 0
+        lift.toValue = -6
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [lift, fade]
+        group.duration = 0.22
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        penNib.opacity = 0
+        CATransaction.commit()
+        penNib.add(group, forKey: "finish")
+    }
     private var generation = 0
     private var generationActive = false
     /// Per-write multiplier used by the "finish within" response setting.
@@ -62,13 +113,33 @@ final class HandwritingRenderer: UIView {
             ovalIn: CGRect(x: -1.5, y: -1.5, width: 3, height: 3)
         ).cgPath
         penDot.fillColor = UIColor(Pen.inkAccent).cgColor
+        // A compact fountain nib, drawn natively so it stays sharp at every
+        // canvas zoom. Its local origin is the exact ink contact point.
+        penDot.name = "penpal.contact"
+        penNib.name = "penpal.nib"
         let nib = UIBezierPath()
-        nib.move(to: CGPoint(x: 2, y: -3))
-        nib.addLine(to: CGPoint(x: 12, y: -18))
+        nib.move(to: .zero)
+        nib.addCurve(to: CGPoint(x: -8, y: -14),
+                     controlPoint1: CGPoint(x: -2, y: -6),
+                     controlPoint2: CGPoint(x: -7, y: -10))
+        nib.addQuadCurve(to: CGPoint(x: -4, y: -24), controlPoint: CGPoint(x: -4, y: -19))
+        nib.addLine(to: CGPoint(x: 4, y: -24))
+        nib.addQuadCurve(to: CGPoint(x: 8, y: -14), controlPoint: CGPoint(x: 4, y: -19))
+        nib.addCurve(to: .zero, controlPoint1: CGPoint(x: 7, y: -10),
+                     controlPoint2: CGPoint(x: 2, y: -6))
+        nib.close()
         penNib.path = nib.cgPath
-        penNib.strokeColor = UIColor.label.withAlphaComponent(0.6).cgColor
-        penNib.lineWidth = 2.5
-        penNib.lineCap = .round
+        penNib.lineWidth = 0.8
+        penNib.lineJoin = .round
+        penNib.transform = CATransform3DMakeRotation(0.45, 0, 0, 1)
+        let slit = UIBezierPath()
+        slit.move(to: CGPoint(x: 0, y: -2))
+        slit.addLine(to: CGPoint(x: 0, y: -12))
+        slit.append(UIBezierPath(ovalIn: CGRect(x: -1.7, y: -15, width: 3.4, height: 3.4)))
+        nibSlit.path = slit.cgPath
+        nibSlit.lineWidth = 1
+        nibSlit.lineCap = .round
+        penNib.addSublayer(nibSlit)
         penDot.isHidden = true
         penNib.isHidden = true
         layer.addSublayer(penDot)
@@ -82,6 +153,7 @@ final class HandwritingRenderer: UIView {
                onStrokeFinished: ((Int) -> Void)? = nil,
                completion: (() -> Void)? = nil) {
         generation += 1
+        resetPen()
         generationActive = true
         currentWriteLayers.removeAll()
         strokeFinishedHandler = onStrokeFinished
@@ -101,14 +173,23 @@ final class HandwritingRenderer: UIView {
             activeDurationScale = 1
         }
         penDot.fillColor = inkColor.cgColor
-        penDot.isHidden = false
-        // A large animated nib makes the result read like a UI effect. Keep only
-        // the subtle contact point while ink is being deposited.
-        penNib.isHidden = true
+        penNib.fillColor = UIColor(Pen.inkAccent).resolvedColor(with: traitCollection).cgColor
+        penNib.strokeColor = UIColor(Pen.paperRaised).resolvedColor(with: traitCollection).cgColor
+        nibSlit.strokeColor = penNib.strokeColor
+        nibSlit.fillColor = penNib.strokeColor
+        // Reduce Motion keeps the nib at the reply's first point, without
+        // tracking, tilt, lift, or repeated pulses.
+        if let first = strokes.first(where: { !$0.points.isEmpty })?.points.first {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            penDot.position = first
+            penNib.position = first
+            CATransaction.commit()
+            updateIndicatorVisibility()
+        }
         writeStroke(at: 0, strokes: strokes, baseWidth: baseWidth, gen: gen) { [weak self] in
             guard let self, self.generation == gen else { return }
-            self.penDot.isHidden = true
-            self.penNib.isHidden = true
+            self.finishPen()
             self.generationActive = false
             completion?()
         }
@@ -117,8 +198,7 @@ final class HandwritingRenderer: UIView {
     func cancelWriting() {
         generation += 1
         generationActive = false
-        penDot.isHidden = true
-        penNib.isHidden = true
+        resetPen()
         cancelPondering()
         cancelCelebrate()
     }
@@ -374,7 +454,9 @@ final class HandwritingRenderer: UIView {
     /// share one container so the tiny scale change moves as one shape rather
     /// than making each side drift independently.
     func traceBox(_ strokes: [PKStroke]) {
-        let geometries = strokes.compactMap(Self.ghostPath(for:))
+        let geometries = strokes.compactMap { stroke in
+            Self.ghostPath(for: stroke)
+        }
         guard !geometries.isEmpty else { return }
         let boxBounds = geometries.reduce(CGRect.null) {
             $0.union($1.0.bounds)
@@ -971,13 +1053,25 @@ final class HandwritingRenderer: UIView {
         travelDot.beginTime = animationStart
         travelDot.fillMode = .backwards
         movePen(to: stroke.points[0])
-        penDot.add(travelDot, forKey: "travel")
-        penNib.add(travelDot, forKey: "travel")
+        if !reduceMotion {
+            if writingIndicator == .dot { penDot.add(travelDot, forKey: "travel") }
+            if writingIndicator == .penpal {
+                penNib.add(travelDot, forKey: "travel")
+                let horizontal = (stroke.points.last?.x ?? 0) - stroke.points[0].x
+                let tilt = CABasicAnimation(keyPath: "transform.rotation.z")
+                tilt.fromValue = penNib.presentation()?.value(forKeyPath: "transform.rotation.z") ?? 0.45
+                tilt.toValue = 0.45 + min(0.12, max(-0.12, horizontal / 180))
+                tilt.duration = min(0.16, duration)
+                tilt.autoreverses = true
+                tilt.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                penNib.add(tilt, forKey: "tilt")
+            }
+        }
         let endPoint = stroke.points.last ?? penDot.position
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         penDot.position = endPoint
-        penNib.position = endPoint
+        if !reduceMotion { penNib.position = endPoint }
         CATransaction.commit()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + leadIn + duration) { [weak self] in
@@ -1175,7 +1269,7 @@ final class HandwritingRenderer: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         penDot.position = point
-        penNib.position = point
+        if !reduceMotion { penNib.position = point }
         CATransaction.commit()
     }
 
@@ -1183,6 +1277,7 @@ final class HandwritingRenderer: UIView {
     /// small upward arc, briefly fading the contact dot to read as a pen-lift
     /// (hand travelling over the paper) rather than an instant jump.
     private func glidePen(from a: CGPoint, to b: CGPoint, over duration: Double) {
+        guard !reduceMotion else { movePen(to: b); return }
         let dist = hypot(b.x - a.x, b.y - a.y)
         guard duration > 0.05, dist > 1 else { movePen(to: b); return }
 
@@ -1209,8 +1304,13 @@ final class HandwritingRenderer: UIView {
         fade.keyTimes = [0, 0.5, 1]
         fade.duration = duration
 
-        penDot.add(move, forKey: "travel")
-        penNib.add(move, forKey: "travel")
-        penDot.add(fade, forKey: "lift")
+        if writingIndicator == .dot {
+            penDot.add(move, forKey: "travel")
+            penDot.add(fade, forKey: "lift")
+        } else if writingIndicator == .penpal {
+            penNib.add(move, forKey: "travel")
+            fade.values = [1, 0.65, 1]
+            penNib.add(fade, forKey: "lift")
+        }
     }
 }

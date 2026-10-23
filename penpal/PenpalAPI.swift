@@ -53,6 +53,10 @@ enum PenpalAPI {
         let manifest: InteractiveManifest?
         let build_mode: String?
         let iterations: Int?
+        // True when the model ran out of output room and the server closed up
+        // a partial build rather than failing: the block runs, but it may be
+        // missing later features, so offering a rebuild is reasonable.
+        let salvaged: Bool?
         let diagnosis: String?
         let conversation_id: String?
         let model: String?
@@ -209,6 +213,80 @@ enum PenpalAPI {
         guard !parsed.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw APIError.emptyReply
         }
+        return parsed
+    }
+
+    /// PEN-40 — plan a whole page and build every section at once.
+    ///
+    /// Returns content and layout INTENT (roles, spans, anchors) but no
+    /// geometry: only this device knows the page width and the user's
+    /// handwriting size, so `PageComposer` solves the placement locally.
+    static func arrange(
+        message: String,
+        conversationId: String,
+        history: [ChatRequest.Turn],
+        baseURL: String,
+        language: String,
+        mathDetail: String,
+        illustrationQuality: String,
+        pageWidth: CGFloat
+    ) async throws -> ArrangedPageResponse {
+        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + "/api/arrange/") else {
+            throw APIError.badURL
+        }
+
+        struct Body: Encodable {
+            let message: String
+            let conversation_id: String
+            let history: [ChatRequest.Turn]
+            let language: String
+            let math_detail: String
+            let illustration_quality: String
+            /// Writable width of the page, so the server can tell each
+            /// specialist the size of the box it is building for.
+            let page_width: Double
+        }
+        struct ErrorBody: Decodable { let error: String? }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.setValue(conversationId, forHTTPHeaderField: "X-Conversation-Id")
+        // A page fans out to several specialists at once, so the wall-clock
+        // cost is the slowest section — usually an interactive build — not
+        // the sum. The ceiling still has to cover that slowest one.
+        request.timeoutInterval = 240
+        request.httpBody = try JSONEncoder().encode(Body(
+            message: message,
+            conversation_id: conversationId,
+            history: history,
+            language: language,
+            math_detail: mathDetail,
+            illustration_quality: illustrationQuality,
+            page_width: Double(pageWidth)
+        ))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200...299).contains(code) {
+            let parsed = try? JSONDecoder().decode(ErrorBody.self, from: data)
+            throw APIError.http(
+                code,
+                parsed?.error ?? String(data: data, encoding: .utf8) ?? "no body"
+            )
+        }
+
+        let parsed = try JSONDecoder().decode(ArrangedPageResponse.self, from: data)
+        guard !parsed.sections.isEmpty else { throw APIError.emptyReply }
         return parsed
     }
 
@@ -468,6 +546,96 @@ enum PenpalAPI {
             throw APIError.emptyReply
         }
         return blocks
+    }
+
+    // MARK: - Arranger (PEN-40)
+
+    /// One generated section of a composed page. Carries content plus the
+    /// layout INTENT the compositor needs — never geometry, which the device
+    /// works out for itself.
+    struct ArrangedPageSection: Decodable {
+        let id: String
+        let role: String
+        let capability: String
+        let block: String
+        let span: String
+        let priority: Int
+        let anchor: String?
+        let adjacency: String?
+
+        /// Handwritten prose, maths, a table body or a checklist body.
+        let text: String?
+        /// Interactive block source.
+        let html: String?
+        let title: String?
+        let caption: String?
+        let preferred_height: Int?
+        let manifest: InteractiveManifest?
+        /// Illustrator output, in the same shape the illustrator endpoint uses.
+        let strokes: [Illustration.Stroke]?
+        let label: String?
+        let aspect_ratio: Double?
+        /// The region the server told this specialist to design for. Used to
+        /// sanity-check a block that reports an implausible height.
+        let box_width: Int?
+        let box_height: Int?
+
+        var resolvedBlock: SectionBlock {
+            SectionBlock(rawValue: block) ?? .ink
+        }
+        var resolvedRole: SectionRole {
+            SectionRole(rawValue: role) ?? .explanation
+        }
+        var resolvedSpan: SectionSpan {
+            SectionSpan(rawValue: span) ?? .full
+        }
+        var resolvedAdjacency: SectionAdjacency? {
+            guard let adjacency, !adjacency.isEmpty else { return nil }
+            return SectionAdjacency(rawValue: adjacency)
+        }
+        /// Empty strings arrive from the server for "no anchor"; normalise
+        /// them away so the compositor only ever sees a real id or nil.
+        var resolvedAnchor: String? {
+            guard let anchor, !anchor.isEmpty else { return nil }
+            return anchor
+        }
+
+        /// Hand this section to the layout solver.
+        func asArrangedSection() -> ArrangedSection {
+            ArrangedSection(
+                id: id,
+                role: resolvedRole,
+                block: resolvedBlock,
+                span: resolvedSpan,
+                priority: priority,
+                anchor: resolvedAnchor,
+                adjacency: resolvedAdjacency,
+                text: text ?? "",
+                html: html ?? "",
+                preferredHeight: CGFloat(preferred_height ?? 0),
+                aspectRatio: CGFloat(aspect_ratio ?? 1)
+            )
+        }
+    }
+
+    struct ArrangedPageResponse: Decodable {
+        let title: String
+        /// Layout family: modular-grid, cornell, two-column, path, radial,
+        /// skyscraper.
+        let template: String
+        let reply: String
+        let sections: [ArrangedPageSection]
+        /// How many sections were planned vs how many survived, so the page
+        /// can tell the user something quietly went missing.
+        let planned: Int?
+        let failed: Int?
+        let conversation_id: String?
+        let model: String?
+        let capability: String?
+
+        var resolvedTemplate: PageTemplate {
+            PageTemplate(rawValue: template) ?? .modularGrid
+        }
     }
 
     // MARK: - Illustrator (PEN-36)

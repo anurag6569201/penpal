@@ -161,6 +161,10 @@ REST_FRAMEWORK = {
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# Hard deadline for one Gemini call. A hung request otherwise holds a worker
+# until the process restarts. Generous on purpose: a large interactive build
+# with a 64k output budget can legitimately take minutes.
+GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "240"))
 # PEN-29 — cheaper model for problems the CAS has already solved exactly.
 # Defaults to empty, which routes everything to GEMINI_MODEL: the saving is
 # opt-in, so nobody gets a quietly weaker answer without choosing it.

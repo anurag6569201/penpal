@@ -1,0 +1,5 @@
+:root{--paper:#f7f4ed;--surface:#fffdf9;--ink:#1a2b2a;--accent:#1b5d56;--on-accent:#fff;--mint:#7eceb9;--muted:#63706b;--line:#d9ded7;--display:Georgia,'Times New Roman',serif;--body:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;--card:20px}
+.penpal-mark{display:inline-block;width:64px;aspect-ratio:1;background:var(--accent);mask:url('assets/penpal-mark.png') center/contain no-repeat;-webkit-mask:url('assets/penpal-mark.png') center/contain no-repeat;flex-shrink:0}
+.penpal-signature{display:inline-flex;align-items:center;gap:4px;color:var(--ink);font:600 34px var(--display);letter-spacing:-1px}
+.penpal-signature .penpal-mark{width:56px}
+[data-theme="dark"]{--paper:#000;--surface:#0e0d10;--ink:#eceae4;--accent:#7eceb9;--on-accent:#0a241f;--muted:#a1a09e;--line:#29292c}

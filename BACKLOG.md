@@ -205,6 +205,139 @@ user thinks they did.
 
 ---
 
+## Notebook foundation — required to compete (P0 for retention)
+
+Penpal's intelligence is a reason to try it; a dependable notebook is the
+reason to trust it with a semester. These are not a pivot to being a generic
+Goodnotes clone. They are the minimum substrate that lets the page-as-interface
+thesis survive real coursework.
+
+### PEN-40 · Offline-first cloud notebook sync — iCloud or Google Drive — **PARTIALLY SHIPPED**
+Move notes, folders, page assets and handwriting profiles from the single local
+Documents JSON snapshot to an offline-first, versioned document store with
+user-selected iCloud or Google Drive sync. Every stroke must be durable locally
+before sync begins; sync is an enhancement, never a condition of writing.
+
+**Done when:** the same notebook can be edited offline on two iPads, reconnect
+without data loss, surface an understandable conflict when necessary, and be
+restored after reinstall. Include an explicit export/backup path independent of
+the selected provider.
+
+**Provider design:** iCloud is the recommended default for an iPad-only user:
+it needs no separate Penpal account and supports the most natural Apple-device
+sync. Google Drive is an equal opt-in choice for a user who wants Google-backed
+recovery or later cross-platform access. Connect it with narrowly scoped OAuth,
+storing Penpal's private data in Drive's `appDataFolder`; never ask for broad
+access to a student's Drive merely to sync notes.
+
+**Decision — one active two-way provider per notebook.** A notebook's canonical
+state remains local, and it has exactly one configured cloud replica: iCloud,
+Google Drive, or none. Switching provider creates a verified copy then asks the
+user to confirm the new source of truth. Do not let iCloud and Drive both write
+to the same notebook in v1: two independent conflict engines make silent data
+loss much more likely. A second provider may later be offered as one-way,
+versioned backup—not bidirectional sync.
+
+**Conflict rule:** merge at page/stroke or block level wherever possible; never
+choose "last writer wins" for a whole notebook. If the app cannot merge safely,
+preserve both versions and let the student decide.
+
+**Why now:** losing a semester of notes is a terminal trust failure. The current
+local-only store is a useful prototype, not a student-safe product.
+
+**Shipped foundation:** Settings now exports one self-contained
+`.penpalbackup` file (notes, drawings, folders and attachments) and restores it
+as a non-destructive merge. It works without an account and is deliberately
+provider-neutral: save it in Files, iCloud Drive, Google Drive or an external
+disk. Direct two-way provider sync remains open.
+
+### PEN-41 · Real notebook and page model
+Replace the one-canvas-note assumption with notebooks containing ordered,
+individually persistent pages. Add notebook covers, duplicate/reorder/delete
+page actions, page thumbnails, and a small curated template set (ruled, grid,
+dot, blank, Cornell, graph, A4/Letter).
+
+**Decision — no infinite canvas as the default.** Coursework is pages, PDFs and
+hand-ins. A conventional page makes printing, exporting, search results and
+worksheet placement reliable. An infinite board can be reconsidered later as a
+separate document type, not smuggled into every note.
+
+### PEN-42 · PDF, scan and Files workflow
+Import PDFs from Files/share sheet, annotate them with the same ink tools, add
+and reorder blank pages, and export a flattened, printable copy without
+damaging the original. Add camera document scanning with crop, perspective
+correction and OCR; a scanned worksheet should become a working page, not a
+dead image attachment.
+
+**Done when:** a student can receive lecture slides in Files, mark them up,
+solve a boxed question, and send a correct PDF back to their teacher.
+
+### PEN-43 · Search every meaningful mark — **PARTIALLY SHIPPED**
+Run handwriting OCR lazily and locally after an idle save; index the user's ink,
+typed text, Penpal replies, PDF text, scanned-document OCR, titles, folders and
+tags. Results must navigate to and visibly highlight the matching page region.
+
+**Decision — preserve ink.** OCR is a search index and accessibility transcript,
+never a destructive conversion or a reason to replace a person's handwriting.
+
+**Shipped foundation:** the app now performs local Vision OCR after an idle
+pause and indexes the user's handwriting alongside typed text, Penpal replies
+and tags. Stale OCR is cancelled whenever the drawing changes. PDF/scan index
+coverage and result-region highlighting remain open.
+
+### PEN-44 · Pencil-first editing baseline
+Make the writing surface feel unremarkably reliable before adding more AI:
+selection/lasso, move/resize, copy/paste, eraser modes, shapes and ruler,
+zoom-writing window, stable undo/redo by intent, palm rejection, and no dropped
+strokes under load. Respect system Apple Pencil double-tap; add hover previews,
+squeeze palette and haptics where supported, with touch-only equivalents.
+
+**Performance contract:** ink begins immediately, stays responsive on supported
+older iPads, and saves cannot visibly interrupt a stroke.
+
+### PEN-45 · Lecture capture and replay
+Record audio alongside page time, replay notes in sync with the recording, and
+provide timestamped transcripts that can be searched and copied. Keep raw audio
+local by default; make cloud transcription an explicit, revocable choice.
+
+**Why it belongs here:** lectures are a core iPad-notes job. Voice input is not
+a substitute for a recording a student can revisit three weeks later.
+
+### PEN-46 · Organization that scales past one class
+Add tags, favourites/pins, recents, smart folders (course, tag, date, review
+due), predictable sort controls, deep links to a page, and a one-gesture quick
+note. Preserve the existing simple folder hierarchy; power should be additive,
+not a tax on opening a blank page.
+
+### PEN-47 · Privacy, account and release contract
+Separate Penpal identity from storage identity. Ship a real Penpal account only
+when a feature genuinely needs one. iCloud sync uses the person's Apple account;
+Google Drive sync uses Google OAuth solely to access the selected storage. Keep
+an account-free local mode. If Google becomes a primary Penpal login rather than
+only a storage connection, offer the Apple-equivalent route. Document exactly
+what goes to an AI service, obtain consent before upload, provide
+delete-my-data/export controls, encrypt synced content, and publish accurate App
+Store privacy disclosures.
+
+**Decision — a student must never need an account to start writing.** Account
+creation is for sync and recovery, not a growth gate.
+
+### PEN-48 · Accessibility as a complete notebook workflow
+Extend PEN-32 from chrome-level polish to the complete work loop: create,
+write, navigate, search, import, export and review a note with VoiceOver, Voice
+Control, keyboard, Dynamic Type and reduced motion. OCR/reply transcripts must
+make ink discoverable without pretending the visual page is text.
+
+### PEN-49 · Course-long beta and quality gates
+Recruit 20–30 iPad students who already use a leading notes app. Ask each to
+use Penpal for one real course for two weeks. Track return-to-old-app reasons,
+sync integrity, dropped-stroke rate, launch/write latency, search success,
+export success and verified-solve trust.
+
+**Exit criterion:** students can complete a course workflow—capture, annotate,
+search, review, solve and submit—without returning to another app for notebook
+basics. Do not use download count as a proxy for this.
+
 ## Then — new capability (P2)
 
 ### PEN-15 · Worksheet mode — **SHIPPED**
@@ -706,6 +839,12 @@ a measured budget: frame time while writing, memory during image export.
 
 ## Sequencing
 
+**Milestone 0 — Keep it.** PEN-40, PEN-41, PEN-42, PEN-43, PEN-44, PEN-47.
+Before calling Penpal a competitor, make it safe to use as a daily notebook:
+durable local writes, sync and recovery, pages and PDFs, handwriting search,
+Pencil-grade editing, and honest data controls. PEN-45 and PEN-46 follow this
+foundation; PEN-48 and PEN-49 are release gates rather than optional polish.
+
 **Milestone 1 — Trust it.** PEN-01 … PEN-06.
 Nothing visual ships until rendering is regression-locked and verification is
 observable. The audit showed we cannot currently tell whether our correctness
@@ -719,8 +858,9 @@ the product's language.
 Worksheet mode plus grading plus export turns Penpal into where homework
 actually happens.
 
-**Milestone 4 — Ship it.** PEN-25 … PEN-28, PEN-32, PEN-33.
-Release blockers, cost control, accessibility, onboarding.
+**Milestone 4 — Ship it.** PEN-25 … PEN-28, PEN-32, PEN-33, PEN-48, PEN-49.
+Release blockers, cost control, accessible full-workflow use, onboarding and a
+course-long student beta.
 
 Everything else is opportunistic.
 

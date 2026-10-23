@@ -17,6 +17,7 @@ Run:  python manage.py test chat
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest.mock import patch
 
@@ -644,6 +645,91 @@ class InteractiveBlockTests(GeminiTestCase):
         self.assertIn("missing symbol", result["diagnosis"])
         self.assertEqual(len(models.of_kind("solver")), 2)
 
+    # -- truncation, the dominant real-world failure -----------------------
+
+    # The model ran out of output tokens mid-`html`: no closing quote, no
+    # closing brace. This is what produced "no JSON object found" in prod.
+    TRUNCATED = VALID[:VALID.index("<style>")]
+
+    def test_truncated_build_is_retried_before_it_is_used(self):
+        responses = iter([self.TRUNCATED, self.VALID])
+        models = self.install(solver=lambda _contents: next(responses))
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertFalse(result["salvaged"])
+        self.assertEqual(result["title"], "Wave explorer")
+        self.assertEqual(len(models.of_kind("solver")), 2)
+
+    def test_retries_buy_output_room_and_spend_less_on_thinking(self):
+        responses = iter([self.TRUNCATED, self.TRUNCATED, self.VALID])
+        models = self.install(solver=lambda _contents: next(responses))
+        gemini.generate_interactive_block("show a wave")
+        configs = [call[2] for call in models.of_kind("solver")]
+        self.assertEqual([c.max_output_tokens for c in configs],
+                         [32_000, 48_000, 64_000])
+        self.assertEqual([c.thinking_config.thinking_budget for c in configs],
+                         [2048, 512, 0])
+
+    def test_persistent_truncation_is_salvaged_rather_than_a_503(self):
+        # Every attempt is cut off. A partial block the user can see beats
+        # an error banner, so the last one is closed up and returned.
+        self.install(solver=self.TRUNCATED)
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertTrue(result["salvaged"])
+        self.assertIn("<input", result["html"])
+
+    def test_salvage_closes_tags_the_cut_off_left_open(self):
+        self.install(solver=self.VALID[:self.VALID.index("const x=1;")])
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertTrue(result["html"].rstrip().endswith("</script>"))
+
+    def test_prose_wrapped_and_fenced_json_still_parses(self):
+        for wrapper in ("Sure! Here you go:\n{body}\nHope that helps.",
+                        "```json\n{body}\n```",
+                        "```json\n{body}"):
+            with self.subTest(wrapper=wrapper.split("\n")[0]):
+                self.install(solver=wrapper.replace("{body}", self.VALID))
+                result = gemini.generate_interactive_block("show a wave")
+                self.assertEqual(result["title"], "Wave explorer")
+
+    def test_a_refusal_with_no_json_is_a_clear_error(self):
+        self.install(solver="I'm sorry, I can't build that.")
+        with self.assertRaises(gemini.GeminiError) as ctx:
+            gemini.generate_interactive_block("show a wave")
+        self.assertIn("malformed", str(ctx.exception).lower())
+
+    def test_transient_service_errors_are_retried_inside_one_attempt(self):
+        calls = {"n": 0}
+
+        def flaky(_contents):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("503 UNAVAILABLE: The model is overloaded.")
+            return self.VALID
+
+        models = self.install(solver=flaky)
+        with patch("time.sleep"):
+            result = gemini.generate_interactive_block("show a wave")
+        self.assertEqual(result["title"], "Wave explorer")
+        self.assertEqual(result["iterations"], 1)   # the build never re-asked
+        self.assertEqual(len(models.of_kind("solver")), 3)
+
+    def test_a_rejected_config_knob_is_dropped_not_fatal(self):
+        # A model that rejects thinking budgets must still produce a block.
+        seen: list[object] = []
+        models = self.install(solver=self.VALID)
+        original = models.generate_content
+
+        def strict(model, contents, config):
+            seen.append(config)
+            if getattr(config, "thinking_config", None) is not None:
+                raise RuntimeError("thinking_config is not supported")
+            return original(model, contents, config)
+
+        models.generate_content = strict
+        result = gemini.generate_interactive_block("show a wave")
+        self.assertEqual(result["title"], "Wave explorer")
+        self.assertIsNone(getattr(seen[-1], "thinking_config", None))
+
     def test_empty_quality_review_is_retried_without_losing_repair(self):
         repaired = self.VALID[:-1] + (
             ',"diagnosis":"Fixed the initialization order."}'
@@ -700,6 +786,384 @@ class HistorySanitizerTests(SimpleTestCase):
                  {"role": "SHOUTING", "content": "c"}]
         self.assertEqual([t["role"] for t in _clean_history(mixed)],
                          ["user", "assistant", "assistant"])
+
+
+# --------------------------------------------------------------------------
+# gemini — the arranger (PEN-40)
+# --------------------------------------------------------------------------
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model")
+class ArrangerTests(GeminiTestCase):
+    """
+    The arranger plans a page then fans out to the other capabilities. What
+    matters is that the PLAN is layout-safe and that one broken specialist
+    cannot cost the user the rest of the page.
+    """
+
+    PLAN = json.dumps({
+        "title": "DC generator",
+        "template": "modular-grid",
+        "reply": "Laid out a DC generator note.",
+        "sections": [
+            {"id": "s1", "role": "diagram", "capability": "illustrator",
+             "block": "diagram", "prompt": "Draw a labelled DC generator.",
+             "span": "half", "priority": 1},
+            {"id": "s2", "role": "explanation", "capability": "companion",
+             "block": "ink", "prompt": "Explain how a DC generator works.",
+             "span": "half", "priority": 2,
+             "anchor": "s1", "adjacency": "below"},
+            {"id": "s3", "role": "animation", "capability": "interactive",
+             "block": "interactive", "prompt": "Animate the commutator.",
+             "span": "full", "priority": 3},
+        ],
+    })
+
+    #: The exact text the user sends, used to tell the PLANNING call apart
+    #: from the section calls that follow it. Matching on a keyword instead
+    #: would also match the section prompts, which mention the same subject.
+    REQUEST = "explain a dc generator"
+
+    def plan_only(self, plan=None):
+        """Install a fake that answers the planner and nothing else."""
+        return self.install(solver=plan or self.PLAN)
+
+    def fan_out(self, section_reply):
+        """
+        A fake that plans first, then answers each section.
+
+        `section_reply` receives the section prompt and returns its text, or
+        raises to simulate that one specialist failing.
+        """
+        def solver(contents):
+            asked = "\n".join(getattr(p, "text", "") or ""
+                               for p in contents[-1].parts).strip()
+            if asked == self.REQUEST:
+                return self.PLAN
+            return section_reply(asked)
+        return solver
+
+    # -- planning ----------------------------------------------------------
+
+    def test_plan_is_normalised_into_layout_safe_sections(self):
+        self.plan_only()
+        plan = gemini.plan_page("explain a dc generator")
+        self.assertEqual(plan["template"], "modular-grid")
+        self.assertEqual([s["id"] for s in plan["sections"]],
+                         ["s1", "s2", "s3"])
+        self.assertEqual([s["priority"] for s in plan["sections"]], [1, 2, 3])
+        self.assertEqual(plan["sections"][1]["anchor"], "s1")
+
+    def test_unknown_template_role_and_span_fall_back(self):
+        self.plan_only(json.dumps({
+            "title": "T", "template": "kaleidoscope", "reply": "r",
+            "sections": [{"id": "a", "role": "interpretive-dance",
+                          "capability": "wizard", "block": "hologram",
+                          "prompt": "do a thing", "span": "quarter",
+                          "priority": 1}],
+        }))
+        section = gemini.plan_page("x")["sections"][0]
+        self.assertEqual(gemini.plan_page("x")["template"], "modular-grid")
+        self.assertEqual(section["role"], "explanation")
+        self.assertEqual(section["capability"], "companion")
+        self.assertEqual(section["block"], "ink")
+        self.assertEqual(section["span"], "full")
+
+    def test_capability_and_block_are_kept_consistent(self):
+        # An illustrator section is a drawing whatever the planner typed, and
+        # only the interactive specialist can fill a live block. A mismatch
+        # would strand content in a renderer that cannot draw it.
+        self.plan_only(json.dumps({
+            "title": "T", "template": "path", "reply": "r", "sections": [
+                {"id": "a", "role": "diagram", "capability": "illustrator",
+                 "block": "table", "prompt": "draw", "span": "full",
+                 "priority": 1},
+                {"id": "b", "role": "animation", "capability": "companion",
+                 "block": "interactive", "prompt": "animate", "span": "full",
+                 "priority": 2},
+            ],
+        }))
+        sections = gemini.plan_page("x")["sections"]
+        self.assertEqual(sections[0]["block"], "diagram")
+        self.assertEqual(sections[1]["capability"], "interactive")
+
+    def test_surplus_interactive_sections_are_demoted_not_dropped(self):
+        # A page of widgets is not a note, but the content is still wanted.
+        self.plan_only(json.dumps({
+            "title": "T", "template": "modular-grid", "reply": "r",
+            "sections": [
+                {"id": f"s{i}", "role": "animation", "capability": "interactive",
+                 "block": "interactive", "prompt": f"widget {i}",
+                 "span": "full", "priority": i}
+                for i in range(1, 5)
+            ],
+        }))
+        sections = gemini.plan_page("x")["sections"]
+        self.assertEqual(len(sections), 4)
+        live = [s for s in sections if s["block"] == "interactive"]
+        self.assertEqual(len(live), 2)
+        self.assertEqual(sections[2]["capability"], "companion")
+
+    def test_section_count_is_capped(self):
+        self.plan_only(json.dumps({
+            "title": "T", "template": "modular-grid", "reply": "r",
+            "sections": [
+                {"id": f"s{i}", "role": "explanation", "capability": "companion",
+                 "block": "ink", "prompt": f"part {i}", "span": "half",
+                 "priority": i}
+                for i in range(1, 20)
+            ],
+        }))
+        self.assertEqual(len(gemini.plan_page("x")["sections"]), 7)
+
+    def test_sections_without_a_prompt_are_dropped(self):
+        # A specialist cannot work from nothing, so an empty prompt is not a
+        # section — it is a hole in the page.
+        self.plan_only(json.dumps({
+            "title": "T", "template": "modular-grid", "reply": "r",
+            "sections": [
+                {"id": "a", "role": "explanation", "capability": "companion",
+                 "block": "ink", "prompt": "  ", "span": "full", "priority": 1},
+                {"id": "b", "role": "explanation", "capability": "companion",
+                 "block": "ink", "prompt": "real", "span": "full", "priority": 2},
+            ],
+        }))
+        sections = gemini.plan_page("x")["sections"]
+        self.assertEqual([s["id"] for s in sections], ["b"])
+        self.assertEqual(sections[0]["priority"], 1)
+
+    def test_forward_and_dangling_anchors_are_cleared(self):
+        # An anchor pointing at a later section cannot be honoured by a
+        # single-pass layout, and one pointing nowhere would crash it.
+        self.plan_only(json.dumps({
+            "title": "T", "template": "modular-grid", "reply": "r",
+            "sections": [
+                {"id": "a", "role": "explanation", "capability": "companion",
+                 "block": "ink", "prompt": "one", "span": "half", "priority": 1,
+                 "anchor": "b", "adjacency": "below"},
+                {"id": "b", "role": "explanation", "capability": "companion",
+                 "block": "ink", "prompt": "two", "span": "half", "priority": 2,
+                 "anchor": "ghost", "adjacency": "beside"},
+            ],
+        }))
+        sections = gemini.plan_page("x")["sections"]
+        self.assertEqual([s["anchor"] for s in sections], ["", ""])
+        self.assertEqual([s["adjacency"] for s in sections], ["", ""])
+
+    def test_a_plan_with_no_usable_sections_is_an_error(self):
+        self.plan_only('{"title":"T","template":"path","reply":"r","sections":[]}')
+        with self.assertRaises(gemini.GeminiError):
+            gemini.plan_page("x")
+
+    # -- fan-out -----------------------------------------------------------
+
+    def test_every_section_is_built_and_returned_in_reading_order(self):
+        def section(asked):
+            if "Animate" in asked:
+                return ('{"reply":"Tap play.","title":"Commutator",'
+                        '"html":"<div id=\\"c\\">x</div>",'
+                        '"preferred_height":300}')
+            return "A generator turns motion into current."
+        solver = self.fan_out(section)
+
+        with patch.object(gemini, "illustrate", return_value={
+            "kind": "strokes", "label": "dc generator",
+            "aspect_ratio": 1.4,
+            "strokes": [{"role": "outline", "points": [[0, 0], [1, 1]]}],
+        }):
+            self.install(solver=solver)
+            page = gemini.arrange_page(self.REQUEST)
+
+        self.assertEqual(page["title"], "DC generator")
+        self.assertEqual([s["id"] for s in page["sections"]],
+                         ["s1", "s2", "s3"])
+        self.assertEqual([s["priority"] for s in page["sections"]], [1, 2, 3])
+        self.assertEqual(page["failed"], 0)
+        # Each specialist's output landed on its own section.
+        self.assertEqual(page["sections"][0]["aspect_ratio"], 1.4)
+        self.assertTrue(page["sections"][1]["text"])
+        self.assertIn("<div", page["sections"][2]["html"])
+
+    def test_one_failing_specialist_does_not_cost_the_page(self):
+        def section(asked):
+            if "Animate" in asked:
+                raise RuntimeError("interactive build exploded")
+            return "A generator turns motion into current."
+        solver = self.fan_out(section)
+
+        with patch.object(gemini, "illustrate",
+                          side_effect=gemini.GeminiError("cannot draw")):
+            self.install(solver=solver)
+            page = gemini.arrange_page(self.REQUEST)
+
+        # Two specialists died; the surviving one still makes a page.
+        self.assertEqual([s["id"] for s in page["sections"]], ["s2"])
+        self.assertEqual(page["planned"], 3)
+        self.assertEqual(page["failed"], 2)
+        # Reading order closes up rather than leaving a gap at 1.
+        self.assertEqual(page["sections"][0]["priority"], 1)
+
+    def test_anchor_to_a_dropped_section_is_cleared(self):
+        # s2 is anchored below s1. If s1 dies, the layout must not be handed
+        # an anchor pointing at a section that is not on the page.
+        def section(asked):
+            if "Animate" in asked:
+                return ('{"reply":"r","title":"t",'
+                        '"html":"<div id=\\"c\\">x</div>","preferred_height":300}')
+            return "Prose."
+        solver = self.fan_out(section)
+
+        with patch.object(gemini, "illustrate",
+                          side_effect=gemini.GeminiError("nope")):
+            self.install(solver=solver)
+            page = gemini.arrange_page(self.REQUEST)
+
+        section = next(s for s in page["sections"] if s["id"] == "s2")
+        self.assertEqual(section["anchor"], "")
+        self.assertEqual(section["adjacency"], "")
+
+    def test_a_page_where_everything_fails_is_an_error(self):
+        def section(_asked):
+            raise RuntimeError("everything is broken")
+        solver = self.fan_out(section)
+
+        with patch.object(gemini, "illustrate",
+                          side_effect=gemini.GeminiError("nope")):
+            self.install(solver=solver)
+            with self.assertRaises(gemini.GeminiError):
+                gemini.arrange_page(self.REQUEST)
+
+    def test_debate_sections_join_the_counterpoint_and_its_question(self):
+        plan = json.dumps({
+            "title": "T", "template": "two-column", "reply": "r", "sections": [
+                {"id": "a", "role": "callout", "capability": "debate",
+                 "block": "ink", "prompt": "Argue the other side.",
+                 "span": "full", "priority": 1},
+            ],
+        })
+        self.install(solver=plan)
+        with patch.object(gemini, "debate_turn", return_value={
+            "counterargument": "Later starts cost parents childcare.",
+            "question": "Who absorbs that cost?",
+        }):
+            page = gemini.arrange_page("schools should start later")
+        self.assertIn("childcare", page["sections"][0]["text"])
+        self.assertIn("Who absorbs", page["sections"][0]["text"])
+
+    def test_sections_are_built_concurrently_not_one_after_another(self):
+        # The whole point of the arranger is that a six-part page costs the
+        # SLOWEST section, not the sum of all of them. If this ever
+        # regresses to a serial loop the feature stops being usable.
+        import threading
+        import time
+
+        inside = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def section(_asked):
+            nonlocal inside, peak
+            with lock:
+                inside += 1
+                peak = max(peak, inside)
+            time.sleep(0.05)
+            with lock:
+                inside -= 1
+            return "Prose."
+
+        solver = self.fan_out(section)
+        with patch.object(gemini, "illustrate", return_value={
+            "kind": "strokes", "label": "x", "aspect_ratio": 1.0,
+            "strokes": [{"role": "outline", "points": [[0, 0], [1, 1]]}],
+        }):
+            self.install(solver=solver)
+            gemini.arrange_page(self.REQUEST)
+
+        # Two non-illustrator sections must have overlapped in time.
+        self.assertGreaterEqual(peak, 2)
+
+    # -- box sizing --------------------------------------------------------
+
+    def test_section_box_matches_the_column_the_device_will_give_it(self):
+        """
+        A specialist that is told the wrong box builds the wrong shape, and
+        the user has to resize it by hand. These expectations mirror
+        PageComposer: 24pt gutters, a 190pt minimum column, and the device's
+        3/2/1 column thresholds at 900 and 460 points.
+        """
+        def device_width(span, page):
+            columns = 3 if page >= 900 else (2 if page >= 460 else 1)
+            if columns == 1:
+                span = "full"
+            elif columns == 2 and span == "third":
+                span = "half"
+            n = {"full": 1, "half": 2, "third": 3}[span]
+            return (page - 24 * (n - 1)) / n
+
+        for page in (740, 1100, 1000, 500, 460, 380, 300):
+            for span in ("full", "half", "third"):
+                with self.subTest(page=page, span=span):
+                    width, _ = gemini._section_box(span, page)
+                    self.assertAlmostEqual(
+                        width, device_width(span, page), delta=2)
+
+    def test_narrow_pages_widen_a_span_rather_than_promise_a_sliver(self):
+        # A 380pt page cannot carry two readable columns, so every span is
+        # really full width. Promising 178 would be a lie in the direction
+        # that produces a squashed block.
+        for span in ("full", "half", "third"):
+            width, _ = gemini._section_box(span, 380)
+            self.assertEqual(width, 380)
+
+    def test_full_width_sections_are_allowed_more_height(self):
+        # A simulator squeezed into a letterbox is the resize complaint.
+        full = gemini._section_box("full", 740)[1]
+        half = gemini._section_box("half", 740)[1]
+        third = gemini._section_box("third", 1100)[1]
+        self.assertGreater(full, half)
+        self.assertGreater(half, third)
+
+    def test_specialists_are_told_their_box(self):
+        captured = {}
+
+        def section(asked):
+            captured["prompt"] = asked
+            return ('{"reply":"r","title":"t",'
+                    '"html":"<div id=\\"c\\">x</div>","preferred_height":900}')
+
+        # Only the interactive section reaches the fake; the others are
+        # patched out so the captured prompt is unambiguous.
+        plan = json.dumps({
+            "title": "T", "template": "path", "reply": "r", "sections": [
+                {"id": "a", "role": "animation", "capability": "interactive",
+                 "block": "interactive", "prompt": "Animate a curveball.",
+                 "span": "full", "priority": 1},
+            ],
+        })
+
+        def solver(contents):
+            asked = "\n".join(getattr(p, "text", "") or ""
+                              for p in contents[-1].parts).strip()
+            if asked == self.REQUEST:
+                return plan
+            return section(asked)
+
+        self.install(solver=solver)
+        page = gemini.arrange_page(self.REQUEST, page_width=1100)
+
+        self.assertIn("Render box", captured["prompt"])
+        self.assertIn("1100", captured["prompt"])
+        # The reported box travels back so the client can cross-check it.
+        self.assertEqual(page["sections"][0]["box_width"], 1100)
+        # A full-width section may exceed the standalone 520 default, but is
+        # still clamped to the room it was actually promised.
+        self.assertLessEqual(page["sections"][0]["preferred_height"], 560)
+        self.assertGreater(page["sections"][0]["preferred_height"], 520)
+
+    def test_empty_message_is_rejected(self):
+        self.install()
+        for blank in ("", "   ", "\n"):
+            with self.assertRaises(gemini.GeminiError):
+                gemini.arrange_page(blank)
 
 
 # --------------------------------------------------------------------------
@@ -782,6 +1246,64 @@ class EndpointTests(GeminiTestCase):
         self.assertEqual(response.json()["title"], "Wave explorer")
         self.assertEqual(response.json()["capability"], "mathematician")
         self.assertIn("<script>", response.json()["html"])
+
+    # -- arranger (PEN-40) -------------------------------------------------
+
+    def test_arrange_returns_a_plan_and_its_sections(self):
+        def solver(contents):
+            asked = "\n".join(getattr(p, "text", "") or ""
+                              for p in contents[-1].parts).strip()
+            if asked == "explain a dc generator":
+                return ArrangerTests.PLAN
+            if "Animate" in asked:
+                return ('{"reply":"r","title":"t",'
+                        '"html":"<div id=\\"c\\">x</div>","preferred_height":300}')
+            return "A generator turns motion into current."
+
+        self.install(solver=solver)
+        with patch.object(gemini, "illustrate", return_value={
+            "kind": "strokes", "label": "dc generator", "aspect_ratio": 1.4,
+            "strokes": [{"role": "outline", "points": [[0, 0], [1, 1]]}],
+        }):
+            response = self.api.post(
+                "/api/arrange/",
+                {"message": "explain a dc generator"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["capability"], "arranger")
+        self.assertEqual(body["template"], "modular-grid")
+        self.assertEqual(len(body["sections"]), 3)
+        # The endpoint returns layout INTENT and never geometry: only the
+        # device knows the page width and the user's handwriting size.
+        for section in body["sections"]:
+            self.assertIn("span", section)
+            self.assertNotIn("x", section)
+            self.assertNotIn("width", section)
+
+    def test_arrange_validates_message_and_history(self):
+        self.install(solver=ArrangerTests.PLAN)
+        self.assertEqual(
+            self.api.post("/api/arrange/", {}, format="json").status_code,
+            400,
+        )
+        self.assertEqual(
+            self.api.post(
+                "/api/arrange/",
+                {"message": "hi", "history": "nope"},
+                format="json",
+            ).status_code,
+            400,
+        )
+
+    def test_arrange_surfaces_a_planning_failure_as_503(self):
+        self.install(solver="I cannot plan that.")
+        response = self.api.post(
+            "/api/arrange/", {"message": "something"}, format="json")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("error", response.json())
 
     def test_interactive_validates_message_and_history(self):
         self.install(solver=InteractiveBlockTests.VALID)
@@ -2711,6 +3233,9 @@ class AccessControlTests(GeminiTestCase):
     def test_all_expensive_endpoints_are_protected(self):
         for path, body in (("/api/chat/", {"message": "hi"}),
                            ("/api/interactive/", {"message": "make a quiz"}),
+                           # The most expensive endpoint there is: one call
+                           # fans out to several specialists at once.
+                           ("/api/arrange/", {"message": "explain gravity"}),
                            ("/api/interactive/repair/",
                             {"html": "<div>x</div>",
                              "diagnostics": [{"kind": "runtime",
