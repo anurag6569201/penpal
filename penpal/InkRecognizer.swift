@@ -177,7 +177,7 @@ enum InkRecognizer {
                 do {
                     try handler.perform([request])
                 } catch {
-                    continuation.resume(returning: [])
+                    continuation.resume(returning: []);
                 }
             }
         }

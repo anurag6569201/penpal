@@ -29,6 +29,7 @@ struct PenpalSettingsView: View {
     @State private var showBackupImporter = false
     @State private var pendingBackupURL: URL?
     @State private var showRestoreConfirm = false
+    @State private var previewText = "Today is a good day."
     var onStatus: (String) -> Void
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -46,20 +47,6 @@ struct PenpalSettingsView: View {
         ("Georgia-Italic", "Georgia Italic"),
         ("AmericanTypewriter", "Typewriter"),
     ]
-
-    private var fontSelection: Binding<String> {
-        Binding(
-            get: { settings.replyStyle == "hand" ? "hand" : settings.replyFontName },
-            set: { value in
-                if value == "hand" {
-                    settings.replyStyle = "hand"
-                } else {
-                    settings.replyStyle = "font"
-                    settings.replyFontName = value
-                }
-            }
-        )
-    }
 
     var body: some View {
         NavigationStack {
@@ -203,8 +190,69 @@ struct PenpalSettingsView: View {
     }
 
     @ViewBuilder private var styleSettings: some View {
-        // PEN-20 — a shared iPad is the normal case. Without this, the second
-        // person to train writes over the first person's hand.
+        writingPreview
+        replyAppearance
+        if settings.replyStyle == "hand" {
+            writingLayout
+            handwritingFinish
+        }
+        handwritingProfiles
+        handwritingInsights
+    }
+
+    private var replyAppearance: some View {
+        Section {
+            Picker("Reply style", selection: $settings.replyStyle) {
+                Text("My handwriting").tag("hand")
+                Text("Typeface").tag("font")
+            }
+            .pickerStyle(.segmented)
+            if settings.replyStyle == "font" {
+                Picker("Typeface", selection: $settings.replyFontName) {
+                    ForEach(Self.replyFonts, id: \.name) { font in
+                        Text(font.display).font(.custom(font.name, size: 20)).tag(font.name)
+                    }
+                }
+            }
+
+            Divider().padding(.vertical, 3)
+
+            LabeledContent("Ink color", value: settings.inkColorName == "active"
+                           ? "Match my pen" : settings.inkColorName.capitalized)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 12)], spacing: 12) {
+                ForEach([("indigo", UIColor.systemIndigo), ("blue", UIColor.systemBlue),
+                         ("black", UIColor.black), ("green", UIColor.systemGreen),
+                         ("purple", UIColor.systemPurple)], id: \.0) { name, color in
+                    inkSwatchButton(name: name, fill: AnyShapeStyle(Color(color)))
+                }
+            }
+            .padding(.vertical, 4)
+            Button {
+                settings.inkColorName = "active"
+            } label: {
+                HStack {
+                    Label("Match my pen color", systemImage: "applepencil.tip")
+                    Spacer()
+                    if settings.inkColorName == "active" {
+                        Image(systemName: "checkmark").fontWeight(.semibold)
+                    }
+                }
+            }
+            ColorPicker("Custom color…", selection: Binding(
+                get: { Color(UIColor(hex: settings.customColorHex) ?? .systemIndigo) },
+                set: { newColor in
+                    settings.customColorHex = UIColor(newColor).hexString
+                    settings.inkColorName = "custom"
+                }
+            ), supportsOpacity: false)
+        } header: {
+            Label("Reply appearance", systemImage: "paintpalette")
+        } footer: {
+            Text("Applies to new Penpal replies. Your existing notes and the ink you draw with stay unchanged.")
+        }
+    }
+
+    private var handwritingProfiles: some View {
         Section {
             ForEach(hands.profiles) { profile in
                 Button {
@@ -246,14 +294,14 @@ struct PenpalSettingsView: View {
                 Label("Import glyphs…", systemImage: "square.and.arrow.down")
             }
         } header: {
-            Label("Whose handwriting", systemImage: "person.2")
+            Label("Handwriting profiles", systemImage: "person.2")
         } footer: {
-            Text("Each hand keeps its own training. Export a `.penpalglyphs` file so you don’t have to train again on another device — or after a reinstall. Notes are shared; the hand is who’s writing, not whose notebook this is.")
+            Text("Each profile keeps its own training. Switch profiles when someone else uses this iPad, or export and import a `.penpalglyphs` file to move handwriting training to another device.")
         }
+    }
 
-        // PEN-24 — observation, not correction. Opt-in behind a disclosure so
-        // it is never pushed at anyone; an app that critiques your handwriting
-        // unprompted is unpleasant.
+    private var handwritingInsights: some View {
+        // Keep observations opt-in: handwriting should be described, never graded.
         Section {
             DisclosureGroup("About your handwriting", isExpanded: $showInsights) {
                 if HandwritingInsights.hasEnoughData {
@@ -279,101 +327,62 @@ struct PenpalSettingsView: View {
                 }
             }
         } footer: {
-            Text("What Penpal has learned from your training. It's a description, not a score — every hand is different and that's the point.")
+            Text("A description of what Penpal has learned from your training, not a score.")
         }
+    }
 
+    private var handwritingFinish: some View {
         Section {
-            fontRow(tag: "hand", title: "My handwriting", preview: nil)
-            ForEach(Self.replyFonts, id: \.name) { font in
-                fontRow(tag: font.name, title: font.display,
-                        preview: .custom(font.name, size: 20))
-            }
-        } header: {
-            Label("Reply font", systemImage: "textformat")
-        } footer: {
-            Text("Only applies when the Penpal pen is selected and it writes a reply.")
-        }
-
-        Section {
-            HStack(spacing: 14) {
-                ForEach([("indigo", Color.indigo), ("blue", Color.blue),
-                         ("black", Color.primary), ("green", Color.green),
-                         ("purple", Color.purple)], id: \.0) { name, color in
-                    inkSwatchButton(name: name, fill: AnyShapeStyle(color))
-                }
-
-                // "Active" — always mirrors whatever color the user currently
-                // has selected in the pen tray, instead of a fixed color.
-                Button {
-                    settings.inkColorName = "active"
-                } label: {
-                    Circle()
-                        .fill(AnyShapeStyle(AngularGradient(
-                            colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red],
-                            center: .center)))
-                        .frame(width: 30, height: 30)
-                        .overlay {
-                            Image(systemName: settings.inkColorName == "active"
-                                  ? "checkmark" : "applepencil.tip")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.white)
-                        }
-                        .overlay {
-                            Circle().stroke(
-                                settings.inkColorName == "active"
-                                    ? Pen.inkAccent : .clear, lineWidth: 2.5)
-                                .padding(-4)
-                        }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Active — match my pen color")
-
-                // Full color picker — any color, not just the presets.
-                ColorPicker("", selection: Binding(
-                    get: { Color(UIColor(hex: settings.customColorHex) ?? .systemIndigo) },
-                    set: { newColor in
-                        settings.customColorHex = UIColor(newColor).hexString
-                        settings.inkColorName = "custom"
-                    }
-                ), supportsOpacity: false)
-                .labelsHidden()
-                .frame(width: 30, height: 30)
-                .overlay {
-                    Circle().stroke(
-                        settings.inkColorName == "custom"
-                            ? Pen.inkAccent : .clear, lineWidth: 2.5)
-                        .padding(-4)
-                        .allowsHitTesting(false)
-                }
-
-                Spacer()
-            }
-            .padding(.vertical, 4)
-
-            if settings.inkColorName == "active" {
-                Text("Replies write in whatever color your pen is currently set to.")
-                    .font(.caption)
-                    .foregroundStyle(Pen.inkFaded)
-            }
-
-            LabeledContent("Pen width",
-                           value: String(format: "%.1f×", settings.penWidthScale))
-            Slider(value: $settings.penWidthScale, in: 0.55...1.8, step: 0.05)
-            LabeledContent("Smoothness",
-                           value: settings.smoothness < 0.02 ? "Off"
-                               : "\(Int((settings.smoothness * 100).rounded()))%")
+            LabeledContent("Stroke weight", value: settings.penWidthScale < 0.5 ? "Extra fine"
+                           : settings.penWidthScale < 0.8 ? "Fine"
+                           : settings.penWidthScale > 1.25 ? "Bold" : "Regular")
+            Slider(value: $settings.penWidthScale, in: 0.2...1.8, step: 0.05)
+                .accessibilityLabel("Reply stroke weight")
+            LabeledContent("Curve smoothing", value: settings.smoothness < 0.02 ? "Off"
+                           : "\(Int((settings.smoothness * 100).rounded()))%")
             Slider(value: $settings.smoothness, in: 0...1, step: 0.05)
-            LabeledContent("Variation", value: "\(Int(settings.variation))")
+            LabeledContent("Natural variation", value: settings.variation == 0 ? "Steady"
+                           : "\(Int(settings.variation)) / 10")
             Slider(value: $settings.variation, in: 0...10, step: 1)
-            Toggle("Apple Pencil only", isOn: $settings.pencilOnly)
-            if settings.pencilOnly {
-                Text("Your finger scrolls the page and works the controls inside a code block. Turn this off to draw with a finger too — the blocks then stop taking finger taps.")
-                    .font(.caption)
-                    .foregroundStyle(Pen.inkFaded)
+        } header: {
+            Label("Handwriting finish", systemImage: "signature")
+        } footer: {
+            Text("Smoothing rounds curves. Variation adds gentle movement to generated replies. Match sizing also follows the height, slant and pen weight in the handwriting you send.")
+        }
+    }
+
+    private var writingPreview: some View {
+        Section {
+            TextField("Try your own preview text", text: $previewText, axis: .vertical)
+                .lineLimit(1...3)
+                .onChange(of: previewText) { _, value in
+                    if value.count > 120 { previewText = String(value.prefix(120)) }
+                }
+                .accessibilityLabel("Writing preview text")
+            if settings.replyStyle == "hand" {
+                GeometryReader { geometry in
+                    HandwritingPreview(settings: settings, text: previewText.isEmpty ? "Today is a good day." : previewText, handID: hands.active?.id,
+                                       width: geometry.size.width, height: geometry.size.height)
+                }
+                .frame(height: max(180, settings.resolvedSize(detected: 18) * 7))
+            } else {
+                Text(previewText.isEmpty ? "Today is a good day." : previewText)
+                    .font(Font(ReplyInkStyle.typeface(name: settings.replyFontName,
+                                                    xHeight: settings.resolvedSize(detected: 18))))
+                    .foregroundStyle(Color(settings.inkColor))
+                    .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
+                    .padding(.horizontal, 12)
             }
         } header: {
-            Label("Pen & ink", systemImage: "applepencil.tip")
+            Label("Writing preview", systemImage: "eye")
+        } footer: {
+            Text(settings.replyStyle == "font"
+                 ? "Try different text to preview new replies in your selected typeface and color."
+                 : PersonalFontStore.shared.hasTraining
+                 ? "Previewing your trained letters and saved words. Missing letters use Penpal’s built-in handwriting."
+                 : "Teach Penpal your letters and words to preview your own handwriting here.")
         }
+        .listRowBackground(Pen.paper)
     }
 
     private func inkSwatchButton(name: String, fill: AnyShapeStyle) -> some View {
@@ -398,34 +407,20 @@ struct PenpalSettingsView: View {
                 }
         }
         .buttonStyle(.plain)
-    }
-
-    private func fontRow(tag: String, title: String, preview: Font?) -> some View {
-        Button {
-            fontSelection.wrappedValue = tag
-        } label: {
-            HStack {
-                if tag == "hand" {
-                    Label(title, systemImage: "signature")
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(Pen.inkPrimary)
-                } else {
-                    Text(title)
-                        .font(preview ?? .body)
-                        .foregroundStyle(Pen.inkPrimary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if fontSelection.wrappedValue == tag {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(.tint)
-                        .fontWeight(.semibold)
-                }
-            }
-        }
+        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel(name.capitalized + " reply ink")
+        .accessibilityAddTraits(settings.inkColorName == name ? [.isSelected] : [])
     }
 
     @ViewBuilder private var pageSettings: some View {
+        writingPreview
+        Section {
+            Toggle("Apple Pencil only", isOn: $settings.pencilOnly)
+        } header: {
+            Label("Drawing input", systemImage: "hand.draw")
+        } footer: {
+            Text("When enabled, your finger scrolls and operates page controls. Turn it off to draw with a finger instead.")
+        }
         Section {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 12)],
                       spacing: 12) {
@@ -458,33 +453,47 @@ struct PenpalSettingsView: View {
             Label("Paper", systemImage: "doc.plaintext")
         }
 
+    }
+
+    @ViewBuilder private var writingLayout: some View {
         Section {
             Picker("Size", selection: $settings.sizeMode) {
-                ForEach(HandwritingSizeMode.allCases) { mode in
-                    Text(mode.rawValue.capitalized).tag(mode)
-                }
+                Text("Match").tag(HandwritingSizeMode.adaptive)
+                Text("Page").tag(HandwritingSizeMode.automatic)
+                Text("Fixed").tag(HandwritingSizeMode.manual)
             }
             .pickerStyle(.segmented)
-            if settings.sizeMode == .manual {
-                LabeledContent("Size", value: "\(Int(settings.manualSize)) pt")
+            if settings.sizeMode != .automatic {
+                LabeledContent(settings.sizeMode == .adaptive ? "Fallback height" : "Letter height",
+                               value: "\(Int(settings.manualSize)) pt")
                 Slider(value: $settings.manualSize, in: 10...42, step: 1)
             }
         } header: {
-            Label("Writing size", systemImage: "textformat.size")
+            Label("Letter size", systemImage: "textformat.size")
+        } footer: {
+            Text(settings.sizeMode == .adaptive
+                 ? "Match follows the size, slant and pen weight in the handwriting you send. If there isn’t enough to measure, replies use the fallback height above."
+                 : settings.sizeMode == .automatic
+                 ? "Page follows the notebook’s writing lines."
+                 : "Fixed keeps lowercase letters at your chosen height.")
         }
 
-        Section {
-            LabeledContent("Letters",
-                           value: String(format: "%.1f×", settings.letterSpacingScale))
-            Slider(value: $settings.letterSpacingScale, in: 0.7...1.5, step: 0.05)
-            LabeledContent("Words",
-                           value: String(format: "%.1f×", settings.wordSpacingScale))
-            Slider(value: $settings.wordSpacingScale, in: 0.7...1.6, step: 0.05)
-            LabeledContent("Lines",
-                           value: String(format: "%.1f×", settings.lineSpacingScale))
-            Slider(value: $settings.lineSpacingScale, in: 0.8...1.8, step: 0.05)
-        } header: {
-            Label("Spacing", systemImage: "arrow.left.and.right.text.vertical")
+        if settings.replyStyle == "hand" {
+            Section {
+                LabeledContent("Letter spacing",
+                               value: String(format: "%.1f×", settings.letterSpacingScale))
+                Slider(value: $settings.letterSpacingScale, in: 0.7...1.5, step: 0.05)
+                LabeledContent("Word spacing",
+                               value: String(format: "%.1f×", settings.wordSpacingScale))
+                Slider(value: $settings.wordSpacingScale, in: 0.7...1.6, step: 0.05)
+                LabeledContent("Line spacing",
+                               value: String(format: "%.1f×", settings.lineSpacingScale))
+                Slider(value: $settings.lineSpacingScale, in: 0.8...1.8, step: 0.05)
+            } header: {
+                Label("Spacing", systemImage: "arrow.left.and.right.text.vertical")
+            } footer: {
+                Text("Adjust the gaps between letters, words and lines in new handwritten replies.")
+            }
         }
     }
 

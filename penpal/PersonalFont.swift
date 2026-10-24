@@ -376,8 +376,7 @@ final class PersonalFontStore {
         // 1+ strokes per letter = printed.
         let letters = CGFloat(key.count)
         if letters >= 2 {
-            let spl = CGFloat(g.strokes.count) / letters
-            let c = min(1, max(0, 1.5 / max(spl, 0.3) - 0.5))
+            let c = Self.estimatedConnectedness(of: g, letterCount: key.count)
             var p = data.profile ?? HandwritingProfile()
             let features = HandFeatures.extract(from: g, letterCount: key.count)
             p.absorb(connectedness: c, wordGapUnits: nil,
@@ -395,13 +394,31 @@ final class PersonalFontStore {
         return true
     }
 
-    private func rebuildDerivedModels() {
+    /// Conservative estimate: n separate body strokes for n letters is print;
+    /// one continuous stroke is cursive. Dots must not count as letter bodies.
+    /// This is a spacing hint, never permission to invent connecting strokes.
+    static func estimatedConnectedness(of glyph: PersonalGlyph, letterCount: Int) -> CGFloat {
+        guard letterCount > 1 else { return 0 }
+        let bodies = glyph.strokes.filter { points in
+            guard points.count > 1 else { return false }
+            let xs = points.map(\.x), ys = points.map(\.y)
+            return max((xs.max() ?? 0) - (xs.min() ?? 0),
+                       (ys.max() ?? 0) - (ys.min() ?? 0)) > 0.2
+        }.count
+        guard bodies > 0 else { return 0 }
+        return min(1, max(0, CGFloat(letterCount - bodies) / CGFloat(letterCount - 1)))
+    }
+
+    var missingLowercaseLetters: String {
+        String("abcdefghijklmnopqrstuvwxyz".filter { variantCount(forChar: $0) == 0 })
+    }
+
+    private func rebuildProfile() {
         var profile = HandwritingProfile()
+        profile.wordGapUnits = data.profile?.wordGapUnits ?? profile.wordGapUnits
         for (word, variants) in data.words {
             for glyph in variants {
-                let letters = max(1, CGFloat(word.count))
-                let strokesPerLetter = CGFloat(glyph.strokes.count) / letters
-                let connectedness = min(1, max(0, 1.5 / max(strokesPerLetter, 0.3) - 0.5))
+                let connectedness = Self.estimatedConnectedness(of: glyph, letterCount: word.count)
                 let features = HandFeatures.extract(from: glyph, letterCount: word.count)
                 profile.absorb(connectedness: connectedness, wordGapUnits: nil,
                                slant: features.slantMean,
@@ -410,6 +427,10 @@ final class PersonalFontStore {
             }
         }
         data.profile = profile
+    }
+
+    private func rebuildDerivedModels() {
+        rebuildProfile()
         FragmentBank.shared.rebuild(words: data.words)
         LigatureEngine.shared.rebuild(words: data.words)
         StrokeVAE.shared.rebuild(words: data.words)
@@ -607,12 +628,9 @@ final class PersonalFontStore {
         let resolvedKey = direct != nil ? key : ch.lowercased().first.map(String.init)
         let list = direct ?? resolvedKey.flatMap { data.glyphs[$0] }
         guard let list, !list.isEmpty, let rk = resolvedKey else { return nil }
-        // PDM: sample a fresh in-distribution shape so repeated letters
-        // never look cloned. Falls back to bandit variant picking.
-        if list.count >= 2,
-           let sampled = GlyphPDM.shared.sample(key: "c:\(rk)", variants: list) {
-            return sampled
-        }
+        // Choose an actual captured variant. Sampling a new PDM shape on
+        // every lookup changed letter widths between measurement and layout,
+        // and deformed samples even with natural variation switched off.
         let idx = StyleRL.shared.pickVariantIndex(key: "c:\(rk)", glyphs: list, letterCount: 1)
         return list[idx]
     }
@@ -638,7 +656,7 @@ final class PersonalFontStore {
                          size: CGFloat, messiness: CGFloat,
                          source: WordInkSource = .letters) -> (strokes: [InkStroke], advance: CGFloat) {
         let style = StyleRL.shared.active
-        let m = messiness * style.messinessScale
+        let m = min(1, max(0, messiness))
         // Sigma-lognormal-style retiming: same geometry, freshly humanized
         // velocity/pause timing on every render.
         let g = SigmaLognormal.retime(raw, variability: 0.45 + m * 0.5)
@@ -652,11 +670,11 @@ final class PersonalFontStore {
         var result: [InkStroke] = []
 
         func toView(_ u: CGPoint) -> CGPoint {
-            let jx = CGFloat.random(in: -0.5...0.5) * size * 0.015 * m
-            // Micro ink tremor only — not baseline shifts.
-            let jy = CGFloat.random(in: -0.5...0.5) * size * 0.008 * m
-            return CGPoint(x: originX + u.x * sz + jx + wobbleX * 0.15,
-                           y: baselineY - u.y * sz + jy)
+            // The capture already contains the writer's natural irregularity.
+            // One transform per glyph preserves curves; independent point
+            // noise turned smooth Pencil strokes into serrated edges.
+            return CGPoint(x: originX + u.x * sz + wobbleX * 0.15,
+                           y: baselineY - u.y * sz)
         }
         func viewWidth(_ wn: CGFloat) -> CGFloat {
             max(1.1, (wn * sz * 0.55 + baseWidth * 0.55) * style.pressureGain)
@@ -691,29 +709,22 @@ final class PersonalFontStore {
                 case .exact: return 1
                 case .fragments: return 0.82
                 case .vae: return 0.66
-                case .letters: return 0.52
+                case .letters: return 1
                 }
             }()
             result.append(stroke)
         }
 
-        let spacing = StrokeFont.letterSpacing
-            * (1 - 0.55 * min(1, profile.connectedness))
-            * style.spacingScale
-        return (result, (g.width + spacing) * sz)
+        return (result, (g.width + compositionGap) * sz)
     }
 
-    /// Resolve a word: exact → fragment stitch → VAE → nil.
-    /// Everything then gets sentence-unity morph so the line shares one hand.
-    ///
-    /// `allowSynthesis: false` restricts the result to REAL captured ink
-    /// (exact word or fragment stitch), never a generated shape. Math replies
-    /// use this: a synthesized glyph is a plausible-looking invention, which
-    /// is charming in prose and unacceptable in an equation.
+    /// Normal replies echo an exact captured word, otherwise the caller composes
+    /// saved letters. Cropped fragments and latent shapes are experimental and
+    /// require explicit opt-in; they cannot establish the identity of unseen ink.
     func inkStrokes(forWord word: String,
                     originX: CGFloat, baselineY: CGFloat,
                     size: CGFloat, messiness: CGFloat,
-                    allowSynthesis: Bool = true) -> (strokes: [InkStroke], advance: CGFloat)? {
+                    allowSynthesis: Bool = false) -> (strokes: [InkStroke], advance: CGFloat)? {
         guard let (g, source) = resolveWordGlyph(word, allowSynthesis: allowSynthesis) else {
             return nil
         }
@@ -737,19 +748,26 @@ final class PersonalFontStore {
                        messiness: messiness, source: .letters)
     }
 
+    private var compositionGap: CGFloat {
+        // Isolated samples have no captured inter-letter connection. Preserve
+        // readable space even when whole-word training contains cursive ink.
+        StrokeFont.letterSpacing
+    }
+
     func advance(_ ch: Character, size: CGFloat) -> CGFloat? {
-        pickChar(ch).map { ($0.width + StrokeFont.letterSpacing) * size }
+        pickChar(ch).map { ($0.width + compositionGap) * size }
     }
 
-    func wordAdvance(_ word: String, size: CGFloat) -> CGFloat? {
-        resolveWordGlyph(word).map { ($0.glyph.width + StrokeFont.letterSpacing) * size }
+    func wordAdvance(_ word: String, size: CGFloat, allowSynthesis: Bool = false) -> CGFloat? {
+        resolveWordGlyph(word, allowSynthesis: allowSynthesis).map { ($0.glyph.width + compositionGap) * size }
     }
 
-    /// How much of this word is covered by real user ink (exact or fragments).
+    /// Coverage of the normal reply path: exact words or explicitly saved letters.
     func inkCoverage(of word: String) -> CGFloat {
         let key = normalize(word)
         if data.words[key] != nil { return 1 }
-        return FragmentBank.shared.coverage(of: key)
+        guard !key.isEmpty else { return 0 }
+        return CGFloat(key.filter { hasChar($0) }.count) / CGFloat(key.count)
     }
 
     var trainedWordList: [String] { Array(data.words.keys) }
@@ -757,19 +775,19 @@ final class PersonalFontStore {
     private var vaeCache: [String: (PersonalGlyph, WordInkSource)] = [:]
 
     private func resolveWordGlyph(_ word: String,
-                                  allowSynthesis: Bool = true)
+                                  allowSynthesis: Bool = false)
         -> (glyph: PersonalGlyph, source: WordInkSource)? {
         let key = normalize(word)
         if let cached = vaeCache[key] {
-            // A cached VAE shape must not leak into a no-synthesis caller.
-            if allowSynthesis || cached.1 != .vae { return cached }
+            // Experimental fragments and generated shapes cannot leak into normal replies.
+            if allowSynthesis || cached.1 == .exact { return cached }
         }
 
         var resolved: (PersonalGlyph, WordInkSource)?
 
         if let g = pickWord(word) {
             resolved = (g, .exact)
-        } else if key.count >= 2, key.allSatisfy(\.isLetter),
+        } else if allowSynthesis, key.count >= 2, key.allSatisfy(\.isLetter),
                   let g = FragmentBank.shared.stitch(key, connectedness: profile.connectedness) {
             resolved = (g, .fragments)
         } else if allowSynthesis, let g = synthesizeWithVAE(key) {
@@ -951,6 +969,9 @@ final class PersonalFontStore {
         HandMetrics.active = ScaleConsensus.handMetrics(words: data.words)
         realignStoredGlyphsIfNeeded()
         applyScaleConsensusIfNeeded()
+        // Recalculate legacy profiles too: the old formula classified one
+        // stroke per letter as fully cursive. Captured geometry stays intact.
+        rebuildProfile()
     }
 
     /// One-shot migration: cross-calibrate all existing captures so the same

@@ -425,7 +425,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // a visible color shift right as ink "gets into canvas".
         renderer.inkColor = bakedInkColor
         renderer.speed = 120 + CGFloat(settings.speedLevel) * 55
-        renderer.widthScale = CGFloat(settings.penWidthScale)
+        renderer.widthScale = 1
         renderer.smoothness = CGFloat(settings.smoothness)
         renderer.writingIndicator = settings.writingIndicator
         if paper.style != settings.paperStyle {
@@ -499,18 +499,26 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
         typedLabels.forEach { $0.removeFromSuperview() }
         typedLabels.removeAll()
-        placedTexts = typedTexts
+        placedTexts = typedTexts.map { text in
+            var saved = text
+            saved.fontName = text.fontName ?? settings.replyFontName
+            saved.colorHex = text.colorHex ?? (text.isUserMessage ? UIColor.secondaryLabel : settings.replyInkColor()).hexStringIncludingAlpha
+            return saved
+        }
         var typedBottom: CGFloat = 0
-        for text in typedTexts {
+        for text in placedTexts {
             let label = makeTypedLabel(text: text.text,
                                        origin: CGPoint(x: text.x, y: text.y),
                                        xHeight: text.xHeight,
                                        maxX: text.maxX,
-                                       color: text.isUserMessage ? .secondaryLabel : settings.inkColor)
+                                       color: text.colorHex.flatMap(UIColor.init(hex:)) ?? settings.replyInkColor(),
+                                       fontName: text.fontName)
             canvas.addSubview(label)
             typedLabels.append(label)
             typedBottom = max(typedBottom, label.frame.maxY)
         }
+
+        if placedTexts != typedTexts { onTypedTextsChange?(placedTexts) }
 
         // Only malformed legacy replies remain overlays; successfully
         // converted replies now live in `canvas.drawing`.
@@ -750,7 +758,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             allowSynthesis: false)
         guard !sequence.strokes.isEmpty else { return }
         let matched = Self.sampleUserInk(from: sourceStrokes)
-        renderer.inkColor = matched?.color ?? bakedInkColor
+        renderer.inkColor = settings.replyInkColor(matching: matched?.color)
         renderer.showAnswerGhost(
             sequence.strokes,
             baseWidth: matched.map { max(1.2, $0.width * 0.9) }
@@ -974,7 +982,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             settings: settings,
             allowSynthesis: false)          // math is never synthesised
         guard !sequence.strokes.isEmpty else { return }
-        renderer.inkColor = matched?.color ?? bakedInkColor
+        renderer.inkColor = settings.replyInkColor(matching: matched?.color)
         renderer.showAnswerGhost(sequence.strokes, baseWidth: baseWidth)
     }
 
@@ -1117,7 +1125,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     /// Tip width + ink color from the user's expression (Pencil tip size along
     /// the path). Character height is measured separately via `measureUserHand`.
-    private static func sampleUserInk(from strokes: [PKStroke]) -> (width: CGFloat, color: UIColor)? {
+    private static func sampleUserInk(from strokes: [PKStroke])
+        -> (width: CGFloat, color: UIColor, adaptive: AdaptiveWritingStyle?)? {
         guard !strokes.isEmpty else { return nil }
         let line = strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
         let hand = InkAnalyzer.measureUserHand(from: strokes, fallbackLine: line,
@@ -1131,8 +1140,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // the user's own expression ink is the match source.
         let rawColor = strokes.last?.ink.color ?? .label
         let color = rawColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
-        guard Self.isLegibleOnPaper(color) else { return (hand.tipWidth, .label) }
-        return (hand.tipWidth, color)
+        let adaptive = HandwritingSettings.shared.sizeMode == .adaptive
+            ? AdaptiveWritingStyle.measure(strokes, fallbackXHeight: hand.xHeight) : nil
+        guard Self.isLegibleOnPaper(color) else { return (hand.tipWidth, .label, adaptive) }
+        return (hand.tipWidth, color, adaptive)
     }
 
     /// Whether ink of this colour would actually be visible on the page:
@@ -1148,7 +1159,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// PencilKit stores stroke colors as light-mode authored and auto-adjusts
     /// them in dark mode; resolving here keeps the color stable across saves.
     private var bakedInkColor: UIColor {
-        settings.inkColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        settings.replyInkColor()
     }
 
     /// Finishes an in-flight reply instantly: remaining strokes are committed
@@ -1179,89 +1190,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         publishUndoRedo()
     }
 
-    /// Fades ink toward the page in proportion to how sure we are the shape
-    /// is really the user's. Full-strength at confidence ≥ 0.8 (captured or
-    /// stitched from real ink); lightest at 0.72 alpha for fully synthesised
-    /// glyphs. Bounded so low confidence never means hard to read.
-    private static func confidenceAdjusted(_ color: UIColor,
-                                           confidence: CGFloat) -> UIColor {
-        let clamped = max(0, min(1, confidence))
-        guard clamped < 0.8 else { return color }
-        // 0.0 → 0.72, 0.8 → 1.0
-        let alpha = 0.72 + (clamped / 0.8) * 0.28
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
-        guard color.getRed(&r, green: &g, blue: &b, alpha: &a) else { return color }
-        return UIColor(red: r, green: g, blue: b, alpha: a * alpha)
-    }
-
-    /// Converts a reply stroke into a PencilKit stroke. PencilKit's `.pen`
-    /// reads thinner/lighter than a stroked CAShapeLayer — but when we stamp
-    /// absolute tip `widths` (matched to the user), only a tiny boost is
-    /// needed so the bake doesn't look like a fade OR a marker blob.
     private static func pkStroke(from stroke: InkStroke,
-                                 baseWidth: CGFloat,
-                                 color: UIColor) -> PKStroke? {
-        // PEN-05 — confidence, shown as ink weight.
-        //
-        // `InkStroke.confidence` has been populated all along (1.0 for a real
-        // captured word, 0.52 for letters assembled from a char bank) and
-        // nothing consumed it. Every reply looked equally certain, including
-        // the ones built from shapes the user never wrote.
-        //
-        // Shown as slightly lighter ink rather than a badge, deliberately.
-        // An icon says "error"; lighter ink says "not sure yet", which is
-        // what is actually true. The range is narrow (0.72–1.0) so it reads
-        // as pen pressure, never as illegibility — a reply must always be
-        // readable first and honest second.
-        let inkColor = Self.confidenceAdjusted(color, confidence: stroke.confidence)
-        let hasWidths = stroke.widths?.count == stroke.points.count
-        // Matched absolute widths ≈ user tip; bare baseWidth needs a bigger
-        // PK compensation for the animation→canvas handoff.
-        let boost: CGFloat = hasWidths ? 0.95 : 1.9
-        // PencilKit's programmatic stroke renderer effectively quantizes tiny
-        // point sizes: below ~3 pt a stroke can remain lasso-selectable while
-        // rendering transparent or nearly transparent. Imported prose commonly
-        // computes to 1.6–2 pt, so enforce the same practical floor as a real
-        // PencilKit pen stroke.
-        let minWidth = max(CGFloat(3), baseWidth * (hasWidths ? 0.78 : 0.9))
-
-        func point(_ location: CGPoint, _ time: TimeInterval, _ width: CGFloat) -> PKStrokePoint {
-            PKStrokePoint(location: location,
-                          timeOffset: time,
-                          size: CGSize(width: width, height: width),
-                          opacity: 0.9,
-                          force: 1,
-                          azimuth: 0,
-                          altitude: .pi / 2)
-        }
-
-        if stroke.isDot, let c = stroke.points.first {
-            let w = max(minWidth, max(baseWidth * boost, stroke.dotRadius * 2.2))
-            let path = PKStrokePath(controlPoints: [point(c, 0, w), point(c, 0.01, w)],
-                                    creationDate: Date())
-            return PKStroke(ink: PKInk(.pen, color: inkColor), path: path)
-        }
-        guard stroke.points.count > 1 else { return nil }
-
-        // PEN-31: bind the optionals once. The `hasWidths` / `hasTimes` flags
-        // were computed several lines away from the force-unwraps they
-        // guarded, which is exactly how such a pair drifts apart.
-        let widths = stroke.widths?.count == stroke.points.count ? stroke.widths : nil
-        let times = stroke.pointTimes?.count == stroke.points.count ? stroke.pointTimes : nil
-        var controls: [PKStrokePoint] = []
-        controls.reserveCapacity(stroke.points.count)
-        var lastTime = -1.0
-        for (i, p) in stroke.points.enumerated() {
-            let nominal = widths?[i] ?? baseWidth
-            let w = max(minWidth, nominal * boost)
-            // timeOffset must be strictly increasing or PencilKit misrenders.
-            let raw = times?[i] ?? Double(i) * 0.004
-            let t = max(raw, lastTime + 0.001)
-            lastTime = t
-            controls.append(point(p, t, w))
-        }
-        let path = PKStrokePath(controlPoints: controls, creationDate: Date())
-        return PKStroke(ink: PKInk(.pen, color: inkColor), path: path)
+                                 baseWidth: CGFloat, color: UIColor) -> PKStroke? {
+        ReplyInkStyle.pencilStroke(from: stroke, baseWidth: baseWidth, color: color)
     }
 
     /// If a reply is mid-animation, finish + persist it instantly.
@@ -2091,20 +2022,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
 
+        let handwritingSize = settings.resolvedSize(detected: placement.xHeight)
         PersonalFontStore.shared.clearVAECache()
         InkUnity.shared.beginSentence()
-        StyleRL.shared.beginEpisode(explore: true)
+        StyleRL.shared.beginEpisode(explore: false)
 
         let sequence = StrokeFont.layoutSequence(text: text,
                                                  origin: placement.origin,
-                                                 xHeight: placement.xHeight,
+                                                 xHeight: handwritingSize,
                                                  maxX: placement.maxX,
                                                  lineGap: lineGap,
                                                  maxY: placement.maxY,
                                                  messiness: messiness,
                                                  useUserHand: true,
                                                  settings: settings,
-                                                 allowSynthesis: !looksLikeMath(text))
+                                                 allowSynthesis: false)
         if sequence.clipped {
             InkUnity.shared.endSentence()
             abandonPendingBox()
@@ -2113,12 +2045,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
         if settings.diagnostics, sequence.confidence < 0.55 {
-            onStatus?("This reply uses low-confidence fallback glyphs. Train its words for a closer match.")
+            onStatus?("This reply uses low-confidence fallback glyphs. Train its missing letters for a closer match.")
         }
-        // Non-finite geometry renders as a moving pen with no ink — drop it.
-        let strokes = sequence.strokes.filter { s in
-            s.points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
-        }
+        let baseWidth = ReplyInkStyle.baseWidth(xHeight: placement.xHeight, weight: settings.penWidthScale)
+        let strokes = ReplyInkStyle.prepare(sequence.strokes, baseWidth: baseWidth)
         let bottomY = sequence.bottomY
 
         let letters = text.filter { $0.isLetter || $0.isNumber }.count
@@ -2134,7 +2064,6 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         ensureRoom(below: bottomY + lineGap * 2)
         scrollToReveal(placement.origin.y)
 
-        let baseWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
         let bakeColor = bakedInkColor
         onWritingStateChange?(true)
         pendingBake = (strokes, baseWidth, bottomY, bakeColor)
@@ -2595,7 +2524,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             }
 
             guard !trimmed.isEmpty else {
-                self.renderLocalReply(placement: placement, newStrokes: inkToRead)
+                self.lastReplyStrokeCount = newStart
+                self.onStatus?("I couldn’t read that. Try boxing the question, then tap Ask again.")
                 return
             }
             guard self.settings.useBrain else {
@@ -4748,8 +4678,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Writes `text` at `placement`, either as typeset font or drawn in the
     /// user's trained hand, then advances the reply baseline.
     /// `celebrate` adds a soft wash under the finished ink (instant math).
-    /// `matchStrokes` — when set, answer width/color track the user's ink so
-    /// the bake into PencilKit doesn't look thinner/fainter than what they wrote.
+    /// `matchStrokes` supplies the user's tip width. The selected reply color
+    /// still wins unless “Match my pen” is enabled.
     /// `completion` fires when the write has genuinely finished (or exited
     /// early — clipped page, empty strokes, font path), so callers that
     /// sequence multiple writes (photo import) can chain on REAL completion.
@@ -4768,12 +4698,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // ink pipeline later clips or re-pages.
         publishForVoiceOver(text, isAnswer: purpose.isVoiceOverAnswer)
         let matched = Self.sampleUserInk(from: matchStrokes)
-        let formulaWidth = max(1.2, placement.xHeight * 0.11 * CGFloat(settings.penWidthScale))
-        // Tip tracks their Pencil width (slightly lighter); glyph height comes
-        // from `placement.xHeight`, which instant math sets from their symbols.
-        let baseWidth = matched.map { max(formulaWidth * 0.85, $0.width * 1.05) }
-            ?? (formulaWidth * 0.9)
-        let bakeColor = matched?.color ?? bakedInkColor
+        let adaptive = settings.sizeMode == .adaptive ? matched?.adaptive : nil
+        let handwritingSize = settings.resolvedSize(detected: placement.xHeight,
+                                                    adaptive: adaptive?.xHeight)
+        let baseWidth = ReplyInkStyle.baseWidth(xHeight: handwritingSize,
+                                                weight: settings.penWidthScale,
+                                                matching: adaptive?.tipWidth)
+        let bakeColor = settings.replyInkColor(matching: matched?.color)
 
         // Typed-font replies bypass the stroke pipeline entirely.
         let needsUnicodeFont = purpose.typesetsUnsupportedUnicode
@@ -4797,20 +4728,20 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
         PersonalFontStore.shared.clearVAECache()
         InkUnity.shared.beginSentence()
-        StyleRL.shared.beginEpisode(explore: true)
+        StyleRL.shared.beginEpisode(explore: false)
 
-        // Math must never be SYNTHESIZED. A generated glyph is a plausible
-        // invention — fine in prose, wrong in an equation.
-        let sequence = StrokeFont.layoutSequence(text: text,
+        // Preserve recorded letterforms in prose and math alike.
+        var sequence = StrokeFont.layoutSequence(text: text,
                                                  origin: placement.origin,
-                                                 xHeight: placement.xHeight,
+                                                 xHeight: handwritingSize,
                                                  maxX: placement.maxX,
                                                  lineGap: lineGap,
                                                  maxY: placement.maxY,
                                                  messiness: messiness,
                                                  useUserHand: true,
                                                  settings: settings,
-                                                 allowSynthesis: !looksLikeMath(text))
+                                                 allowSynthesis: false)
+        if let adaptive { sequence.strokes = adaptive.apply(to: sequence.strokes, baseline: placement.origin.y) }
         if sequence.clipped {
             InkUnity.shared.endSentence()
             abandonPendingBox()
@@ -4820,23 +4751,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
         if settings.diagnostics, sequence.confidence < 0.55 {
-            onStatus?("This reply uses low-confidence fallback glyphs. Train its words for a closer match.")
+            onStatus?("This reply uses low-confidence fallback glyphs. Train its missing letters for a closer match.")
         }
-        // Stamp constant tip width so the animation uses the opaque filled
-        // outline path (same visual weight as real Pencil ink), not a thin stroke.
-        // Non-finite geometry is dropped here: a NaN point makes CAShapeLayer
-        // silently render nothing while the pen dot still animates — a moving
-        // pen that deposits no ink. One bad glyph must not do that.
-        let strokes: [InkStroke] = sequence.strokes.compactMap { s in
-            guard s.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
-            var copy = s
-            if copy.isDot {
-                copy.dotRadius = max(copy.dotRadius, baseWidth * 0.45)
-            } else if copy.points.count > 1 {
-                copy.widths = Array(repeating: baseWidth, count: copy.points.count)
-            }
-            return copy
-        }
+        let strokes = ReplyInkStyle.prepare(sequence.strokes, baseWidth: baseWidth)
         // DIAGNOSTIC (PEN-INK): "it animates but nothing lands on paper" has
         // exactly four possible causes, and they are indistinguishable by
         // eye. Report all four at once so one run identifies it:
@@ -4865,10 +4782,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let bottomY = sequence.bottomY
 
         let letters = text.filter { $0.isLetter || $0.isNumber }.count
-        // Score the PRE-stamped sequence: it still carries the captures'
-        // real per-point widths and timing. The stamped copies above have
-        // constant width, so scoring them told the critic every reply had
-        // zero pressure variation — unlike any real hand.
+        // Learn from the original capture dynamics rather than the bounded
+        // visible widths prepared for PencilKit.
         StyleRL.shared.endEpisode(strokes: sequence.strokes,
                                   xHeight: placement.xHeight,
                                   letterCount: max(1, letters))
@@ -4953,13 +4868,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     /// Builds a typed-reply label (shared by live writing and note restore).
     private func makeTypedLabel(text: String, origin: CGPoint, xHeight: CGFloat,
-                                maxX: CGFloat, color: UIColor) -> UILabel {
-        let base = UIFont(name: settings.replyFontName, size: 100)
-            ?? UIFont.italicSystemFont(ofSize: 100)
-        // Match the font's x-height to the detected writing size.
-        let unit = max(10, base.xHeight)
-        let fontSize = min(96, max(9, 100 * xHeight / unit))
-        let font = base.withSize(fontSize)
+                                maxX: CGFloat, color: UIColor, fontName: String? = nil) -> UILabel {
+        let font = ReplyInkStyle.typeface(name: fontName ?? settings.replyFontName, xHeight: xHeight)
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.minimumLineHeight = lineGap
@@ -5006,7 +4916,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                          y: placement.origin.y,
                                          xHeight: placement.xHeight,
                                          maxX: placement.maxX,
-                                         isUserMessage: isUser))
+                                         isUserMessage: isUser,
+                                         fontName: settings.replyFontName,
+                                         colorHex: (color ?? settings.inkColor).hexStringIncludingAlpha))
         onTypedTextsChange?(placedTexts)
 
         if announceWriting { onWritingStateChange?(true) }

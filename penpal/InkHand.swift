@@ -57,7 +57,10 @@ final class InkUnity {
     }
 
     func unify(_ glyph: PersonalGlyph, source: WordInkSource) -> PersonalGlyph {
-        guard let z = sentenceZ else { return glyph }
+        // Captured letters and words already ARE the user's hand. A latent
+        // morph was changing their loops and proportions between replies.
+        guard source != .exact, source != .letters,
+              let z = sentenceZ else { return glyph }
         return StrokeVAE.shared.morphToward(glyph, targetZ: z, strength: strength(for: source))
             ?? glyph
     }

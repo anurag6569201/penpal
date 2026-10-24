@@ -123,6 +123,7 @@ struct PenPrimaryButtonStyle: ButtonStyle {
             .font(Pen.headline)
             .foregroundStyle(Pen.onAccent)
             .frame(maxWidth: .infinity, minHeight: Pen.touchTarget)
+            .contentShape(Capsule())
             .background(Pen.inkAccent, in: Capsule())
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)

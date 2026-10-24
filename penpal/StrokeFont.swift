@@ -13,6 +13,9 @@ import UIKit
 /// One continuous pen stroke ready to be drawn/animated in view coordinates.
 struct InkStroke {
     var points: [CGPoint]
+    /// Extra-fine weight stays visible under PencilKit's 3pt floor by using
+    /// a slightly lighter stroke at the smallest sizes.
+    var opacity: CGFloat = 1
     var isDot: Bool = false
     var dotRadius: CGFloat = 0
     /// Optional per-point pen widths (pressure). Must match `points.count`.
@@ -261,10 +264,8 @@ enum StrokeFont {
         var result: [InkStroke] = []
 
         func toView(_ u: CGPoint) -> CGPoint {
-            let jx = CGFloat.random(in: -0.5...0.5) * size * 0.03 * messiness
-            let jy = CGFloat.random(in: -0.5...0.5) * size * 0.03 * messiness
-            return CGPoint(x: originX + u.x * sz + u.y * sz * slant + jx + wobble * 0.2,
-                           y: baselineY - u.y * sz + jy + wobble * 0.4)
+            return CGPoint(x: originX + u.x * sz + u.y * sz * slant + wobble * 0.2,
+                           y: baselineY - u.y * sz)
         }
 
         for element in g.strokes {
@@ -320,17 +321,22 @@ enum StrokeFont {
                                messiness: CGFloat,
                                useUserHand: Bool = false,
                                settings: HandwritingSettings,
-                               allowSynthesis: Bool = true) -> WritingSequence {
+                               allowSynthesis: Bool = false) -> WritingSequence {
 
         let store = PersonalFontStore.shared
         let style = StyleRL.shared.active
-        let effectiveMess = messiness * (useUserHand ? style.messinessScale : 1)
+        let effectiveMess = min(1, max(0, messiness * (useUserHand ? style.messinessScale : 1)))
         let userLetterSpacing = CGFloat(settings.letterSpacingScale)
+        // Adjust the blank gap, never the ink's advance as a whole. Scaling
+        // the whole advance made tight spacing overlap the previous letter.
+        func spacedAdvance(_ advance: CGFloat, size: CGFloat) -> CGFloat {
+            advance + StrokeFont.letterSpacing * size * (userLetterSpacing - 1)
+        }
         let punctuation: Set<Character> = [".", ",", "!", "?", "'", "\""]
 
         func charAdvance(_ ch: Character) -> CGFloat {
-            if useUserHand, let a = store.advance(ch, size: xHeight) { return a * userLetterSpacing }
-            return advance(ch, size: xHeight) * userLetterSpacing
+            if useUserHand, let a = store.advance(ch, size: xHeight) { return spacedAdvance(a, size: xHeight) }
+            return spacedAdvance(advance(ch, size: xHeight), size: xHeight)
         }
 
         func trailingPunctuationCount(_ token: Substring) -> Int {
@@ -341,9 +347,23 @@ enum StrokeFont {
             return count
         }
 
+        func pairAdjustment(_ a: Character, _ b: Character, size: CGFloat) -> CGFloat {
+            guard a.isLetter || a.isNumber, b.isLetter || b.isNumber else { return 0 }
+            let tip = ReplyInkStyle.baseWidth(xHeight: size, weight: settings.penWidthScale)
+            // OpticalKern measures centerlines. Reserve room for the visible
+            // stroke edges too, so heavier ink cannot close up every counter.
+            let outlineGap = max(0, tip / size + 0.06 - 0.12)
+            return (OpticalKern.kern(a, b) + outlineGap) * size * userLetterSpacing
+        }
+
         func charsWidth<S: Sequence>(_ chars: S) -> CGFloat where S.Element == Character {
             var total: CGFloat = 0
-            for ch in chars { total += charAdvance(ch) }
+            var previous: Character?
+            for ch in chars {
+                if let previous { total += pairAdjustment(previous, ch, size: xHeight) }
+                total += charAdvance(ch)
+                previous = ch
+            }
             return total
         }
 
@@ -352,13 +372,13 @@ enum StrokeFont {
         // renders. Pulling words toward a line median resized their writing.
 
         func tokenWidth(_ token: Substring) -> CGFloat {
-            if useUserHand, let a = store.wordAdvance(String(token), size: xHeight) {
-                return a * userLetterSpacing
+            if useUserHand, let a = store.wordAdvance(String(token), size: xHeight, allowSynthesis: allowSynthesis) {
+                return spacedAdvance(a, size: xHeight)
             }
             let trailing = trailingPunctuationCount(token)
             let core = token.dropLast(trailing)
-            if useUserHand, trailing > 0, let a = store.wordAdvance(String(core), size: xHeight) {
-                return a * userLetterSpacing + charsWidth(token.suffix(trailing))
+            if useUserHand, trailing > 0, let a = store.wordAdvance(String(core), size: xHeight, allowSynthesis: allowSynthesis) {
+                return spacedAdvance(a, size: xHeight) + charsWidth(token.suffix(trailing))
             }
             return charsWidth(token)
         }
@@ -393,7 +413,7 @@ enum StrokeFont {
         func emitChar(_ ch: Character, at y: CGFloat, size: CGFloat) {
             // Optical pair kerning: even out the visual ink gap.
             if let prev = lastEmitted {
-                penX += OpticalKern.kern(prev, ch) * size * userLetterSpacing
+                penX += pairAdjustment(prev, ch, size: size)
             }
             if useUserHand,
                let r = store.inkStrokes(for: ch, originX: penX, baselineY: y,
@@ -404,7 +424,7 @@ enum StrokeFont {
                 // per-pair habits (does THIS hand connect "th"?), hard rules
                 // (no joins to/from caps or punctuation), and a collision
                 // guard. StyleRL joinBias still nudges the overall appetite.
-                if let prevCh = lastEmitted,
+                if allowSynthesis, let prevCh = lastEmitted,
                    let exit = lastExit,
                    LigatureEngine.shared.shouldJoin(
                        from: prevCh, to: ch,
@@ -430,7 +450,7 @@ enum StrokeFont {
                     s[i].isWordStart = letterIndex == 0 && i == s.startIndex
                 }
                 strokes.append(contentsOf: s)
-                penX += r.advance * userLetterSpacing
+                penX += spacedAdvance(r.advance, size: size)
                 lastLetterPoints = s.flatMap { $0.points }
                 if let tail = s.last(where: { !$0.isDot && $0.points.count > 1 }) {
                     lastExit = tail.points.last
@@ -449,10 +469,10 @@ enum StrokeFont {
                     tagged[i].letterIndex = letterIndex
                     tagged[i].isWordStart = letterIndex == 0 && i == tagged.startIndex
                     tagged[i].source = .letters
-                    tagged[i].confidence = useUserHand ? 0.6 : 0.2
+                    tagged[i].confidence = 0
                 }
                 strokes.append(contentsOf: tagged)
-                penX += adv * userLetterSpacing
+                penX += spacedAdvance(adv, size: size)
                 lastExit = nil
                 lastExitTail = []
                 lastLetterPoints = []
@@ -498,7 +518,7 @@ enum StrokeFont {
                 + CGFloat.random(in: -1...1) * driftAmp * xHeight * 0.035
             drift = min(max(drift, -xHeight * 0.07 * style.driftScale),
                         xHeight * 0.07 * style.driftScale)
-            sizeDrift = sizeDrift * 0.88 + CGFloat.random(in: -1...1) * 0.012
+            sizeDrift = sizeDrift * 0.88 + CGFloat.random(in: -1...1) * 0.012 * effectiveMess
             sizeDrift = min(0.03, max(-0.03, sizeDrift))
             let wordSize = xHeight * (1 + sizeDrift * min(1, effectiveMess + 0.4))
             let y = baseY + drift
@@ -520,7 +540,7 @@ enum StrokeFont {
                         tagged[i].isWordStart = i == tagged.startIndex
                     }
                     strokes.append(contentsOf: tagged)
-                    penX += adv * userLetterSpacing
+                    penX += spacedAdvance(adv, size: wordSize)
                     handled = true
                 } else {
                     let trailing = trailingPunctuationCount(token)
@@ -536,7 +556,7 @@ enum StrokeFont {
                             tagged[i].isWordStart = i == tagged.startIndex
                         }
                         strokes.append(contentsOf: tagged)
-                        penX += adv * userLetterSpacing
+                        penX += spacedAdvance(adv, size: wordSize)
                         for ch in token.suffix(trailing) { emitChar(ch, at: y, size: wordSize) }
                         handled = true
                     }

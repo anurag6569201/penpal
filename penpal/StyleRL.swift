@@ -376,7 +376,7 @@ final class StyleRL {
             absorb(HandFeatures.extract(from: sample.glyph,
                                         letterCount: sample.letterCount).vector)
         }
-        active = policy
+        active = StylePolicy()
         save()
     }
 
@@ -417,7 +417,9 @@ final class StyleRL {
             active = p
             lastEpsilon = eps
         } else {
-            active = policy
+            // Learned exploration knobs can squeeze spacing or invent joins.
+            // Normal replies use the explicit settings and captured geometry.
+            active = explore ? policy : StylePolicy()
             lastEpsilon = nil
         }
         return active
@@ -435,9 +437,8 @@ final class StyleRL {
             preferenceEpsilon = eps
         }
         preferenceKeys = episodeKeys
-        for (key, idx) in episodeKeys {
-            updateArm(key: key, index: idx, reward: s)
-        }
+        // The sentence-level feature score is not a letter identity judge.
+        // Only explicit user feedback should reward or penalize captured variants.
         lastEpsilon = nil
         save()
     }
@@ -558,7 +559,7 @@ final class StyleRL {
         guard let raw = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode(Persist.self, from: raw) else { return }
         policy = decoded.policy.clamped()
-        active = policy
+        active = StylePolicy()
         arms = decoded.arms
         // Critic stats from before the per-letter widthUnits definition are
         // on the wrong scale — start fresh; PersonalFontStore's rebuild path

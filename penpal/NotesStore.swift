@@ -71,6 +71,8 @@ nonisolated struct TypedNoteText: Identifiable, Codable, Hashable {
     var maxX: CGFloat
     var isUserMessage: Bool
     var createdAt: Date
+    var fontName: String?
+    var colorHex: String?
 
     init(id: UUID = UUID(),
          text: String,
@@ -79,7 +81,9 @@ nonisolated struct TypedNoteText: Identifiable, Codable, Hashable {
          xHeight: CGFloat,
          maxX: CGFloat,
          isUserMessage: Bool,
-         createdAt: Date = .now) {
+         createdAt: Date = .now,
+         fontName: String? = nil,
+         colorHex: String? = nil) {
         self.id = id
         self.text = text
         self.x = x
@@ -88,6 +92,8 @@ nonisolated struct TypedNoteText: Identifiable, Codable, Hashable {
         self.maxX = maxX
         self.isUserMessage = isUserMessage
         self.createdAt = createdAt
+        self.fontName = fontName
+        self.colorHex = colorHex
     }
 }
 
@@ -472,6 +478,7 @@ final class NotesStore: ObservableObject {
     @Published var selectedNoteID: UUID?
     @Published var isEditingFolders = false
     @Published var searchQuery = ""
+    @Published private(set) var isLoading = true
 
     private let saveURL: URL
     private let attachmentsDir: URL
@@ -479,13 +486,44 @@ final class NotesStore: ObservableObject {
     // utility queue so two saves cannot race and an older snapshot cannot win.
     private let diskSaver = DebouncedSaver(delay: 0)
     private var saveTask: Task<Void, Never>?
+    private var loadingContinuations: [CheckedContinuation<Void, Never>] = []
 
     private init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         saveURL = docs.appendingPathComponent("notes_store.json")
         attachmentsDir = docs.appendingPathComponent("NoteAttachments", isDirectory: true)
         try? FileManager.default.createDirectory(at: attachmentsDir, withIntermediateDirectories: true)
-        loadOrSeed()
+
+        let url = saveURL
+        Task { [weak self] in
+            // Reading and decoding a notebook with many PencilKit drawings can
+            // take long enough to freeze the welcome screen. Keep disk work
+            // off the main actor, then publish the decoded value in one step.
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                Self.readSnapshot(from: url)
+            }.value
+            guard let self else { return }
+            if let snapshot {
+                self.apply(snapshot)
+            } else {
+                self.seed()
+            }
+            self.finishLoading()
+        }
+    }
+
+    func waitUntilLoaded() async {
+        guard isLoading else { return }
+        await withCheckedContinuation { continuation in
+            loadingContinuations.append(continuation)
+        }
+    }
+
+    private func finishLoading() {
+        isLoading = false
+        let continuations = loadingContinuations
+        loadingContinuations.removeAll()
+        continuations.forEach { $0.resume() }
     }
 
     // MARK: Derived
@@ -1118,7 +1156,7 @@ final class NotesStore: ObservableObject {
     // MARK: Persistence
 
     // nonisolated: encoded + written on a background queue by DebouncedSaver.
-    nonisolated private struct Snapshot: Codable {
+    nonisolated private struct Snapshot: Codable, @unchecked Sendable {
         var folders: [NoteFolder]
         var notes: [Note]
         var selectedFolderID: UUID?
@@ -1138,6 +1176,7 @@ final class NotesStore: ObservableObject {
     /// the app is backgrounded so nothing is lost if iOS kills it before the
     /// debounce timers fire.
     func flushToDisk() {
+        guard !isLoading else { return }
         drawingCommitTask?.cancel()
         commitPendingDrawing()
         saveTask?.cancel()
@@ -1156,25 +1195,28 @@ final class NotesStore: ObservableObject {
         }
     }
 
-    private func loadOrSeed() {
-        if let data = try? Data(contentsOf: saveURL),
+    nonisolated private static func readSnapshot(from url: URL) -> Snapshot? {
+        if let data = try? Data(contentsOf: url),
            let snap = try? JSONDecoder().decode(Snapshot.self, from: data),
            !snap.folders.isEmpty {
-            folders = snap.folders
-            notes = snap.notes
-            migrateRemovingDeprecatedSystemFolders()
-            selectedFolderID = snap.selectedFolderID ?? folders.first(where: { $0.systemKind == .notes })?.id
-            selectedNoteID = snap.selectedNoteID
-            ensureSystemFolders()
-            if selectedFolder == nil {
-                selectedFolderID = folders.first(where: { $0.systemKind == .notes })?.id
-            }
-            if selectedNoteID == nil {
-                selectedNoteID = visibleNotes().first?.id
-            }
-            return
+            return snap
         }
-        seed()
+        return nil
+    }
+
+    private func apply(_ snap: Snapshot) {
+        folders = snap.folders
+        notes = snap.notes
+        migrateRemovingDeprecatedSystemFolders()
+        selectedFolderID = snap.selectedFolderID ?? folders.first(where: { $0.systemKind == .notes })?.id
+        selectedNoteID = snap.selectedNoteID
+        ensureSystemFolders()
+        if selectedFolder == nil {
+            selectedFolderID = folders.first(where: { $0.systemKind == .notes })?.id
+        }
+        if selectedNoteID == nil {
+            selectedNoteID = visibleNotes().first?.id
+        }
     }
 
     /// Quick Notes + Shared are no longer used — strip them and rehome any notes.

@@ -23,7 +23,8 @@ final class PaperViewportTests: XCTestCase {
         }, creationDate: .now)
         let drawing = PKDrawing(strokes: [PKStroke(ink: PKInk(.pen, color: .black), path: path)])
         let text = TypedNoteText(text: "Aligned with ink", x: 900, y: 180,
-                                 xHeight: 20, maxX: 1150, isUserMessage: false)
+                                 xHeight: 20, maxX: 1150, isUserMessage: false,
+                                 fontName: "Georgia-Italic", colorHex: "#224488")
         viewport.paperView.loadDrawing(drawing, typedTexts: [text])
         let savedInk = viewport.paperView.currentDrawing.dataRepresentation()
 

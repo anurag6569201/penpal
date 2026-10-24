@@ -93,8 +93,8 @@ enum GlyphAlign {
     /// a glyph positioned goes through here; nothing else may decide.
     ///
     /// `settled` marks a glyph that has already been through the full capture
-    /// pipeline and is only being re-seated after a morph — letters then get
-    /// the gentler treatment rather than a fresh aggressive snap.
+    /// pipeline and is only being re-seated after a morph. Both passes must
+    /// use the same baseline estimate and tolerance to avoid moving ink twice.
     static func place(_ glyph: PersonalGlyph, as role: GlyphRole,
                       settled: Bool = false) -> PersonalGlyph {
         switch role {
@@ -107,7 +107,7 @@ enum GlyphAlign {
         case .letter(let ch):
             return rebaseWidth(
                 snapBaseline(glyph, char: ch, soft: settled,
-                             deadBand: settled ? 0.02 : 0.15))
+                             deadBand: 0.15))
         }
     }
 
@@ -237,8 +237,8 @@ enum GlyphAlign {
 
     /// Render-time placement, after a VAE morph or fragment stitch has nudged
     /// the geometry. Routes through the SAME owner as `normalize`, differing
-    /// only in `settled: true` — which softens the letter case and changes
-    /// nothing for symbols or digits, whose anchors are absolute.
+    /// only in its `settled` marker; the baseline estimate stays identical
+    /// to capture so an already placed letter cannot drift again.
     ///
     /// This shared route is the actual PEN-06 fix. Previously this function
     /// had its own copy of the classification logic and quietly disagreed with
@@ -272,6 +272,33 @@ enum GlyphAlign {
     static func wordBaseline(_ glyph: PersonalGlyph, word: String) -> CGFloat? {
         let chars = Array(word.lowercased().filter(\.isLetter))
         guard chars.count >= 2, glyph.width > 0.1 else { return nil }
+        // Repeated lower turning points describe the actual body line more
+        // reliably than slices based on another font's letter widths. Each
+        // valley gets one vote, regardless of Pencil sampling density.
+        var valleys: [CGPoint] = []
+        for stroke in glyph.strokes where stroke.count >= 2 {
+            let ys = stroke.map(\.y)
+            guard let lo = ys.min(), let hi = ys.max(), hi - lo > 0.15 else { continue }
+            for i in stroke.indices {
+                let point = stroke[i]
+                let before = i > 0 ? stroke[i - 1].y : CGFloat.infinity
+                let after = i + 1 < stroke.count ? stroke[i + 1].y : CGFloat.infinity
+                if point.y <= before && point.y <= after && (point.y < before || point.y < after) {
+                    if !valleys.contains(where: { abs($0.x - point.x) < 0.08 && abs($0.y - point.y) < 0.04 }) {
+                        valleys.append(point)
+                    }
+                }
+            }
+        }
+        let clusters = valleys.map { candidate in
+            valleys.filter { abs($0.y - candidate.y) <= 0.08 }
+        }.filter { cluster in
+            cluster.count >= 2 && (cluster.map(\.x).max()! - cluster.map(\.x).min()!) > glyph.width * 0.2
+        }
+        if let consensus = clusters.max(by: { $0.count < $1.count }) {
+            let ys = consensus.map(\.y).sorted()
+            return ys[ys.count / 2]
+        }
         var cum: [CGFloat] = [0]
         for ch in chars {
             cum.append(cum.last! + max(0.15, StrokeFont.glyph(for: ch).width))
@@ -301,7 +328,7 @@ enum GlyphAlign {
 
     /// Render-time reseat for a unit whose TEXT is known.
     static func reseat(_ glyph: PersonalGlyph, forWord word: String) -> PersonalGlyph {
-        rebaseWidth(snapBaseline(glyph, char: nil, soft: true, deadBand: 0.02,
+        rebaseWidth(snapBaseline(glyph, char: nil, soft: true, deadBand: 0.15,
                                  knownWord: word))
     }
 
@@ -396,9 +423,9 @@ enum GlyphAlign {
         let baseline: CGFloat
         if hasDescender {
             // Body sits near the upper part of the lower half.
-            baseline = quantile(ys, soft ? 0.42 : 0.38)
+            baseline = quantile(ys, 0.38)
         } else {
-            baseline = quantile(ys, soft ? 0.14 : 0.10)
+            baseline = quantile(ys, 0.10)
         }
 
         guard abs(baseline) > deadBand else { return glyph }

@@ -103,7 +103,6 @@ struct ContentView: View {
     @State private var showTraining = false
     @State private var showSettings = false
     @State private var showPrefer = false
-    @State private var naturalness: Double = 0.5
     @State private var showMathChips = false
     @State private var statusMessage = ""
     @State private var showStatus = false
@@ -233,7 +232,7 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            if !navigationDrawerPresented {
+            if !navigationDrawerPresented && !store.isLoading {
                 sidebarButton
                     .padding(.leading, 12)
                     .padding(.top, 8)
@@ -377,7 +376,9 @@ struct ContentView: View {
         ZStack(alignment: .bottom) {
             Pen.paper.ignoresSafeArea()
 
-            if let note = store.selectedNote {
+            if store.isLoading {
+                notebookLoadingView
+            } else if let note = store.selectedNote {
                 if note.isCoded {
                     // Coded paper: the note is a rendered HTML page, not a canvas.
                     CodedPaperView(store: store)
@@ -447,6 +448,20 @@ struct ContentView: View {
         }
         .animation(reduceMotion ? nil : Pen.spring, value: penpalOn)
         .animation(reduceMotion ? nil : Pen.spring, value: mathChipsVisible)
+    }
+
+    private var notebookLoadingView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.large)
+                .tint(Pen.inkAccent)
+            Text("Opening your notebook…")
+                .font(Pen.sub)
+                .foregroundStyle(Pen.inkFaded)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Opening your notebook")
     }
 
     private func operationProgress(_ message: String) -> some View {
@@ -889,7 +904,6 @@ struct ContentView: View {
                 onWritingStateChange: { writing in
                     isWriting = writing
                     if !writing, settings.replyStyle == "hand", penpalOn {
-                        naturalness = Double(StyleRL.shared.lastNaturalness)
                         showPrefer = StyleRL.shared.hasCritic
                     }
                     // A finished math reply invites a follow-up.
@@ -1325,11 +1339,8 @@ struct ContentView: View {
 
     private var preferenceBar: some View {
         HStack(spacing: 14) {
-            Text("Looks like you?")
+            Text("Looks like your writing?")
                 .font(.footnote.weight(.medium))
-            Text("\(Int(naturalness * 100))%")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(Pen.inkFaded)
             Button {
                 StyleRL.shared.prefer(liked: true)
                 showPrefer = false
@@ -1340,6 +1351,7 @@ struct ContentView: View {
             Button {
                 StyleRL.shared.prefer(liked: false)
                 showPrefer = false
+                showTraining = true
             } label: {
                 Image(systemName: "hand.thumbsdown.fill")
             }

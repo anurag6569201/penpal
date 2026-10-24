@@ -1,0 +1,26 @@
+{
+  "name": "agent-workbench-poc",
+  "displayName": "Agent Workbench",
+  "description": "One project workspace, native coding agents, and shared project memory.",
+  "version": "0.1.0",
+  "publisher": "local-poc",
+  "engines": { "vscode": "^1.95.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onView:agentWorkbench.workspace", "onCommand:agentWorkbench.open"],
+  "contributes": {
+    "commands": [
+      { "command": "agentWorkbench.open", "title": "Agent Workbench: Open" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "agentWorkbench", "title": "Workbench", "icon": "media/icon.svg" }
+      ]
+    },
+    "views": {
+      "agentWorkbench": [
+        { "id": "agentWorkbench.workspace", "name": "Agent Workbench", "type": "webview" }
+      ]
+    }
+  }
+}

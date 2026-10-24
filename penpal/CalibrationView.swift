@@ -4,17 +4,10 @@
 //
 //  "Teach it your hand" — train words, letters, joins, math and marks.
 //
-//  Tabs are ordered by what matters most to mimicry:
-//  - Words: the primary source. A designed list where every letter a–z
-//    appears in AT LEAST TWO words, so ScaleConsensus gets dense shared-letter
-//    cross-constraints and every letterform is captured in real writing flow
-//    (people draw a lone "m" big and careful but write it small inside words).
-//  - Letters: gap-filler for shapes still missing after Words, plus capitals.
-//  - Joins: the most frequent letter pairs — seeds for LigatureEngine and
-//    FragmentBank. Connection style matters more to "feels like me" than any
-//    single glyph. Pairs already written inside a trained word are credited
-//    automatically (cross-tab credit — never ask for the same ink twice).
-//  - Math / Marks: digits+operators, punctuation.
+//  Letters provide faithful shapes for unseen words. Whole words and pairs
+//  preserve the user's original flow when that exact unit appears in a reply.
+//  Only explicitly captured units count as trained; a letter inside a word
+//  is not a reliable isolated sample without verified segmentation.
 //
 //  Each unit keeps up to 3 samples for natural variation; write the same one
 //  again to add another sample. An always-visible essentials bar shows WHAT
@@ -280,8 +273,8 @@ struct CalibrationView: View {
     @Environment(\.dismiss) private var dismiss
 
     private enum TrainMode: String, CaseIterable, Identifiable {
-        case words = "Words"
         case letters = "Letters"
+        case words = "Words"
         case joins = "Joins"
         case math = "Math"
         case marks = "Marks"
@@ -327,7 +320,7 @@ struct CalibrationView: View {
     @State private var saveIsWarning = false
     @State private var showTips = false
     @State private var showTargetPicker = false
-    @State private var trainMode: TrainMode = .words
+    @State private var trainMode: TrainMode = .letters
 
     @State private var extraChars: [Character] =
         Array(UserDefaults.standard.string(forKey: "penpal.extraChars") ?? "")
@@ -337,7 +330,7 @@ struct CalibrationView: View {
 
     /// The unit being trained — a single character (count == 1) or a whole
     /// word/join. One selection model for every tab.
-    @State private var selectedTarget: String = "the"
+    @State private var selectedTarget: String = "a"
 
     private var isWordTarget: Bool { selectedTarget.count > 1 }
 
@@ -367,18 +360,10 @@ struct CalibrationView: View {
         targets.firstIndex(of: selectedTarget) ?? 0
     }
 
-    /// Whether a target has at least one sample — with CROSS-TAB CREDIT: a
-    /// join like "th" counts as trained if captured directly OR inside any
-    /// trained word ("the"), because LigatureEngine and FragmentBank already
-    /// harvested it from that word. Never ask for the same ink twice.
+    /// Only explicitly captured targets count as ready for replay.
     private func isTrained(_ target: String) -> Bool {
         if target.count > 1 {
-            if PersonalFontStore.shared.variantCount(forWord: target) > 0 { return true }
-            if Self.essentialJoins.contains(target) {
-                return PersonalFontStore.shared.trainedWordList
-                    .contains { $0.contains(target) }
-            }
-            return false
+            return PersonalFontStore.shared.variantCount(forWord: target) > 0
         }
         guard let ch = target.first else { return false }
         return PersonalFontStore.shared.variantCount(forChar: ch) > 0
@@ -484,7 +469,7 @@ struct CalibrationView: View {
             Label("For the best echo of your hand", systemImage: "lightbulb")
                 .font(.caption.weight(.semibold))
             Group {
-                Text("• Train Words first — they teach your sizing and joins together")
+                Text("• Start with lowercase letters so Penpal can write new words in your hand")
                 Text("• Sit letters on the solid blue line")
                 Text("• Letter bodies reach the dashed teal line")
                 Text("• Keep the same size across all samples")
@@ -627,7 +612,7 @@ struct CalibrationView: View {
     /// replies feel like the user; Math and Marks are per-use-case extras.
     private var essentialsBar: some View {
         HStack(spacing: 12) {
-            ForEach([TrainMode.words, .joins, .letters], id: \.self) { mode in
+            ForEach([TrainMode.letters, .words, .joins], id: \.self) { mode in
                 let p = essentialProgress(for: mode)
                 let complete = p.done >= p.total
                 Button { trainMode = mode } label: {
@@ -648,11 +633,11 @@ struct CalibrationView: View {
     private var modeCaption: String? {
         switch trainMode {
         case .words:
-            return "The heart of your hand — whole words as real connected ink. Every letter a–z appears in at least two of these, so sizing is learned from how you actually write in flow."
+            return "Capture common words exactly as you write them. These samples are replayed as whole words; train Letters too so new words can use your shapes."
         case .letters:
-            return "Gap-filler for letters still missing after Words, plus capitals. Words teach flow; these teach shape."
+            return "Start with a–z in your normal writing, then capitals. Penpal uses these shapes for new words. Missing letters use the built-in hand."
         case .joins:
-            return "Letter pairs the way you join them. Connections matter more to \u{201C}feels like me\u{201D} than any single letter. Pairs already inside a trained word are credited automatically."
+            return "Optional pairs, saved exactly as written. To keep new words faithful to your samples, replies do not invent joins between separately trained letters."
         case .math:
             return "Train digits and math signs. Powers: train \"^\" as a caret, or write exponents raised (x²) — Penpal detects superscripts by layout. Fixing the Solve chip also trains from your ink."
         case .marks:

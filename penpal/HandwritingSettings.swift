@@ -3,6 +3,7 @@ import Combine
 import UIKit
 
 enum HandwritingSizeMode: String, CaseIterable, Codable, Identifiable {
+    case adaptive
     case automatic
     case manual
     var id: String { rawValue }
@@ -94,12 +95,31 @@ final class HandwritingSettings: ObservableObject {
     @Published var confirmBeforeSolving: Bool { didSet { save() } }
 
     private init(defaults: UserDefaults = .standard) {
-        sizeMode = HandwritingSizeMode(rawValue: defaults.string(forKey: "penpal.settings.sizeMode") ?? "") ?? .automatic
-        manualSize = defaults.object(forKey: "penpal.settings.size") as? Double ?? 18
-        penWidthScale = defaults.object(forKey: "penpal.settings.penScale") as? Double ?? 1
+        let savedMode = defaults.string(forKey: "penpal.settings.sizeMode")
+        func matchesOldDefault(_ key: String, _ value: Double) -> Bool {
+            guard let saved = defaults.object(forKey: key) as? Double else { return true }
+            return abs(saved - value) < 0.001
+        }
+        // Move prior baseline values to the new defaults while keeping any
+        // values that the user had already changed.
+        let sizeWasDefault = matchesOldDefault("penpal.settings.size", 18)
+        let oldSizingMode = (savedMode == nil || savedMode == "automatic") && sizeWasDefault
+        let weightWasDefault = matchesOldDefault("penpal.settings.penScale", 1)
+        let lettersWereDefault = matchesOldDefault("penpal.settings.letterSpacing", 1)
+        let wordsWereDefault = matchesOldDefault("penpal.settings.wordSpacing", 1)
+        let needsDefaultMigration = oldSizingMode || sizeWasDefault || weightWasDefault
+            || lettersWereDefault || wordsWereDefault
+        sizeMode = oldSizingMode ? .adaptive
+            : (HandwritingSizeMode(rawValue: savedMode ?? "") ?? .adaptive)
+        manualSize = sizeWasDefault ? 10
+            : (defaults.object(forKey: "penpal.settings.size") as? Double ?? 10)
+        penWidthScale = weightWasDefault ? 0.55
+            : (defaults.object(forKey: "penpal.settings.penScale") as? Double ?? 0.55)
         smoothness = defaults.object(forKey: "penpal.settings.smoothness") as? Double ?? 0.5
-        letterSpacingScale = defaults.object(forKey: "penpal.settings.letterSpacing") as? Double ?? 1
-        wordSpacingScale = defaults.object(forKey: "penpal.settings.wordSpacing") as? Double ?? 1
+        letterSpacingScale = lettersWereDefault ? 1.2
+            : (defaults.object(forKey: "penpal.settings.letterSpacing") as? Double ?? 1.2)
+        wordSpacingScale = wordsWereDefault ? 1.2
+            : (defaults.object(forKey: "penpal.settings.wordSpacing") as? Double ?? 1.2)
         lineSpacingScale = defaults.object(forKey: "penpal.settings.lineSpacing") as? Double ?? 1
         speedLevel = defaults.object(forKey: "penpal.settings.speed") as? Double ?? 5
         variation = defaults.object(forKey: "penpal.settings.variation") as? Double ?? 4
@@ -135,6 +155,7 @@ final class HandwritingSettings: ObservableObject {
             forKey: "penpal.settings.illustratorQuality"
         ) ?? "detailed"
         confirmBeforeSolving = defaults.object(forKey: "penpal.settings.confirmSolve") as? Bool ?? true
+        if needsDefaultMigration { save() }
     }
 
     var inkColor: UIColor {
@@ -149,8 +170,22 @@ final class HandwritingSettings: ObservableObject {
         }
     }
 
-    func resolvedSize(detected: CGFloat) -> CGFloat {
-        sizeMode == .manual ? CGFloat(min(42, max(10, manualSize))) : detected
+    /// Explicit reply colors win in every capability. Matching source ink is
+    /// only a fallback for “Match my pen” before the tool picker has a color.
+    func replyInkColor(matching sourceColor: UIColor? = nil) -> UIColor {
+        let color = inkColorName == "active" ? (activeToolColor ?? sourceColor ?? inkColor) : inkColor
+        return color.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+    }
+
+    func resolvedSize(detected: CGFloat, adaptive: CGFloat? = nil) -> CGFloat {
+        switch sizeMode {
+        case .adaptive:
+            return adaptive.map { min(42, max(10, $0)) } ?? CGFloat(min(42, max(10, manualSize)))
+        case .automatic:
+            return detected
+        case .manual:
+            return CGFloat(min(42, max(10, manualSize)))
+        }
     }
 
     /// Nil keeps the captured hand tempo; zero means no animation.
@@ -220,6 +255,13 @@ extension UIColor {
         }
         self.init(red: CGFloat(r) / 255, green: CGFloat(g) / 255,
                   blue: CGFloat(b) / 255, alpha: CGFloat(a) / 255)
+    }
+
+    /// Persist translucent text ink as well as its RGB channels.
+    var hexStringIncludingAlpha: String {
+        let color = resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        let alpha = Int((color.cgColor.alpha * 255).rounded())
+        return color.hexString + (alpha < 255 ? String(format: "%02X", alpha) : "")
     }
 
     /// Hex string in the current (resolved) appearance — used to persist a

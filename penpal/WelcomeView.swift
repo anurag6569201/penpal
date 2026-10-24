@@ -38,6 +38,7 @@ struct WelcomeView: View {
     var onFinished: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
+    @State private var isOpeningNotebook = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -89,12 +90,26 @@ struct WelcomeView: View {
 
                     VStack(spacing: 12) {
                         Button {
+                            guard !isOpeningNotebook else { return }
                             Pen.tapHaptic()
+                            isOpeningNotebook = true
                             onFinished()
                         } label: {
-                            HStack { Text("Open my notebook"); Image(systemName: "arrow.right") }
+                            HStack(spacing: 10) {
+                                if isOpeningNotebook {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .tint(Pen.onAccent)
+                                    Text("Opening notebook…")
+                                } else {
+                                    Text("Open my notebook")
+                                    Image(systemName: "arrow.right")
+                                }
+                            }
                         }
                         .buttonStyle(PenPrimaryButtonStyle())
+                        .disabled(isOpeningNotebook)
+                        .accessibilityLabel(isOpeningNotebook ? "Opening notebook" : "Open my notebook")
                         Text("Start without an account. Notes are saved on this device.")
                             .font(Pen.caption).foregroundStyle(Pen.inkFaded)
                             .multilineTextAlignment(.center)
