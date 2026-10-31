@@ -11,6 +11,7 @@ import PhotosUI
 import PencilKit
 import UniformTypeIdentifiers
 import UIKit
+import Combine
 
 final class PaperProxy {
     weak var view: MagicPaperView?
@@ -21,6 +22,7 @@ struct MagicPaper: UIViewRepresentable {
     var settings: HandwritingSettings
     var penpalEnabled: Bool
     var pageWidth: CGFloat
+    var note: Note?
     var onWritingStateChange: (Bool) -> Void
     var onThinkingChange: (Bool) -> Void
     var onReadingChange: (Bool) -> Void
@@ -43,12 +45,30 @@ struct MagicPaper: UIViewRepresentable {
         viewport.pageWidth = pageWidth
         proxy.view = viewport.paperView
         apply(to: viewport.paperView)
+        if let note = note, !note.isCoded {
+            viewport.paperView.loadDrawing(
+                note.drawing,
+                typedTexts: note.typedTexts ?? [],
+                replyInks: note.replyInks ?? [],
+                codeBlocks: note.codeBlocks ?? [],
+                noteID: note.id
+            )
+        }
         return viewport
     }
 
     func updateUIView(_ viewport: PaperViewport, context: Context) {
         viewport.pageWidth = pageWidth
         apply(to: viewport.paperView)
+        if let note = note, !note.isCoded, viewport.paperView.loadedNoteID != note.id {
+            viewport.paperView.loadDrawing(
+                note.drawing,
+                typedTexts: note.typedTexts ?? [],
+                replyInks: note.replyInks ?? [],
+                codeBlocks: note.codeBlocks ?? [],
+                noteID: note.id
+            )
+        }
     }
 
     private func apply(to view: MagicPaperView) {
@@ -245,6 +265,11 @@ struct ContentView: View {
         .animation(reduceMotion ? nil : Pen.spring, value: showPrefer)
         .onAppear(perform: handleAppear)
         .onOpenURL(perform: handleOpenURL)
+        .onReceive(NotificationCenter.default.publisher(for: .penpalDeepLink)) { notification in
+            if let url = notification.object as? URL {
+                handleOpenURL(url)
+            }
+        }
         .onChange(of: store.isLoading) { _, loading in
             if !loading {
                 syncEditorFromStore(force: true)
@@ -556,13 +581,17 @@ struct ContentView: View {
     }
 
     private var notebookLoadingView: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.large)
-                .tint(Pen.inkAccent)
-            Text("Opening your notebook…")
-                .font(Pen.sub)
-                .foregroundStyle(Pen.inkFaded)
+        VStack(spacing: 20) {
+            PenpalAnimatedLogoView(size: 84, mode: .breathing)
+            VStack(spacing: 6) {
+                Text("penpal")
+                    .font(.system(.title3, design: .serif, weight: .semibold))
+                    .tracking(-0.6)
+                    .foregroundStyle(Pen.inkPrimary)
+                Text("Opening your notebook…")
+                    .font(Pen.sub)
+                    .foregroundStyle(Pen.inkFaded)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
@@ -1015,6 +1044,7 @@ struct ContentView: View {
                 settings: settings,
                 penpalEnabled: penpalOn,
                 pageWidth: pageWidth,
+                note: store.selectedNote,
                 onWritingStateChange: { writing in
                     isWriting = writing
                     if !writing, settings.replyStyle == "hand", penpalOn {
@@ -1224,7 +1254,8 @@ struct ContentView: View {
                 self.proxy.view?.loadDrawing(note.drawing,
                                              typedTexts: note.typedTexts ?? [],
                                              replyInks: note.replyInks ?? [],
-                                             codeBlocks: note.codeBlocks ?? [])
+                                             codeBlocks: note.codeBlocks ?? [],
+                                             noteID: note.id)
                 if self.toolsVisible {
                     self.proxy.view?.setToolsVisible(true)
                 }
@@ -1233,12 +1264,14 @@ struct ContentView: View {
     }
 
     private func flushEditor() {
+        guard !store.isLoading else { return }
         if let id = loadedNoteID, var note = store.notes.first(where: { $0.id == id }) {
             note.title = titleText
             note.body = bodyText
             // Coded papers have no canvas — and proxy.view may still hold the
             // previous ink note's content, which must not leak into this one.
-            if !note.isCoded, let view = proxy.view {
+            // Only flush drawing and code blocks if the view has actually loaded THIS note.
+            if !note.isCoded, let view = proxy.view, view.loadedNoteID == id {
                 // If Penpal is mid-write, bake the reply into the drawing first
                 // so it isn't lost when the note is saved/switched.
                 view.finalizePendingWriting()

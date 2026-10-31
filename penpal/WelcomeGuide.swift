@@ -212,34 +212,32 @@ enum WelcomeGuide {
     @MainActor
     private static func startHere() -> ChapterContent {
         var c = Column()
-        c.text("""
-        <p style="font-size:12px;letter-spacing:2px;font-weight:600;color:#1B5D56;margin:0 0 6px">WELCOME</p>
-        <h1 style="font-family:'New York',ui-serif,Georgia,serif;font-size:36px;font-weight:600;margin:0 0 10px">Welcome to Penpal</h1>
-        <p style="font-size:17px;margin:0">A notebook that writes back. Write with your pen — Penpal reads it, thinks with you, and answers on the page in handwriting. With a little training, <b>your</b> handwriting.</p>
-        """, height: 190)
-        c.sim(heroSim, svgHeight: 250)
-        c.text("""
-        <h3>Two ways to learn Penpal</h3>
-        <ul>
-        <li><b>Take the tour</b> — tap <i>Take the tour</i> at the bottom of this page (or ⋯ → Take the Tour). Each control lights up, one at a time, with a short explanation.</li>
-        <li><b>Browse this guide</b> — every page in the <i>Penpal Guide</i> folder shows a feature working on a loop. Open the sidebar (top-left) to find them.</li>
-        </ul>
-        """, variant: "callout-tip", height: 230)
+        // 1. Hero showcase with animated vector Penpal mark, dialogue preview, and quick actions
+        c.add(startHeroHTML, .code, height: 420)
+
+        // 2. Interactive live handwriting pad - renders real PKStrokes on frame 0!
+        c.tryPad(
+            badge: "TRY IN THIS SPACE",
+            title: "Your First Conversation",
+            desc: "Turn on Penpal (signature button in toolbar), then draw a box around this handwritten prompt with your pen or tap Ask Penpal:",
+            handwritten: "Hi Penpal! What can we do\ntogether?",
+            subHint: "← Draw a box or tap Ask",
+            padHeight: 90,
+            height: 205
+        )
+
+        // 3. Interactive Guide Directory with direct chapter links
+        c.add(guideDirectoryHTML, .code, height: 410)
+
+        // 4. Getting Started Checklist
         c.add(CodedPaper.checklistBlockHTML(from: """
-        Turn on Penpal with the signature button
-        Write a question, then tap Ask Penpal
-        Draw a box around writing to send it
-        Write 12 × 7 = and pause
+        Turn on Penpal with the signature button in the toolbar
+        Write a question, then tap Ask Penpal or draw a box
+        Write 12 × 7 = and pause for instant maths
         Teach Penpal your handwriting (⋯ → Train Handwriting)
-        """), .checklist, height: 250)
-        c.add(CodedPaper.tableBlockHTML(from: """
-        Guide page | What you'll see
-        1 · Talk to Penpal | The seven capabilities and how to ask
-        2 · The secret gestures | Box, double underline, strike-through and =
-        3 · Maths & graphs | Instant answers, working, ink graphs, practice
-        4 · Build on the page | Live widgets, diagrams, tables and media
-        5 · Make it yours | Your handwriting, profiles, export and backup
-        """), .table, height: 290)
+        Take the guided tour (tap button at bottom of page)
+        """), .checklist, height: 260)
+
         return c.content
     }
 
@@ -740,19 +738,280 @@ enum WelcomeGuide {
         """
     }
 
-    // MARK: - Sims
+    // MARK: - Start Here Custom Blocks
 
-    private static var heroSim: String {
-        var s = Sim(dur: 11, height: 250)
-        s.write("Hi Penpal! Can you help me plan my week?", x: 34, y: 92, width: 560, size: 28, 0.03, 0.30)
-        s.pencil("M34,94 C200,88 400,98 594,90", 0.03, 0.30)
-        s.thinking(x: 44, y: 128, 0.33, 0.44)
-        s.write("Of course! Let's start with Monday —", x: 34, y: 148, width: 520, "reply", size: 28, 0.44, 0.68)
-        s.write("what matters most to you?", x: 34, y: 196, width: 360, "reply", size: 28, 0.69, 0.84)
-        return simBlock(tag: "Penpal mode", title: "A notebook that writes back",
-                        caption: "you write, Penpal answers on the page.",
-                        svg: s.svg(still: 0.9))
-    }
+    static let vectorMarkSVGPath = "M 488.98 1120.75 C 496.30 1117.01 497.49 1114.50 497.56 1102.67 C 497.62 1093.83 497.99 1091.65 500.43 1086.00 C 509.49 1064.98 522.96 1043.30 539.89 1022.50 C 543.47 1018.10 556.36 1004.38 568.54 992.00 C 592.59 967.55 595.05 964.11 596.91 952.25 C 598.78 940.31 596.03 930.95 586.51 916.88 C 579.18 906.04 571.67 890.60 568.83 880.50 C 567.03 874.12 566.57 869.86 566.54 859.50 C 566.50 844.85 567.60 840.33 573.65 830.38 C 577.74 823.66 577.79 824.22 571.66 808.50 C 560.10 778.84 553.22 744.55 549.40 697.50 C 547.31 671.80 546.98 599.76 548.82 572.00 C 553.81 496.87 560.74 462.15 577.54 428.15 C 608.24 366.00 665.41 325.92 727.00 323.36 C 795.80 320.51 846.18 369.12 853.95 445.86 C 855.39 460.07 855.27 471.20 853.50 486.51 C 851.66 502.45 850.67 507.59 846.86 521.00 C 836.22 558.49 815.32 592.27 788.90 614.65 C 757.60 641.16 724.17 653.03 684.50 651.72 C 667.26 651.15 658.86 649.72 644.00 644.84 C 625.04 638.61 608.78 628.93 591.86 613.79 C 580.69 603.80 577.48 602.14 572.92 604.03 C 564.18 607.65 566.58 626.77 578.99 652.50 C 591.52 678.46 611.73 701.25 637.50 718.47 C 662.46 735.16 690.29 745.73 722.18 750.66 C 739.43 753.32 771.27 753.04 789.00 750.06 C 832.97 742.68 872.76 723.76 907.50 693.72 C 944.77 661.49 974.75 614.97 989.49 566.50 C 1007.99 505.70 1007.09 435.88 987.05 377.77 C 969.36 326.47 938.48 284.84 898.23 258.01 C 851.29 226.72 791.19 218.13 731.00 234.10 C 699.38 242.50 665.09 260.36 636.65 283.23 C 618.22 298.05 590.95 327.18 577.72 346.17 L 576.10 348.50 L 576.05 346.30 C 576.02 345.09 576.45 341.94 576.99 339.30 C 578.58 331.60 580.89 312.23 582.04 296.93 C 583.99 271.01 580.90 240.95 574.44 223.00 C 555.75 171.03 511.48 143.14 455.32 147.94 C 401.62 152.53 351.58 177.49 328.15 211.38 C 319.59 223.75 316.42 235.36 318.96 245.00 C 323.05 260.51 334.72 264.46 360.40 259.04 C 375.89 255.77 387.30 256.40 396.75 261.04 C 411.87 268.47 421.33 283.82 425.40 307.50 C 428.14 323.48 429.00 341.47 428.99 382.40 C 428.96 485.73 421.79 637.47 413.90 702.00 C 408.11 749.36 401.51 779.38 390.32 809.27 L 384.79 824.04 L 388.97 830.45 C 403.02 852.03 397.84 884.43 374.84 918.69 C 368.71 927.83 365.99 934.76 365.30 942.98 C 364.65 950.77 366.72 959.93 370.70 966.82 C 372.19 969.39 382.45 980.50 393.51 991.50 C 422.54 1020.38 441.28 1044.72 454.77 1071.06 C 463.27 1087.66 466.29 1096.11 464.95 1099.62 C 462.09 1107.17 465.78 1116.90 472.96 1120.70 C 478.45 1123.60 483.37 1123.62 488.98 1120.75 Z M 480.27 1088.30 C 479.59 1088.05 478.59 1086.19 478.05 1084.17 C 476.64 1078.91 475.02 1049.47 475.01 1028.91 C 475.00 1019.24 474.70 1002.45 474.34 991.61 L 473.68 971.89 L 470.52 970.57 C 461.34 966.74 455.03 956.82 455.01 946.22 C 454.99 935.72 459.82 927.63 469.18 922.46 C 476.07 918.64 486.16 918.32 492.57 921.71 C 497.08 924.09 502.93 930.11 505.67 935.19 C 508.33 940.12 508.14 952.21 505.31 957.54 C 502.78 962.32 495.76 969.04 491.44 970.82 L 488.38 972.08 L 487.19 1020.29 C 485.70 1080.01 484.69 1089.95 480.27 1088.30 Z"
+
+    static let startHeroHTML: String = """
+    <div id="penpal-content">
+    <style>
+      :root {
+        --ink: #1A2B2A;
+        --faded: rgba(26,43,42,0.68);
+        --accent: #1B5D56;
+        --wash: rgba(27,93,86,0.06);
+        --border: rgba(27,93,86,0.18);
+        --rule: rgba(26,43,42,0.08);
+        --card: #FFFDF9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ink: #ECEAE4;
+          --faded: rgba(236,234,228,0.68);
+          --accent: #7ECEB9;
+          --wash: rgba(126,206,185,0.08);
+          --border: rgba(126,206,185,0.24);
+          --rule: rgba(236,234,228,0.08);
+          --card: #141317;
+        }
+      }
+      html, body { margin: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ink); }
+      .hero-card {
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        border-radius: 20px;
+        padding: 24px 26px;
+        box-sizing: border-box;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+      }
+      .hero-header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .hero-logo-wrap {
+        width: 52px;
+        height: 52px;
+        flex-shrink: 0;
+      }
+      .hero-logo-wrap svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .hero-logo-path {
+        fill: var(--accent);
+        transform-origin: center;
+        animation: markBreathe 3s ease-in-out infinite alternate;
+      }
+      @keyframes markBreathe {
+        0% { transform: scale(1); filter: drop-shadow(0 0 0px var(--accent)); }
+        100% { transform: scale(1.035); filter: drop-shadow(0 2px 10px rgba(27,93,86,0.35)); }
+      }
+      .hero-title-group h1 {
+        font-family: 'New York', Georgia, serif;
+        font-size: 28px;
+        font-weight: 600;
+        margin: 0 0 3px;
+        letter-spacing: -0.4px;
+        line-height: 1.15;
+      }
+      .hero-badge {
+        font-size: 11px;
+        letter-spacing: 1.8px;
+        font-weight: 700;
+        color: var(--accent);
+        text-transform: uppercase;
+      }
+      .hero-desc {
+        font-size: 15px;
+        line-height: 1.5;
+        color: var(--faded);
+        margin: 0 0 18px;
+      }
+      .dialogue-preview {
+        background: var(--wash);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px 20px;
+        position: relative;
+        background-image: linear-gradient(var(--rule) 1px, transparent 1px);
+        background-size: 100% 34px;
+        background-position: 0 38px;
+      }
+      .dialogue-row {
+        margin-bottom: 12px;
+      }
+      .dialogue-row:last-child {
+        margin-bottom: 0;
+      }
+      .dialogue-speaker {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: var(--faded);
+        margin-bottom: 2px;
+      }
+      .dialogue-text {
+        font-family: "Noteworthy", "Bradley Hand", cursive, -apple-system, sans-serif;
+        font-size: 22px;
+        line-height: 34px;
+        color: var(--ink);
+        margin: 0;
+      }
+      .dialogue-text.reply {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .hero-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 18px;
+        flex-wrap: wrap;
+      }
+      .btn-action {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--accent);
+        color: #fff;
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 9px 18px;
+        border-radius: 20px;
+        transition: transform 0.15s ease, opacity 0.15s ease;
+      }
+      .btn-action.secondary {
+        background: var(--wash);
+        color: var(--accent);
+        border: 1px solid var(--border);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .hero-logo-path { animation: none; }
+      }
+    </style>
+    <div class="hero-card" data-penpal-kind="custom" data-penpal-editable="false">
+      <div class="hero-header">
+        <div class="hero-logo-wrap">
+          <svg viewBox="0 0 1254 1254">
+            <path class="hero-logo-path" fill-rule="evenodd" d="\(vectorMarkSVGPath)" />
+          </svg>
+        </div>
+        <div class="hero-title-group">
+          <span class="hero-badge">INK STUDIO</span>
+          <h1>Welcome to Penpal</h1>
+        </div>
+      </div>
+      <p class="hero-desc">
+        A notebook that writes back. Write naturally with your pen — Penpal reads your ink, thinks with you, and answers right on the page in handwriting. With a little training, <b>your</b> handwriting.
+      </p>
+      <div class="dialogue-preview">
+        <div class="dialogue-row">
+          <div class="dialogue-speaker">You wrote</div>
+          <p class="dialogue-text">Hi Penpal! Can you help me plan my week?</p>
+        </div>
+        <div class="dialogue-row">
+          <div class="dialogue-speaker" style="color:var(--accent);">Penpal replied in ink</div>
+          <p class="dialogue-text reply">Of course! Let's start with Monday — what matters most to you?</p>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <a href="penpal://tour" class="btn-action">✦ Take the Tour</a>
+        <a href="penpal://chapter/1" class="btn-action secondary">1 · Talk to Penpal →</a>
+        <a href="penpal://chapter/2" class="btn-action secondary">2 · Secret Gestures →</a>
+      </div>
+    </div>
+    </div>
+    """
+
+    static let guideDirectoryHTML: String = """
+    <div id="penpal-content">
+    <style>
+      :root {
+        --ink: #1A2B2A;
+        --faded: rgba(26,43,42,0.68);
+        --accent: #1B5D56;
+        --wash: rgba(27,93,86,0.06);
+        --border: rgba(27,93,86,0.18);
+        --card: #FFFDF9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ink: #ECEAE4;
+          --faded: rgba(236,234,228,0.68);
+          --accent: #7ECEB9;
+          --wash: rgba(126,206,185,0.08);
+          --border: rgba(126,206,185,0.24);
+          --card: #141317;
+        }
+      }
+      html, body { margin: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ink); }
+      .dir-card {
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        border-radius: 20px;
+        padding: 24px 26px;
+        box-sizing: border-box;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.04);
+      }
+      .dir-title { font-family: 'New York', Georgia, serif; font-size: 20px; font-weight: 600; margin: 0 0 14px; }
+      .dir-grid { display: flex; flex-direction: column; gap: 8px; }
+      .dir-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        background: var(--wash);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        text-decoration: none;
+        color: inherit;
+        transition: background 0.15s ease;
+      }
+      .dir-item:active { background: rgba(27,93,86,0.12); }
+      .dir-num { font-weight: 700; color: var(--accent); margin-right: 10px; font-size: 14px; }
+      .dir-text { flex: 1; }
+      .dir-name { font-weight: 600; font-size: 15px; margin-bottom: 2px; }
+      .dir-desc { font-size: 13px; color: var(--faded); }
+      .dir-arrow { color: var(--accent); font-weight: 700; font-size: 16px; margin-left: 12px; }
+    </style>
+    <div class="dir-card" data-penpal-kind="custom" data-penpal-editable="false">
+      <div class="dir-title">Explore the Penpal Guide</div>
+      <div class="dir-grid">
+        <a href="penpal://chapter/1" class="dir-item">
+          <div class="dir-text">
+            <div class="dir-name"><span class="dir-num">1</span>Talk to Penpal</div>
+            <div class="dir-desc">The seven capabilities and how to ask with your pen</div>
+          </div>
+          <div class="dir-arrow">→</div>
+        </a>
+        <a href="penpal://chapter/2" class="dir-item">
+          <div class="dir-text">
+            <div class="dir-name"><span class="dir-num">2</span>The Secret Gestures</div>
+            <div class="dir-desc">Box to send, double underline to check, strike to delete, and =</div>
+          </div>
+          <div class="dir-arrow">→</div>
+        </a>
+        <a href="penpal://chapter/3" class="dir-item">
+          <div class="dir-text">
+            <div class="dir-name"><span class="dir-num">3</span>Maths & Graphs</div>
+            <div class="dir-desc">Instant answers, working steps, ink graphs, practice from mistakes</div>
+          </div>
+          <div class="dir-arrow">→</div>
+        </a>
+        <a href="penpal://chapter/4" class="dir-item">
+          <div class="dir-text">
+            <div class="dir-name"><span class="dir-num">4</span>Build on the Page</div>
+            <div class="dir-desc">Live widgets, flowcharts, tables, checklists, and media</div>
+          </div>
+          <div class="dir-arrow">→</div>
+        </a>
+        <a href="penpal://chapter/5" class="dir-item">
+          <div class="dir-text">
+            <div class="dir-name"><span class="dir-num">5</span>Make It Yours</div>
+            <div class="dir-desc">Train Penpal your handwriting, profiles, backup and export</div>
+          </div>
+          <div class="dir-arrow">→</div>
+        </a>
+      </div>
+    </div>
+    </div>
+    """
+
+    // MARK: - Sims
 
     private static var boxSim: String {
         var s = Sim(dur: 8, height: 230)

@@ -1702,6 +1702,11 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
+        if let url = navigationAction.request.url, url.scheme == "penpal" {
+            NotificationCenter.default.post(name: .penpalDeepLink, object: url)
+            decisionHandler(.cancel)
+            return
+        }
         guard isGeneratedInteractive else {
             decisionHandler(.allow)
             return

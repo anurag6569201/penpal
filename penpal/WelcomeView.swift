@@ -45,7 +45,7 @@ struct WelcomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     HStack(spacing: 10) {
-                        PenBrandSignature()
+                        PenBrandAnimatedSignature(markSize: 44, mode: .drawAndFill)
                         Spacer()
                         Text("A SPACE TO THINK")
                             .font(.caption2.weight(.semibold)).tracking(2)

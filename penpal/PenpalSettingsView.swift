@@ -62,7 +62,7 @@ struct PenpalSettingsView: View {
                 Form {
                     Section {
                         HStack(spacing: 16) {
-                            PenBrandMark(size: 64)
+                            PenpalAnimatedLogoView(size: 64, mode: .interactive)
                             VStack(alignment: .leading, spacing: 5) {
                                 Text("Make room for your thoughts.")
                                     .font(.system(.title3, design: .serif))

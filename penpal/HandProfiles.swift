@@ -226,4 +226,6 @@ final class HandProfiles: ObservableObject {
 extension Notification.Name {
     /// Per-hand stores reload when this fires.
     static let handProfileDidChange = Notification.Name("penpal.handProfileDidChange")
+    /// Deep link requested from within interactive guide/web blocks.
+    static let penpalDeepLink = Notification.Name("penpal.deepLink")
 }

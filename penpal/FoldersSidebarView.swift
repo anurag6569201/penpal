@@ -32,7 +32,7 @@ struct FoldersSidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
-                PenBrandMark(size: 46)
+                PenpalAnimatedLogoView(size: 46, mode: .interactive)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Your library").font(Pen.titleSerif)
                     Text("Space for every side of you.")

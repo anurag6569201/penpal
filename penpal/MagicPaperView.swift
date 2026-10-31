@@ -436,6 +436,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     // MARK: - Notes chrome API
 
+    var loadedNoteID: UUID?
     var currentDrawing: PKDrawing { canvas.drawing }
     var currentTypedTexts: [TypedNoteText] { placedTexts }
     var currentReplyInks: [ReplyInk] { placedInks }
@@ -481,7 +482,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                      typedTexts: [TypedNoteText] = [],
                      replyInks: [ReplyInk] = [],
                      codeBlocks: [CodeBlock] = [],
-                     resetReplyCursor: Bool = true) {
+                     resetReplyCursor: Bool = true,
+                     noteID: UUID? = nil) {
+        loadedNoteID = noteID
         // A reply that was still animating belongs to the previous note —
         // stop it and drop it so it can't leak onto this one.
         pendingBake = nil

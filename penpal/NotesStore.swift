@@ -1234,11 +1234,11 @@ final class NotesStore: ObservableObject {
             notes.insert(contentsOf: guideNotes, at: 0)
             selectedFolderID = guideFolder.id
             selectedNoteID = WelcomeGuide.startNoteID
-            UserDefaults.standard.set(4, forKey: "penpal.guide.version")
+            UserDefaults.standard.set(8, forKey: "penpal.guide.version")
             saveNow()
-        } else if UserDefaults.standard.integer(forKey: "penpal.guide.version") < 4 {
+        } else if UserDefaults.standard.integer(forKey: "penpal.guide.version") < 8 {
             restoreGuide()
-            UserDefaults.standard.set(4, forKey: "penpal.guide.version")
+            UserDefaults.standard.set(8, forKey: "penpal.guide.version")
             saveNow()
         }
         if selectedFolder == nil {
