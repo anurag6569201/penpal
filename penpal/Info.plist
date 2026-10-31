@@ -8,6 +8,17 @@
 	<string>Penpal lets an interactive block use the microphone only after you approve that block.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Penpal lets an interactive block use your location only after you approve that block.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>anurag.penpal</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>penpal</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

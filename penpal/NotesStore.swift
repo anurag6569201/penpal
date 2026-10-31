@@ -520,6 +520,12 @@ final class NotesStore: ObservableObject {
     }
 
     private func finishLoading() {
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-selectChapter"),
+           idx + 1 < ProcessInfo.processInfo.arguments.count,
+           let ch = Int(ProcessInfo.processInfo.arguments[idx + 1]) {
+            selectedFolderID = WelcomeGuide.folderID
+            selectedNoteID = WelcomeGuide.chapterID(ch)
+        }
         isLoading = false
         let continuations = loadingContinuations
         loadingContinuations.removeAll()
@@ -1211,6 +1217,30 @@ final class NotesStore: ObservableObject {
         selectedFolderID = snap.selectedFolderID ?? folders.first(where: { $0.systemKind == .notes })?.id
         selectedNoteID = snap.selectedNoteID
         ensureSystemFolders()
+        // Ensure Penpal Guide folder and notes exist
+        let guideFolder = WelcomeGuide.makeFolder(sortOrder: -10)
+        let hasGuide = folders.contains(where: { $0.id == guideFolder.id })
+        if !hasGuide {
+            if let notesIdx = folders.firstIndex(where: { $0.systemKind == .notes }) {
+                folders.insert(guideFolder, at: notesIdx + 1)
+            } else {
+                folders.append(guideFolder)
+            }
+            let guideNotes = WelcomeGuide.makeNotes(folderID: guideFolder.id)
+            // If the library only contained the untouched legacy blank welcome note, clean it up
+            if notes.count == 1, let only = notes.first, WelcomeGuide.isPristineLegacyWelcome(only) {
+                notes.removeAll()
+            }
+            notes.insert(contentsOf: guideNotes, at: 0)
+            selectedFolderID = guideFolder.id
+            selectedNoteID = WelcomeGuide.startNoteID
+            UserDefaults.standard.set(4, forKey: "penpal.guide.version")
+            saveNow()
+        } else if UserDefaults.standard.integer(forKey: "penpal.guide.version") < 4 {
+            restoreGuide()
+            UserDefaults.standard.set(4, forKey: "penpal.guide.version")
+            saveNow()
+        }
         if selectedFolder == nil {
             selectedFolderID = folders.first(where: { $0.systemKind == .notes })?.id
         }
@@ -1255,9 +1285,28 @@ final class NotesStore: ObservableObject {
         }
     }
 
+    /// Replaces or restores the Penpal Guide folder and all chapter notes in-place.
+    func restoreGuide() {
+        if !folders.contains(where: { $0.id == WelcomeGuide.folderID }) {
+            let guideFolder = WelcomeGuide.makeFolder(sortOrder: -10)
+            if let notesIdx = folders.firstIndex(where: { $0.systemKind == .notes }) {
+                folders.insert(guideFolder, at: notesIdx + 1)
+            } else {
+                folders.append(guideFolder)
+            }
+        }
+        notes.removeAll { WelcomeGuide.isGuideNote($0.id) || $0.folderID == WelcomeGuide.folderID }
+        let guideNotes = WelcomeGuide.makeNotes(folderID: WelcomeGuide.folderID)
+        notes.append(contentsOf: guideNotes)
+        selectedFolderID = WelcomeGuide.folderID
+        selectedNoteID = WelcomeGuide.startNoteID
+        scheduleSave()
+    }
+
     private func seed() {
         let all = systemFolder(.allNotes)
         let notesFolder = systemFolder(.notes)
+        let guideFolder = WelcomeGuide.makeFolder(sortOrder: -10)
         let deleted = systemFolder(.recentlyDeleted)
         let designing = NoteFolder(name: "Designing", sortOrder: 1)
         let robot = NoteFolder(name: "Robot", sortOrder: 2)
@@ -1266,16 +1315,12 @@ final class NotesStore: ObservableObject {
         let important = NoteFolder(name: "Important Notes", isExpanded: true, sortOrder: 5)
         let ideas = NoteFolder(name: "Ideas", parentID: important.id, sortOrder: 6)
 
-        folders = [all, notesFolder, designing, robot, college, lectures, important, ideas, deleted]
+        folders = [all, notesFolder, guideFolder, designing, robot, college, lectures, important, ideas, deleted]
 
-        let welcome = Note(
-            folderID: notesFolder.id,
-            title: "Welcome to Penpal Notes",
-            body: "Write freely with the system pen tray.\n\nTurn on Penpal mode (signature button) and it reads your handwriting and writes back.\n\nAll Penpal settings live under ⋯"
-        )
-        notes = [welcome]
-        selectedFolderID = notesFolder.id
-        selectedNoteID = welcome.id
+        let guideNotes = WelcomeGuide.makeNotes(folderID: guideFolder.id)
+        notes = guideNotes
+        selectedFolderID = guideFolder.id
+        selectedNoteID = WelcomeGuide.startNoteID
         saveNow()
     }
 }

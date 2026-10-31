@@ -20,6 +20,7 @@ struct PenpalSettingsView: View {
     @State private var showInsights = false
     @State private var shareItems: [Any] = []
     @State private var showShare = false
+    @State private var showDemoRecorder = false
     @State private var showImporter = false
     @State private var pendingImportURL: URL?
     @State private var showImportChoices = false
@@ -185,6 +186,9 @@ struct PenpalSettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(importError ?? "")
+            }
+            .fullScreenCover(isPresented: $showDemoRecorder) {
+                DemoStrokeRecorder()
             }
         }
     }
@@ -618,6 +622,12 @@ struct PenpalSettingsView: View {
             } label: {
                 Label("Restore notebook backup…", systemImage: "externaldrive.badge.plus")
             }
+            Button {
+                NotesStore.shared.restoreGuide()
+                onStatus("Penpal Guide restored.")
+            } label: {
+                Label("Restore Penpal Guide", systemImage: "book.pages")
+            }
         } header: {
             Label("Notes & recovery", systemImage: "externaldrive")
         } footer: {
@@ -663,6 +673,13 @@ struct PenpalSettingsView: View {
 
         Section {
             Toggle("Diagnostics", isOn: $settings.diagnostics)
+            if settings.diagnostics {
+                Button {
+                    showDemoRecorder = true
+                } label: {
+                    Label("Record demo strokes (Apple Pencil)", systemImage: "pencil.and.outline")
+                }
+            }
             Button("Show gesture tips again") {
                 GestureOnboarding.shared.reset()
                 onStatus("Gesture tips will show next time you turn Penpal on.")
@@ -773,15 +790,4 @@ struct PenpalSettingsView: View {
             onStatus("Replaced “\(hands.active?.name ?? "hand")” — \(PersonalFontStore.shared.trainingSummary).")
         }
     }
-}
-
-/// Share sheet used by glyph export (same pattern as note export in ContentView).
-private struct ActivityView: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

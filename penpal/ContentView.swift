@@ -83,6 +83,7 @@ struct ContentView: View {
     @StateObject private var onboarding = GestureOnboarding.shared
     @StateObject private var voice = VoiceInput.shared
     @StateObject private var planner = StudyPlanner.shared
+    @StateObject private var tour = TourCoordinator.shared
     /// The practice item awaiting a verdict, if one is on the page.
     @State private var practiceInProgress: (id: UUID, item: PenpalAPI.PracticeProblem)?
     @Environment(\.scenePhase) private var scenePhase
@@ -242,42 +243,27 @@ struct ContentView: View {
         }
         .animation(reduceMotion ? nil : Pen.spring, value: navigationDrawerPresented)
         .animation(reduceMotion ? nil : Pen.spring, value: showPrefer)
-        .onAppear {
-            syncEditorFromStore(force: true)
+        .onAppear(perform: handleAppear)
+        .onOpenURL(perform: handleOpenURL)
+        .onChange(of: store.isLoading) { _, loading in
+            if !loading {
+                syncEditorFromStore(force: true)
+                if ProcessInfo.processInfo.arguments.contains("-startTour") {
+                    tour.start(fromBeginning: true)
+                }
+            }
         }
         .onChange(of: store.selectedNoteID) { _, _ in
             syncEditorFromStore(force: true)
         }
         .onChange(of: scenePhase) { _, phase in
-            // Backgrounding could land inside the save-debounce window and
-            // lose the latest strokes if iOS killed the app — flush now.
-            if phase == .background || phase == .inactive {
-                flushEditor()
-                store.flushToDisk()
-            }
+            handleScenePhaseChange(phase)
         }
         .onChange(of: penpalOn) { _, on in
-            if on {
-                proxy.view?.prepareForPenpalActivation()
-                // PEN-33: offer the box hint only on an empty page, so it can
-                // never talk over work the user is already doing.
-                onboarding.offerIfAppropriate(
-                    penpalOn: true,
-                    usesBoxTrigger: usesBoxTrigger,
-                    hasInk: !(store.selectedNote?.drawing.strokes.isEmpty ?? true))
-            } else {
-                showMathChips = false
-                onboarding.dismiss()
-            }
+            handlePenpalOnChange(on)
         }
         .onChange(of: settings.capability) { _, _ in
-            showMathChips = false
-            if penpalOn {
-                onboarding.offerIfAppropriate(
-                    penpalOn: true,
-                    usesBoxTrigger: usesBoxTrigger,
-                    hasInk: !(store.selectedNote?.drawing.strokes.isEmpty ?? true))
-            }
+            handleCapabilityChange()
         }
         .onChange(of: store.selectedNoteID) { _, _ in
             showMathChips = false
@@ -339,6 +325,103 @@ struct ContentView: View {
         } message: {
             Text(statusMessage)
         }
+        .onChange(of: tour.prepareAction) { _, action in
+            handleTourPrepare(action)
+        }
+        .overlayPreferenceValue(TourAnchorKey.self) { anchors in
+            makeSpotlightOverlay(anchors: anchors)
+        }
+    }
+
+    private func handleTourPrepare(_ action: TourPrepare?) {
+        guard let action else { return }
+        switch action {
+        case .selectGuideStart:
+            store.selectFolder(WelcomeGuide.folderID)
+            store.selectNote(WelcomeGuide.startNoteID)
+        case .selectChapter(let num):
+            store.selectFolder(WelcomeGuide.folderID)
+            store.selectNote(WelcomeGuide.chapterID(num))
+        case .showTools(let show):
+            proxy.view?.setToolsVisible(show)
+        case .penpal(let on):
+            withAnimation(reduceMotion ? nil : Pen.spring) {
+                penpalOn = on
+            }
+        case .capability(let cap):
+            settings.capability = cap
+        case .openDrawer(let open):
+            withAnimation(reduceMotion ? nil : Pen.spring) {
+                navigationDrawerPresented = open
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func makeSpotlightOverlay(anchors: [TourAnchorID: Anchor<CGRect>]) -> some View {
+        GeometryReader { geometry in
+            SpotlightOverlay(coordinator: tour, anchors: anchors, proxy: geometry)
+        }
+        .ignoresSafeArea()
+    }
+
+    private func handleAppear() {
+        if ProcessInfo.processInfo.arguments.contains("-startTour") {
+            tour.start(fromBeginning: true)
+        } else if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-selectChapter"),
+                  idx + 1 < ProcessInfo.processInfo.arguments.count,
+                  let ch = Int(ProcessInfo.processInfo.arguments[idx + 1]) {
+            store.selectFolder(WelcomeGuide.folderID)
+            store.selectNote(WelcomeGuide.chapterID(ch))
+        }
+        syncEditorFromStore(force: true)
+    }
+
+    private func handleOpenURL(_ url: URL) {
+        guard url.scheme == "penpal" else { return }
+        if url.host == "tour" {
+            tour.start(fromBeginning: true)
+        } else if url.host == "chapter",
+                  let first = url.pathComponents.dropFirst().first,
+                  let ch = Int(first) {
+            store.selectFolder(WelcomeGuide.folderID)
+            store.selectNote(WelcomeGuide.chapterID(ch))
+        } else if url.host == "note",
+                  let first = url.pathComponents.dropFirst().first,
+                  let id = UUID(uuidString: first) {
+            store.selectNote(id)
+        }
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .background || phase == .inactive {
+            flushEditor()
+            store.flushToDisk()
+        }
+    }
+
+    private func handlePenpalOnChange(_ on: Bool) {
+        TourEventBus.shared.emit(.penpalToggled)
+        if on {
+            proxy.view?.prepareForPenpalActivation()
+            onboarding.offerIfAppropriate(
+                penpalOn: true,
+                usesBoxTrigger: usesBoxTrigger,
+                hasInk: !(store.selectedNote?.drawing.strokes.isEmpty ?? true))
+        } else {
+            showMathChips = false
+            onboarding.dismiss()
+        }
+    }
+
+    private func handleCapabilityChange() {
+        showMathChips = false
+        if penpalOn {
+            onboarding.offerIfAppropriate(
+                penpalOn: true,
+                usesBoxTrigger: usesBoxTrigger,
+                hasInk: !(store.selectedNote?.drawing.strokes.isEmpty ?? true))
+        }
     }
 
     private func enqueuePermission(
@@ -384,6 +467,7 @@ struct ContentView: View {
                     CodedPaperView(store: store)
                 } else {
                     noteSurface(stickyNoteTop: stickyNoteTop)
+                        .tourAnchor(.page)
 
                     if penpalOn {
                         PenpalControlBar(
@@ -411,9 +495,30 @@ struct ContentView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
+                    // Floating Take the Tour button on Start here chapter
+                    if store.selectedNoteID == WelcomeGuide.startNoteID && !tour.isActive {
+                        Button {
+                            tour.start(fromBeginning: true)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "sparkles")
+                                Text("Take the Tour")
+                                    .font(Pen.headline)
+                            }
+                            .foregroundStyle(Pen.onAccent)
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 14)
+                            .background(Pen.inkAccent, in: Capsule())
+                            .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, penpalOn ? penpalBarClearance + 16 : 28)
+                        .transition(.scale.combined(with: .opacity))
+                    }
+
                     // PEN-33 — taught on the page, once, and only when there
                     // is nothing to interrupt.
-                    if onboarding.isShowing {
+                    if onboarding.isShowing && !tour.isActive {
                         BoxGestureHint(
                             sample: boxHintSample,
                             message: boxHintMessage,
@@ -582,6 +687,7 @@ struct ContentView: View {
         .overlay(Circle().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
         .accessibilityLabel("Open Folders and Notes")
+        .tourAnchor(.sidebar)
     }
 
     private var historyPill: some View {
@@ -618,6 +724,7 @@ struct ContentView: View {
         .background(Pen.paperRaised, in: Capsule())
         .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
+        .tourAnchor(.undo)
     }
 
     private var pageToolsPill: some View {
@@ -650,6 +757,7 @@ struct ContentView: View {
             .disabled(store.selectedNote == nil || selectedIsCoded)
             .menuIndicator(.hidden)
             .accessibilityLabel("Insert on Page")
+            .tourAnchor(.insert)
 
             Button {
                 toolsVisible.toggle()
@@ -662,6 +770,7 @@ struct ContentView: View {
             }
             .disabled(store.selectedNote == nil || selectedIsCoded)
             .accessibilityLabel(toolsVisible ? "Hide Markup" : "Show Markup")
+            .tourAnchor(.markup)
 
             Button {
                 pageEditMode.toggle()
@@ -679,6 +788,7 @@ struct ContentView: View {
             }
             .disabled(store.selectedNote == nil || selectedIsCoded)
             .accessibilityLabel(pageEditMode ? "Stop Arranging" : "Arrange Page")
+            .tourAnchor(.arrange)
 
             Button {
                 penpalOn.toggle()
@@ -696,6 +806,7 @@ struct ContentView: View {
             }
             .disabled(store.selectedNote == nil || selectedIsCoded)
             .accessibilityLabel(penpalOn ? "Turn Off Penpal Mode" : "Turn On Penpal Mode")
+            .tourAnchor(.penpal)
         }
         .buttonStyle(.plain)
         .frame(height: 48)
@@ -721,6 +832,7 @@ struct ContentView: View {
             }
             .disabled(store.selectedNote == nil || isPreparingShare)
             .accessibilityLabel(isPreparingShare ? "Preparing Note to Share" : "Share Note")
+            .tourAnchor(.share)
 
             Menu {
                 Button { createNote() } label: { Label("New Note", systemImage: "square.and.pencil") }
@@ -731,6 +843,7 @@ struct ContentView: View {
             } primaryAction: { createNote() }
             .menuIndicator(.hidden)
             .accessibilityLabel("New Note")
+            .tourAnchor(.newNote)
 
             Menu { moreActions } label: {
                 Group {
@@ -748,6 +861,7 @@ struct ContentView: View {
             .disabled(store.selectedNote == nil || isGeneratingPractice)
             .menuIndicator(.hidden)
             .accessibilityLabel(isGeneratingPractice ? "Preparing Practice Problem" : "More Note Actions")
+            .tourAnchor(.more)
         }
         .buttonStyle(.plain)
         .frame(height: 48)
@@ -1320,8 +1434,16 @@ struct ContentView: View {
         }
         Button("Add Page", systemImage: "plus.rectangle.portrait") { proxy.view?.addPage() }
         Divider()
+        Button(tour.hasPreviousTake ? "Resume Tour" : "Take the Tour", systemImage: "sparkles") {
+            tour.start(fromBeginning: !tour.hasPreviousTake)
+        }
         Button("Train Handwriting", systemImage: "signature") { showTraining = true }
         Button("Penpal Settings", systemImage: "slider.horizontal.3") { showSettings = true }
+        Button("Restore Penpal Guide", systemImage: "book.pages") {
+            store.restoreGuide()
+            statusMessage = "Penpal Guide restored."
+            showStatus = true
+        }
         Divider()
         if let note = store.selectedNote {
             if note.isDeleted {
@@ -1373,7 +1495,7 @@ struct ContentView: View {
 
 // MARK: - Share sheet
 
-private struct ActivityView: UIViewControllerRepresentable {
+struct ActivityView: UIViewControllerRepresentable {
     let items: [Any]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {

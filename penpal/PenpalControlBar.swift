@@ -144,21 +144,28 @@ struct PenpalControlBar: View {
     private var dockControls: some View {
         HStack(spacing: 6) {
             capabilityMenu
+                .tourAnchor(.capability)
 
             if hasSecondaryControls {
                 Divider().frame(height: 20)
-                if isMathematician {
-                    detailMenu
-                } else if isIllustrator {
-                    illustratorQualityMenu
-                } else if isLanguagePartner {
-                    languageMenu
-                } else {
-                    moodMenu
+                Group {
+                    if isMathematician {
+                        detailMenu
+                    } else if isIllustrator {
+                        illustratorQualityMenu
+                    } else if isLanguagePartner {
+                        languageMenu
+                    } else {
+                        moodMenu
+                    }
                 }
+                .tourAnchor(.secondary)
             }
 
-            Button(action: onAsk) {
+            Button {
+                TourEventBus.shared.emit(.askTapped)
+                onAsk()
+            } label: {
                 Label("Ask Penpal", systemImage: "sparkle")
                     .padding(.horizontal, 12)
                     .frame(height: 36)
@@ -171,6 +178,7 @@ struct PenpalControlBar: View {
             .disabled(activityPhase != nil)
             .accessibilityLabel("Ask Penpal")
             .accessibilityHint("Sends the new handwriting. You can also draw a box around a question.")
+            .tourAnchor(.ask)
 
             Menu {
                 Button("Take Photo", systemImage: "camera") {
@@ -186,6 +194,7 @@ struct PenpalControlBar: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(Pen.inkPrimary)
+            .tourAnchor(.camera)
             .accessibilityLabel(
                 settings.capability == "illustrator"
                     ? "Trace a photo"

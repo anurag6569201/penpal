@@ -45,6 +45,13 @@ private struct NotebookRootView: View {
     }
 
     private func selectInitialPage() {
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-selectChapter"),
+           idx + 1 < ProcessInfo.processInfo.arguments.count,
+           let ch = Int(ProcessInfo.processInfo.arguments[idx + 1]) {
+            store.selectFolder(WelcomeGuide.folderID)
+            store.selectNote(WelcomeGuide.chapterID(ch))
+            return
+        }
         if store.selectedNote == nil || store.selectedNote?.isDeleted == true {
             let noteInCurrentFolder = store.selectedFolder?.systemKind == .recentlyDeleted
                 ? nil : store.visibleNotes().first(where: { !$0.isDeleted })

@@ -3494,6 +3494,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private func commitCalculation(expression: String, answer: String,
                                    placement: ReplyPlacement,
                                    sourceStrokes: [PKStroke] = []) {
+        TourEventBus.shared.emit(.equalsSolved)
         // PEN-11: the real ink is about to be written in this exact spot —
         // drop the ghost first so the answer never renders twice.
         renderer.clearAnswerGhost()
@@ -3649,6 +3650,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
               let box = InkAnalyzer.detectProblemBox(all: all, newStart: newStart) else {
             return false
         }
+        TourEventBus.shared.emit(.boxDrawn)
         switch settings.capability {
         case "mathematician":
             solveBoxedProblem(box, all: all)
@@ -3983,6 +3985,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private func perform(_ gesture: InkAnalyzer.Gesture, all: [PKStroke]) {
         switch gesture {
         case .checkWork(let region, let strokeIndices):
+            TourEventBus.shared.emit(.checkWorkDone)
             let marks = strokeIndices.map { all[$0] }
             marks.forEach { renderer.traceBox($0) }
             // The underline was an instruction, not content.
@@ -3992,6 +3995,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 .map(\.element))
 
         case .strikeThrough(let targetIndices, let strokeIndex):
+            TourEventBus.shared.emit(.strikeDone)
             let doomed = (targetIndices + [strokeIndex]).map { all[$0] }
             // One undo restores everything — a mis-detected strike must never
             // cost the user work they can't get back.
