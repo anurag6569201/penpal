@@ -91,109 +91,72 @@ struct SpotlightOverlay: View {
         return raw.insetBy(dx: -8, dy: -8)
     }
 
-    // MARK: - Interactive Try Pad Overlay
+    // MARK: - Interactive canvas prompt
 
     @ViewBuilder
     private func tryPadOverlay(targetRect: CGRect) -> some View {
-        VStack(spacing: 12) {
-            HStack {
+        ZStack {
+            // The cutout itself stays completely transparent, so live ink is
+            // never painted beneath a fake sheet. This compact hint vanishes
+            // on the first PencilKit stroke.
+            if !coordinator.interactedStepIDs.contains(currentStep.id) {
+                HStack(spacing: 9) {
+                    Image(systemName: promptIcon)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Pen.inkAccent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("TRY IN THIS SPACE")
+                            .font(.caption2.weight(.bold))
+                            .tracking(1.2)
+                            .foregroundStyle(Pen.inkAccent)
+                        Text(canvasPrompt)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Pen.inkPrimary)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Pen.paperRaised, in: Capsule())
+                .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.2), lineWidth: 1))
+                .shadow(color: .black.opacity(0.1), radius: 10, y: 4)
+                .position(x: targetRect.midX, y: targetRect.minY + 30)
+                .transition(.scale(scale: 0.94).combined(with: .opacity))
+            }
+
+            if let celebrated = coordinator.celebratedEvent {
                 HStack(spacing: 6) {
-                    Image(systemName: "pencil.and.outline")
-                        .font(.caption2.weight(.bold))
-                    Text("TRY IN THIS SPACE")
-                        .font(.caption2.weight(.bold))
-                        .tracking(1.4)
+                    Image(systemName: "checkmark.circle.fill")
+                    Text(celebrationMessage(for: celebrated))
                 }
-                .foregroundStyle(Pen.inkAccent)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Pen.accentWash, in: Capsule())
-
-                Spacer()
-
-                if let celebrated = coordinator.celebratedEvent {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                        Text(celebrationMessage(for: celebrated))
-                    }
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 5)
-                    .background(Pen.inkAccent, in: Capsule())
-                    .transition(.scale.combined(with: .opacity))
-                } else {
-                    Text("Draw directly over this box with your pen")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Pen.inkFaded)
-                }
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Pen.inkAccent, in: Capsule())
+                .position(x: targetRect.midX, y: targetRect.maxY - 24)
+                .transition(.scale.combined(with: .opacity))
             }
-
-            Spacer()
-
-            // Prompt content
-            switch currentStep.id {
-            case "box_gesture":
-                VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "hand.draw.fill")
-                        Text("TRY IT ON THE PAGE")
-                            .font(.caption.weight(.bold))
-                    }
-                    .foregroundStyle(Pen.inkAccent)
-                    Text("Draw a box around the handwritten question on the page with your pen ➔")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Pen.inkPrimary)
-                }
-
-            case "strike_gesture":
-                VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "strikethrough")
-                        Text("TRY IT ON THE PAGE")
-                            .font(.caption.weight(.bold))
-                    }
-                    .foregroundStyle(Color.red.opacity(0.85))
-                    Text("Draw a horizontal line across the handwritten words to erase them in a puff ➔")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Pen.inkPrimary)
-                }
-
-            case "equals_math":
-                VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "equal.circle.fill")
-                        Text("TRY IT ON THE PAGE")
-                            .font(.caption.weight(.bold))
-                    }
-                    .foregroundStyle(Pen.inkAccent)
-                    Text("Write = right after the handwritten calculation on the page and pause ➔")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Pen.inkPrimary)
-                }
-
-            default:
-                VStack(spacing: 6) {
-                    Text("Write freely on this page")
-                        .font(Pen.titleSerif)
-                        .foregroundStyle(Pen.inkPrimary.opacity(0.7))
-                    Text("Penpal reads your handwriting and writes back on paper")
-                        .font(.footnote)
-                        .foregroundStyle(Pen.inkFaded)
-                }
-            }
-
-            Spacer()
         }
-        .padding(18)
-        .frame(width: targetRect.width, height: targetRect.height)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Pen.paper.opacity(0.92))
-        )
-        .position(x: targetRect.midX, y: targetRect.midY)
-        .allowsHitTesting(false) // Direct touch passthrough into PencilKit!
-        .animation(reduceMotion ? nil : Pen.spring, value: currentStep.id)
+        .allowsHitTesting(false)
+        .animation(reduceMotion ? nil : Pen.spring, value: coordinator.interactedStepIDs)
+    }
+
+    private var promptIcon: String {
+        switch currentStep.id {
+        case "box_gesture": "hand.draw.fill"
+        case "strike_gesture": "strikethrough"
+        case "equals_math": "equal.circle.fill"
+        default: "pencil.tip"
+        }
+    }
+
+    private var canvasPrompt: String {
+        switch currentStep.id {
+        case "box_gesture": "Write ‘hello’, then draw a box around it"
+        case "strike_gesture": "Write a word, then strike through it"
+        case "equals_math": "Write 12 × 7 =, then pause"
+        default: "Write a word with your pen or finger"
+        }
     }
 
     // MARK: - Callout Card
@@ -344,7 +307,110 @@ struct SpotlightOverlay: View {
             return "✓ Sent to Penpal!"
         case .blockInserted:
             return "✓ Block added to page!"
+        case .workspaceOpened:
+            return "✓ Sidebar opened!"
+        case .inkWritten:
+            return "✓ Ink captured!"
         }
+    }
+}
+
+// MARK: - Tour sheets and completion
+
+/// Tour context shown inside a presented feature. The main spotlight sits
+/// behind a sheet, so the sheet needs its own clear route back into the tour.
+struct TourSheetBanner: View {
+    let title: String
+    let message: String
+    let onContinue: () -> Void
+    let onSkip: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(Pen.inkAccent)
+                Text("PENPAL TOUR")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.5)
+                    .foregroundStyle(Pen.inkAccent)
+                Spacer()
+            }
+
+            Text(title)
+                .font(.system(.headline, design: .serif, weight: .semibold))
+                .foregroundStyle(Pen.inkPrimary)
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(Pen.inkPrimary.opacity(0.78))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Skip Tour", action: onSkip)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(Pen.inkFaded)
+                Spacer()
+                Button("Continue Tour", action: onContinue)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Pen.onAccent)
+                    .padding(.horizontal, 14)
+                    .frame(height: 34)
+                    .background(Pen.inkAccent, in: Capsule())
+            }
+        }
+        .padding(14)
+        .background(Pen.accentWash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Pen.inkAccent.opacity(0.18), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Brief confirmation after a completed tour. It is deliberately not a
+/// modal: the user can begin writing immediately and it dismisses itself.
+struct TourCompletionCard: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.title2)
+                .foregroundStyle(Pen.inkAccent)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Your workspace is ready")
+                    .font(.headline)
+                    .foregroundStyle(Pen.inkPrimary)
+                Text("Write anything, then tap Ask Penpal.")
+                    .font(.footnote)
+                    .foregroundStyle(Pen.inkFaded)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Pen.inkFaded)
+                    .frame(width: 30, height: 30)
+                    .background(Pen.inkPrimary.opacity(0.06), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 10)
+        .frame(maxWidth: 440, minHeight: 62)
+        .background(Pen.paperRaised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.15), radius: 18, y: 8)
+        .padding(.horizontal, 20)
+        .accessibilityElement(children: .contain)
     }
 }
 

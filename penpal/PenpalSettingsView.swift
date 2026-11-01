@@ -32,6 +32,9 @@ struct PenpalSettingsView: View {
     @State private var showRestoreConfirm = false
     @State private var previewText = "Today is a good day."
     var onStatus: (String) -> Void
+    var tourMode = false
+    var onTourContinue: () -> Void = {}
+    var onTourSkip: () -> Void = {}
 
     enum Tab: String, CaseIterable, Identifiable {
         case style = "Style"
@@ -52,6 +55,17 @@ struct PenpalSettingsView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                if tourMode {
+                    TourSheetBanner(
+                        title: "Make Penpal fit you",
+                        message: "Style changes the handwriting, Page changes the paper, and Behavior controls how Penpal responds. Backups and connection controls live here too.",
+                        onContinue: onTourContinue,
+                        onSkip: onTourSkip
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                }
+
                 Picker("", selection: $tab) {
                     ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -94,7 +108,13 @@ struct PenpalSettingsView: View {
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button(tourMode ? "Continue Tour" : "Done") {
+                        if tourMode {
+                            onTourContinue()
+                        } else {
+                            dismiss()
+                        }
+                    }
                 }
             }
             .sheet(isPresented: $showShare) {
@@ -621,12 +641,6 @@ struct PenpalSettingsView: View {
                 showBackupImporter = true
             } label: {
                 Label("Restore notebook backup…", systemImage: "externaldrive.badge.plus")
-            }
-            Button {
-                NotesStore.shared.restoreGuide()
-                onStatus("Penpal Guide restored.")
-            } label: {
-                Label("Restore Penpal Guide", systemImage: "book.pages")
             }
         } header: {
             Label("Notes & recovery", systemImage: "externaldrive")

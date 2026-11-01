@@ -11,55 +11,36 @@ import SwiftUI
 struct penpalApp: App {
     var body: some Scene {
         WindowGroup {
-            NotebookRootView()
+            WorkspaceRootView()
                 .tint(Pen.inkAccent)
         }
     }
 }
 
-/// Keep navigation in the view hierarchy so the welcome action immediately
-/// replaces its screen. Begin reading the notebook while welcome is visible.
-private struct NotebookRootView: View {
-    @AppStorage("penpal.hasSeenWelcome") private var hasSeenWelcome = false
+/// Penpal is one living surface, not a notebook browser. NotesStore remains the
+/// durable storage engine, but the product always opens the same workspace and
+/// teaches everything else in context through the interactive tour.
+private struct WorkspaceRootView: View {
+    @AppStorage("penpal.workspace.didOfferTour.v1") private var didOfferTour = false
     @StateObject private var store = NotesStore.shared
-    @State private var needsInitialPage = false
+    @StateObject private var tour = TourCoordinator.shared
 
     var body: some View {
-        Group {
-            if hasSeenWelcome {
-                ContentView()
-            } else {
-                WelcomeView {
-                    needsInitialPage = true
-                    hasSeenWelcome = true
-                }
-            }
-        }
-        .task(id: hasSeenWelcome) {
-            guard hasSeenWelcome, needsInitialPage else { return }
+        ContentView()
+        .task {
             await store.waitUntilLoaded()
             guard !Task.isCancelled else { return }
-            selectInitialPage()
-            needsInitialPage = false
-        }
-    }
+            store.openWorkspace()
 
-    private func selectInitialPage() {
-        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-selectChapter"),
-           idx + 1 < ProcessInfo.processInfo.arguments.count,
-           let ch = Int(ProcessInfo.processInfo.arguments[idx + 1]) {
-            store.selectFolder(WelcomeGuide.folderID)
-            store.selectNote(WelcomeGuide.chapterID(ch))
-            return
-        }
-        if store.selectedNote == nil || store.selectedNote?.isDeleted == true {
-            let noteInCurrentFolder = store.selectedFolder?.systemKind == .recentlyDeleted
-                ? nil : store.visibleNotes().first(where: { !$0.isDeleted })
-            if let note = noteInCurrentFolder ?? store.notes.first(where: { !$0.isDeleted }) {
-                store.selectFolder(note.folderID)
-                store.selectNote(note.id)
-            } else {
-                store.createNote()
+            if ProcessInfo.processInfo.arguments.contains("-startTour") {
+                tour.start(fromBeginning: true)
+            } else if !didOfferTour {
+                didOfferTour = true
+                // Let the workspace and its anchors finish their first layout
+                // before the spotlight appears.
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                tour.start(fromBeginning: true)
             }
         }
     }

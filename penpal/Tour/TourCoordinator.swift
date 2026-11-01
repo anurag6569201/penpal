@@ -16,13 +16,16 @@ final class TourCoordinator: ObservableObject {
     @Published private(set) var isActive = false
     @Published private(set) var currentIndex: Int = 0
     @Published private(set) var isCompleted: Bool
-    @Published var prepareAction: TourPrepare?
+    @Published private(set) var justCompleted = false
+    @Published private(set) var interactedStepIDs: Set<String> = []
+    @Published var preparation: TourPreparation?
     @Published var celebratedEvent: TourEvent?
 
     let steps = TourStep.allSteps
 
     private let completedKey = "penpal.tour.v1.completed"
     private let lastIndexKey = "penpal.tour.v1.lastIndex"
+    private let startedKey = "penpal.tour.v1.started"
 
     var currentStep: TourStep {
         guard currentIndex >= 0 && currentIndex < steps.count else {
@@ -36,7 +39,7 @@ final class TourCoordinator: ObservableObject {
     }
 
     var hasPreviousTake: Bool {
-        UserDefaults.standard.integer(forKey: lastIndexKey) > 0
+        UserDefaults.standard.bool(forKey: startedKey) && !isCompleted
     }
 
     private init() {
@@ -47,6 +50,9 @@ final class TourCoordinator: ObservableObject {
     }
 
     func start(fromBeginning: Bool = true) {
+        justCompleted = false
+        interactedStepIDs.removeAll()
+        UserDefaults.standard.set(true, forKey: startedKey)
         if fromBeginning {
             currentIndex = 0
         } else {
@@ -81,32 +87,51 @@ final class TourCoordinator: ObservableObject {
     func skip() {
         isActive = false
         UserDefaults.standard.set(currentIndex, forKey: lastIndexKey)
+        restoreWorkspaceState()
     }
 
     func finish() {
         isActive = false
         isCompleted = true
+        justCompleted = true
         UserDefaults.standard.set(true, forKey: completedKey)
         UserDefaults.standard.removeObject(forKey: lastIndexKey)
+        restoreWorkspaceState()
         Pen.tapHaptic()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            self?.justCompleted = false
+        }
+    }
+
+    func dismissCompletion() {
+        justCompleted = false
     }
 
     func reset() {
         isActive = false
         isCompleted = false
+        justCompleted = false
         currentIndex = 0
+        interactedStepIDs.removeAll()
         UserDefaults.standard.removeObject(forKey: completedKey)
         UserDefaults.standard.removeObject(forKey: lastIndexKey)
+        UserDefaults.standard.removeObject(forKey: startedKey)
     }
 
     func handle(event: TourEvent) {
         guard isActive else { return }
+        if event == .inkWritten, currentStep.anchor == .page {
+            interactedStepIDs.insert(currentStep.id)
+        }
         switch currentStep.advance {
         case .event(let targetEvent), .eventOrNext(let targetEvent):
             if event == targetEvent {
                 celebratedEvent = event
                 Pen.tapHaptic()
+                let celebratedIndex = currentIndex
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+                    guard self?.currentIndex == celebratedIndex,
+                          self?.isActive == true else { return }
                     self?.celebratedEvent = nil
                     self?.next()
                 }
@@ -117,8 +142,17 @@ final class TourCoordinator: ObservableObject {
     }
 
     private func runPrepareActions() {
-        for action in currentStep.prepare {
-            prepareAction = action
-        }
+        preparation = TourPreparation(actions: currentStep.prepare)
+    }
+
+    private func restoreWorkspaceState() {
+        preparation = TourPreparation(actions: [
+            .showTraining(false),
+            .showSettings(false),
+            .openSidebar(false),
+            .showTools(false),
+            .penpal(true),
+            .toolbarSection(.pageTools),
+        ])
     }
 }

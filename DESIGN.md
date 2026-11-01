@@ -1,8 +1,9 @@
 # Penpal — Ink Studio
 
-Penpal is a personal thinking space: write naturally, then get help directly on
-that page. Its identity should make the handwritten work feel valuable and the
-assistance feel close at hand. The core promise is “Your thoughts. Room to grow.”
+Penpal is one persistent thinking space: write naturally, then get help directly
+on that page. Its identity should make the handwritten work feel valuable and
+the assistance feel close at hand. The core promise is “One page. Everything
+Penpal.”
 
 ## Visual language
 
@@ -19,18 +20,24 @@ Keep the page visually quiet and use whitespace to separate work from controls.
 
 ## Primary journeys
 
-- Welcome → Open my notebook → write. No placeholder authentication step.
-  The welcome scrolls on smaller screens and with larger text.
-- Library → find a thought → open it, or choose the persistent New note action.
-  Empty search results offer Clear search; an empty folder invites a first note.
+- Launch → write. Penpal always opens the same durable workspace; there is no
+  welcome gate, notebook browser, folder decision, or new-note decision.
+- First launch → interactive tour. The tour spotlights the real controls and
+  lets people write, box, strike, calculate, visit handwriting training, and
+  inspect settings on the live product. Skip restores a clean workspace and
+  leaves a Resume tour button; Finish removes that button permanently and shows
+  a brief, non-modal ready confirmation.
 - Write → choose an assistant capability → Ask Penpal. The action has the
   strongest emphasis; capability and response preferences are secondary.
 - Working status appears above the dock controls. On narrow windows the controls
-  scroll horizontally, preserving their labels and touch targets. Follow-up
-  overlays use the measured dock height to avoid covering its status row.
+  scroll horizontally, preserving their labels and touch targets. Tour steps
+  automatically reveal the relevant toolbar group. Follow-up overlays use the
+  measured dock height to avoid covering its status row.
 
-Library actions retain pinning, tags, folders, multi-selection, recovery, and
-existing destructive-action behavior. This redesign does not migrate note data.
+The legacy note store remains the persistence and backup engine so existing
+data is not deleted, but library navigation is no longer part of the primary UI.
+The Penpal workspace badge opens it as an optional sidebar for existing pages.
+Practice and generated work append to the workspace instead of creating files.
 
 ## Interaction
 

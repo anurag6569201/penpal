@@ -272,6 +272,10 @@ struct GlyphPreview: View {
 struct CalibrationView: View {
     @Environment(\.dismiss) private var dismiss
 
+    var tourMode = false
+    var onTourContinue: () -> Void = {}
+    var onTourSkip: () -> Void = {}
+
     private enum TrainMode: String, CaseIterable, Identifiable {
         case letters = "Letters"
         case words = "Words"
@@ -423,6 +427,14 @@ struct CalibrationView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 10) {
+                if tourMode {
+                    TourSheetBanner(
+                        title: "Handwriting training",
+                        message: "Try one sample if you like. Letters, words, joins, maths symbols, and punctuation teach Penpal how your own hand moves.",
+                        onContinue: onTourContinue,
+                        onSkip: onTourSkip
+                    )
+                }
                 unitTrainer
             }
             .padding(.horizontal, 16)
@@ -451,7 +463,13 @@ struct CalibrationView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button(tourMode ? "Continue Tour" : "Done") {
+                        if tourMode {
+                            onTourContinue()
+                        } else {
+                            dismiss()
+                        }
+                    }
                 }
             }
             .sheet(isPresented: $showTargetPicker) {

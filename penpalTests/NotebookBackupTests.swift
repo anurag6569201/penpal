@@ -18,12 +18,15 @@ final class NotebookBackupTests: XCTestCase {
     }
 
     func testRoundTripKeepsNotesFoldersAndAttachmentsTogether() throws {
+        let testDate = Date(timeIntervalSince1970: 1_700_000_000)
         let folder = NoteFolder(name: "Physics")
-        let attachment = NoteAttachment(filename: "diagram.png")
+        let attachment = NoteAttachment(filename: "diagram.png", createdAt: testDate)
         let note = Note(folderID: folder.id,
                         title: "Electric fields",
                         body: "Field lines point away from positive charge.",
-                        attachments: [attachment])
+                        attachments: [attachment],
+                        createdAt: testDate,
+                        modifiedAt: testDate)
         let sourceAttachments = temporaryDirectory.appendingPathComponent("source", isDirectory: true)
         try FileManager.default.createDirectory(at: sourceAttachments,
                                                 withIntermediateDirectories: true)

@@ -1755,6 +1755,25 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         updateContentLayout()
     }
 
+    /// User-facing version of `addPage`: reveal the space that was added so
+    /// the action cannot look like a no-op on a continuous sheet of paper.
+    func extendWorkspace() {
+        let previousBottom = contentHeight
+        addPage()
+
+        // Leave two ruled lines of the old workspace visible as orientation,
+        // then fill the rest of the viewport with the fresh writing area.
+        let maximumOffset = max(0, contentHeight - canvas.bounds.height)
+        let targetOffset = min(maximumOffset, max(0, previousBottom - lineGap * 2))
+        canvas.setContentOffset(CGPoint(x: 0, y: targetOffset), animated: true)
+
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        UIAccessibility.post(
+            notification: .announcement,
+            argument: "Added a new screen of writing space"
+        )
+    }
+
     /// Fingertip is dragging past the last page. The scroll view's own
     /// `alwaysBounceVertical` already supplies the stretchy, harder-to-pull
     /// resistance — this just watches that overscroll and arms a haptic
@@ -1793,6 +1812,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// it just like anywhere else on the page.
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         setActiveCodeBlock(nil)
+        TourEventBus.shared.emit(.inkWritten)
     }
 
     /// Boxing is a direct canvas action, so don't make the user wait for the

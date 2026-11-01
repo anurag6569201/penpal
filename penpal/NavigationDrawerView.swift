@@ -36,7 +36,8 @@ struct NavigationDrawerView: View {
             case .folders:
                 FoldersSidebarView(
                     store: store,
-                    onSelectFolder: { _ in showNotes() }
+                    onSelectFolder: { _ in showNotes() },
+                    onClose: onClose
                 )
                 .transition(pageTransition)
 

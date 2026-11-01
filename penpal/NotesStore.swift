@@ -472,6 +472,11 @@ nonisolated struct NotebookBackupRestoreSummary: Equatable {
 final class NotesStore: ObservableObject {
     static let shared = NotesStore()
 
+    /// Stable identity for the single surface users work on. Legacy notebook
+    /// pages stay on disk for backwards-compatible backup/restore, but the app
+    /// no longer asks people to manage files before they can use Penpal.
+    static let workspaceNoteID = UUID(uuidString: "5E1C0A00-0000-4000-8000-000000000100")!
+
     @Published var folders: [NoteFolder] = []
     @Published var notes: [Note] = []
     @Published var selectedFolderID: UUID?
@@ -520,12 +525,6 @@ final class NotesStore: ObservableObject {
     }
 
     private func finishLoading() {
-        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-selectChapter"),
-           idx + 1 < ProcessInfo.processInfo.arguments.count,
-           let ch = Int(ProcessInfo.processInfo.arguments[idx + 1]) {
-            selectedFolderID = WelcomeGuide.folderID
-            selectedNoteID = WelcomeGuide.chapterID(ch)
-        }
         isLoading = false
         let continuations = loadingContinuations
         loadingContinuations.removeAll()
@@ -635,6 +634,38 @@ final class NotesStore: ObservableObject {
 
     func selectNote(_ id: UUID?) {
         selectedNoteID = id
+    }
+
+    /// Selects (or creates) the one persistent Penpal workspace.
+    ///
+    /// This is intentionally idempotent so launch, recovery, and an empty-state
+    /// action can all call it without creating duplicate pages.
+    func openWorkspace() {
+        if let index = notes.firstIndex(where: { $0.id == Self.workspaceNoteID }) {
+            if notes[index].isDeleted {
+                notes[index].deletedAt = nil
+                notes[index].modifiedAt = .now
+                scheduleSave()
+            }
+            let workspace = notes[index]
+            selectedFolderID = workspace.folderID
+            selectedNoteID = workspace.id
+            return
+        }
+
+        let folderID = resolveWritableFolderID(
+            folders.first(where: { $0.systemKind == .notes })?.id
+        )
+        let workspace = Note(
+            id: Self.workspaceNoteID,
+            folderID: folderID,
+            title: "My workspace",
+            body: ""
+        )
+        notes.insert(workspace, at: 0)
+        selectedFolderID = folderID
+        selectedNoteID = workspace.id
+        scheduleSave()
     }
 
     @discardableResult
@@ -998,19 +1029,54 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
+    var customFoldersCount: Int {
+        folders.filter { $0.systemKind == nil }.count
+    }
+
+    var totalActiveNotesCount: Int {
+        notes.filter { !$0.isDeleted }.count
+    }
+
     @discardableResult
     func createFolder(named name: String, parentID: UUID? = nil) -> NoteFolder {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmed.isEmpty ? "New Folder" : trimmed
         let order = (folders.map(\.sortOrder).max() ?? 0) + 1
-        let folder = NoteFolder(name: name, parentID: parentID, sortOrder: order)
+        let folder = NoteFolder(name: finalName, parentID: parentID, isExpanded: true, sortOrder: order)
         folders.append(folder)
+        // Ensure parent is expanded so newly created child is immediately visible
+        if let parentID, let idx = folders.firstIndex(where: { $0.id == parentID }) {
+            folders[idx].isExpanded = true
+        }
         scheduleSave()
         return folder
     }
 
+    @discardableResult
+    func duplicateFolder(_ id: UUID) -> NoteFolder? {
+        guard let original = folders.first(where: { $0.id == id && $0.systemKind == nil }) else { return nil }
+        let copyName = "\(original.name) Copy"
+        let copy = createFolder(named: copyName, parentID: original.parentID)
+        let folderNotes = notes.filter { $0.folderID == id && !$0.isDeleted }
+        for note in folderNotes {
+            var newNote = note
+            newNote.id = UUID()
+            newNote.folderID = copy.id
+            newNote.title = note.title.isEmpty ? "" : "\(note.title) Copy"
+            newNote.createdAt = .now
+            newNote.modifiedAt = .now
+            notes.insert(newNote, at: 0)
+        }
+        scheduleSave()
+        return copy
+    }
+
     func renameFolder(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         guard let idx = folders.firstIndex(where: { $0.id == id }) else { return }
         guard folders[idx].systemKind == nil else { return }
-        folders[idx].name = name
+        folders[idx].name = trimmed
         scheduleSave()
     }
 
@@ -1028,6 +1094,68 @@ final class NotesStore: ObservableObject {
         folders.removeAll { $0.id == id }
         if selectedFolderID == id {
             selectFolder(fallback)
+        }
+        scheduleSave()
+    }
+
+    func moveCustomFolders(fromOffsets source: IndexSet, toOffset destination: Int, parentID: UUID?) {
+        var siblings = childFolders(of: parentID)
+        siblings.move(fromOffsets: source, toOffset: destination)
+        for (index, folder) in siblings.enumerated() {
+            if let idx = folders.firstIndex(where: { $0.id == folder.id }) {
+                folders[idx].sortOrder = index
+            }
+        }
+        scheduleSave()
+    }
+
+    func moveFolder(_ id: UUID, toParentID newParentID: UUID?) {
+        guard let idx = folders.firstIndex(where: { $0.id == id && $0.systemKind == nil }) else { return }
+        if let newParentID {
+            guard newParentID != id && !isDescendant(folderID: newParentID, of: id) else { return }
+        }
+        folders[idx].parentID = newParentID
+        scheduleSave()
+    }
+
+    func isDescendant(folderID: UUID, of candidateAncestorID: UUID) -> Bool {
+        var current: UUID? = folderID
+        while let p = current {
+            if p == candidateAncestorID { return true }
+            current = folders.first(where: { $0.id == p })?.parentID
+        }
+        return false
+    }
+
+    func setAllCustomFoldersExpanded(_ expanded: Bool) {
+        for i in folders.indices where folders[i].systemKind == nil {
+            folders[i].isExpanded = expanded
+        }
+        scheduleSave()
+    }
+
+    enum FolderSortOption: String, CaseIterable, Identifiable {
+        case name = "Name (A–Z)"
+        case noteCount = "Note Count"
+        case defaultOrder = "Manual"
+        var id: String { rawValue }
+    }
+
+    func sortCustomFolders(by option: FolderSortOption) {
+        let roots = rootCustomFolders()
+        let sorted: [NoteFolder]
+        switch option {
+        case .name:
+            sorted = roots.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .noteCount:
+            sorted = roots.sorted { noteCount(for: $0) > noteCount(for: $1) }
+        case .defaultOrder:
+            return
+        }
+        for (index, folder) in sorted.enumerated() {
+            if let idx = folders.firstIndex(where: { $0.id == folder.id }) {
+                folders[idx].sortOrder = index
+            }
         }
         scheduleSave()
     }
@@ -1214,33 +1342,10 @@ final class NotesStore: ObservableObject {
         folders = snap.folders
         notes = snap.notes
         migrateRemovingDeprecatedSystemFolders()
+        ensureSystemFolders()
+        purgeGuidePagesIfPresent()
         selectedFolderID = snap.selectedFolderID ?? folders.first(where: { $0.systemKind == .notes })?.id
         selectedNoteID = snap.selectedNoteID
-        ensureSystemFolders()
-        // Ensure Penpal Guide folder and notes exist
-        let guideFolder = WelcomeGuide.makeFolder(sortOrder: -10)
-        let hasGuide = folders.contains(where: { $0.id == guideFolder.id })
-        if !hasGuide {
-            if let notesIdx = folders.firstIndex(where: { $0.systemKind == .notes }) {
-                folders.insert(guideFolder, at: notesIdx + 1)
-            } else {
-                folders.append(guideFolder)
-            }
-            let guideNotes = WelcomeGuide.makeNotes(folderID: guideFolder.id)
-            // If the library only contained the untouched legacy blank welcome note, clean it up
-            if notes.count == 1, let only = notes.first, WelcomeGuide.isPristineLegacyWelcome(only) {
-                notes.removeAll()
-            }
-            notes.insert(contentsOf: guideNotes, at: 0)
-            selectedFolderID = guideFolder.id
-            selectedNoteID = WelcomeGuide.startNoteID
-            UserDefaults.standard.set(4, forKey: "penpal.guide.version")
-            saveNow()
-        } else if UserDefaults.standard.integer(forKey: "penpal.guide.version") < 4 {
-            restoreGuide()
-            UserDefaults.standard.set(4, forKey: "penpal.guide.version")
-            saveNow()
-        }
         if selectedFolder == nil {
             selectedFolderID = folders.first(where: { $0.systemKind == .notes })?.id
         }
@@ -1285,42 +1390,55 @@ final class NotesStore: ObservableObject {
         }
     }
 
-    /// Replaces or restores the Penpal Guide folder and all chapter notes in-place.
-    func restoreGuide() {
-        if !folders.contains(where: { $0.id == WelcomeGuide.folderID }) {
-            let guideFolder = WelcomeGuide.makeFolder(sortOrder: -10)
-            if let notesIdx = folders.firstIndex(where: { $0.systemKind == .notes }) {
-                folders.insert(guideFolder, at: notesIdx + 1)
-            } else {
-                folders.append(guideFolder)
-            }
+    /// Automatically clears any legacy "Penpal Guide" folder and guiding chapter notes
+    /// so the library remains clean and personal.
+    private func purgeGuidePagesIfPresent() {
+        let guideFolderID = UUID(uuidString: "5E1C0A00-0000-4000-8000-000000000000")!
+        let guideNoteIDs: Set<UUID> = Set((1...12).compactMap {
+            UUID(uuidString: String(format: "5E1C0A00-0000-4000-8000-%012d", $0))
+        })
+
+        let hasGuideFolder = folders.contains { $0.id == guideFolderID || $0.name == "Penpal Guide" }
+        let hasGuideNotes = notes.contains {
+            guideNoteIDs.contains($0.id) ||
+            $0.folderID == guideFolderID ||
+            $0.title.hasPrefix("Welcome to Penpal") ||
+            $0.normalizedTags.contains("Penpal Guide")
         }
-        notes.removeAll { WelcomeGuide.isGuideNote($0.id) || $0.folderID == WelcomeGuide.folderID }
-        let guideNotes = WelcomeGuide.makeNotes(folderID: WelcomeGuide.folderID)
-        notes.append(contentsOf: guideNotes)
-        selectedFolderID = WelcomeGuide.folderID
-        selectedNoteID = WelcomeGuide.startNoteID
-        scheduleSave()
+
+        if hasGuideFolder || hasGuideNotes {
+            folders.removeAll { $0.id == guideFolderID || $0.name == "Penpal Guide" }
+            notes.removeAll {
+                guideNoteIDs.contains($0.id) ||
+                $0.folderID == guideFolderID ||
+                $0.title.hasPrefix("Welcome to Penpal") ||
+                $0.normalizedTags.contains("Penpal Guide")
+            }
+            if let selF = selectedFolderID, selF == guideFolderID || !folders.contains(where: { $0.id == selF }) {
+                selectedFolderID = folders.first(where: { $0.systemKind == .notes })?.id
+            }
+            if let selN = selectedNoteID, guideNoteIDs.contains(selN) || !notes.contains(where: { $0.id == selN }) {
+                selectedNoteID = visibleNotes().first?.id ?? notes.first?.id
+            }
+            scheduleSave()
+        }
     }
 
     private func seed() {
         let all = systemFolder(.allNotes)
         let notesFolder = systemFolder(.notes)
-        let guideFolder = WelcomeGuide.makeFolder(sortOrder: -10)
         let deleted = systemFolder(.recentlyDeleted)
-        let designing = NoteFolder(name: "Designing", sortOrder: 1)
-        let robot = NoteFolder(name: "Robot", sortOrder: 2)
-        let college = NoteFolder(name: "College", isExpanded: true, sortOrder: 3)
-        let lectures = NoteFolder(name: "Lectures", parentID: college.id, sortOrder: 4)
-        let important = NoteFolder(name: "Important Notes", isExpanded: true, sortOrder: 5)
-        let ideas = NoteFolder(name: "Ideas", parentID: important.id, sortOrder: 6)
 
-        folders = [all, notesFolder, guideFolder, designing, robot, college, lectures, important, ideas, deleted]
-
-        let guideNotes = WelcomeGuide.makeNotes(folderID: guideFolder.id)
-        notes = guideNotes
-        selectedFolderID = guideFolder.id
-        selectedNoteID = WelcomeGuide.startNoteID
+        folders = [all, notesFolder, deleted]
+        let workspace = Note(
+            id: Self.workspaceNoteID,
+            folderID: notesFolder.id,
+            title: "My workspace",
+            body: ""
+        )
+        notes = [workspace]
+        selectedFolderID = notesFolder.id
+        selectedNoteID = workspace.id
         saveNow()
     }
 }

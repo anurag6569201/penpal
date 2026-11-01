@@ -9,6 +9,7 @@
 import Foundation
 
 enum TourEvent: String, Equatable, Hashable {
+    case inkWritten
     case penpalToggled
     case boxDrawn
     case strikeDone
@@ -16,6 +17,7 @@ enum TourEvent: String, Equatable, Hashable {
     case equalsSolved
     case askTapped
     case blockInserted
+    case workspaceOpened
 }
 
 @MainActor

@@ -64,6 +64,11 @@ struct NotesListView: View {
     @State private var tagText = ""
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
+    @State private var showCreateFolderInMove = false
+    @State private var newFolderNameInMove = ""
+    @State private var renameCurrentFolder = false
+    @State private var currentFolderNameText = ""
+    @State private var confirmDeleteCurrentFolder = false
 
     enum ViewMode { case list, gallery }
 
@@ -143,6 +148,31 @@ struct NotesListView: View {
                 endSelecting()
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .alert("Rename Folder", isPresented: $renameCurrentFolder) {
+            TextField("Folder Name", text: $currentFolderNameText)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                if let id = store.selectedFolderID {
+                    let name = currentFolderNameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty { store.renameFolder(id, to: name) }
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete \"\(store.selectedFolder?.name ?? "Folder")\"?",
+            isPresented: $confirmDeleteCurrentFolder,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Folder", role: .destructive) {
+                if let id = store.selectedFolderID {
+                    store.deleteFolder(id)
+                    onBack()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Notes inside will be moved to the Notes folder so you don't lose any thoughts.")
         }
     }
 
@@ -247,6 +277,17 @@ struct NotesListView: View {
                         confirmEmptyTrash = true
                     }
                     .disabled(!hasVisibleNotes)
+                }
+
+                if let customFolder = store.selectedFolder, customFolder.systemKind == nil {
+                    Divider()
+                    Button("Rename Folder", systemImage: "pencil") {
+                        currentFolderNameText = customFolder.name
+                        renameCurrentFolder = true
+                    }
+                    Button("Delete Folder", systemImage: "trash", role: .destructive) {
+                        confirmDeleteCurrentFolder = true
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -533,13 +574,26 @@ struct NotesListView: View {
     private var moveSheet: some View {
         NavigationStack {
             List {
-                ForEach(store.movableFolders()) { folder in
+                Section {
                     Button {
-                        store.moveNotes(selectedIDs, to: folder.id)
-                        showMoveSheet = false
-                        endSelecting()
+                        newFolderNameInMove = ""
+                        showCreateFolderInMove = true
                     } label: {
-                        Label(folder.name, systemImage: "folder")
+                        Label("New Folder…", systemImage: "folder.badge.plus")
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(Pen.inkAccent)
+                    }
+                }
+
+                Section("Existing Folders") {
+                    ForEach(store.movableFolders()) { folder in
+                        Button {
+                            store.moveNotes(selectedIDs, to: folder.id)
+                            showMoveSheet = false
+                            endSelecting()
+                        } label: {
+                            Label(folder.name, systemImage: "folder")
+                        }
                     }
                 }
             }
@@ -553,6 +607,19 @@ struct NotesListView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { showMoveSheet = false }
+                }
+            }
+            .alert("New Folder", isPresented: $showCreateFolderInMove) {
+                TextField("Folder Name", text: $newFolderNameInMove)
+                Button("Cancel", role: .cancel) {}
+                Button("Create & Move") {
+                    let name = newFolderNameInMove.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty {
+                        let newFolder = store.createFolder(named: name)
+                        store.moveNotes(selectedIDs, to: newFolder.id)
+                        showMoveSheet = false
+                        endSelecting()
+                    }
                 }
             }
         }

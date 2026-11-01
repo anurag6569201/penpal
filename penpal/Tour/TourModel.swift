@@ -8,14 +8,14 @@
 import SwiftUI
 
 enum TourAnchorID: String, Hashable, CaseIterable {
-    case sidebar
+    case workspace
     case undo
     case insert
     case markup
     case arrange
     case penpal
     case share
-    case newNote
+    case tour
     case more
     case capability
     case secondary
@@ -25,12 +25,26 @@ enum TourAnchorID: String, Hashable, CaseIterable {
 }
 
 enum TourPrepare: Equatable {
-    case selectGuideStart
-    case selectChapter(Int)
     case showTools(Bool)
     case penpal(Bool)
     case capability(String)
-    case openDrawer(Bool)
+    case toolbarSection(TourToolbarSection)
+    case openSidebar(Bool)
+    case showTraining(Bool)
+    case showSettings(Bool)
+}
+
+enum TourToolbarSection: String, Hashable {
+    case pageTools
+    case history
+    case document
+}
+
+/// A new identity on every step makes repeated preparation values observable
+/// when somebody moves back and forth through the tour.
+struct TourPreparation: Equatable {
+    let id = UUID()
+    let actions: [TourPrepare]
 }
 
 enum TourAdvance: Equatable {
@@ -39,18 +53,12 @@ enum TourAdvance: Equatable {
     case eventOrNext(TourEvent)
 }
 
-enum TourDemo: Equatable {
-    case none
-    case ghost(strokeId: String, replyText: String?)
-}
-
 struct TourStep: Identifiable, Equatable {
     var id: String
     var anchor: TourAnchorID?
     var title: String
     var body: String
     var prepare: [TourPrepare]
-    var demo: TourDemo
     var advance: TourAdvance
     var tryItPrompt: String?
 
@@ -58,131 +66,160 @@ struct TourStep: Identifiable, Equatable {
         TourStep(
             id: "welcome",
             anchor: nil,
-            title: "Welcome to Penpal",
-            body: "A notebook that thinks and writes alongside you on paper. Let's take a quick 2-minute tour of the essentials.",
-            prepare: [.selectGuideStart],
-            demo: .none,
+            title: "One page. Everything Penpal.",
+            body: "This is your permanent thinking space. Write, solve, sketch, build, and ask for help without leaving the page. The tour lets you try the important parts for real.",
+            prepare: [.showTools(false), .penpal(true)],
             advance: .next
         ),
         TourStep(
             id: "surface",
             anchor: .page,
-            title: "The Living Page",
-            body: "Write freely with your Apple Pencil or finger. Penpal reads your handwriting and writes back directly on the page in ink.",
+            title: "Write anywhere",
+            body: "Use Apple Pencil or your finger on this infinite page. Your work is saved automatically, and Penpal answers directly beneath it in ink.",
             prepare: [],
-            demo: .ghost(strokeId: "hero.question", replyText: "Of course! Let's start with Monday —"),
-            advance: .next
+            advance: .next,
+            tryItPrompt: "Write a word in the highlighted space, then tap Next"
         ),
         TourStep(
             id: "markup",
             anchor: .markup,
-            title: "Apple Notes Pen Tray",
-            body: "Tap the pen tip to show the full system pen tray with pens, pencil, highlighter, eraser and ruler.",
-            prepare: [.showTools(true)],
-            demo: .none,
+            title: "Choose your pen",
+            body: "The pen-tip button opens the native ink tray with pens, pencil, highlighter, eraser, colours, and ruler.",
+            prepare: [.toolbarSection(.pageTools), .showTools(true)],
             advance: .next
         ),
         TourStep(
             id: "undo",
             anchor: .undo,
-            title: "Smart Undo & Redo",
-            body: "Undo knows what Penpal did — tapping undo cleanly reverses an entire generated reply or ink graph in one step.",
-            prepare: [],
-            demo: .none,
+            title: "Undo whole ideas",
+            body: "Undo and redo handle your strokes normally, while a generated Penpal answer, graph, or sketch reverses as one clean action.",
+            prepare: [.toolbarSection(.history), .showTools(false)],
             advance: .next
         ),
         TourStep(
             id: "penpal_button",
             anchor: .penpal,
-            title: "Turn On Penpal Mode",
-            body: "Tap the signature icon to bring up Penpal's floating control bar. Try tapping it now!",
-            prepare: [],
-            demo: .none,
+            title: "Bring Penpal onto the page",
+            body: "The signature button shows or hides Penpal's assistant dock. Tap it now to bring the controls back.",
+            prepare: [.toolbarSection(.pageTools), .penpal(false)],
             advance: .eventOrNext(.penpalToggled),
             tryItPrompt: "Tap the signature button to continue"
         ),
         TourStep(
             id: "capability",
             anchor: .capability,
-            title: "Choose Who Penpal Is",
-            body: "Switch between 7 capabilities: Companion, Mathematician, Interactive widgets, Illustrator, Language Partner, Debate, or Arranger.",
-            prepare: [.penpal(true)],
-            demo: .none,
+            title: "Choose the kind of help",
+            body: "This menu changes Penpal between Companion, Mathematician, Interactive builder, Illustrator, Language Partner, Debate Partner, and whole-page Arranger.",
+            prepare: [.penpal(true), .capability("companion")],
             advance: .next
         ),
         TourStep(
             id: "secondary",
             anchor: .secondary,
-            title: "Personality & Detail",
-            body: "Fine-tune Penpal's voice: change Companion mood, adjust Mathematician working depth, or choose a practice language.",
-            prepare: [.penpal(true)],
-            demo: .none,
+            title: "Tune the response",
+            body: "The next control adapts to the capability: choose a companion mood, maths detail, illustration quality, or practice language.",
+            prepare: [.penpal(true), .capability("companion")],
             advance: .next
         ),
         TourStep(
             id: "ask",
             anchor: .ask,
-            title: "Ask Penpal",
-            body: "Write your question on the page, then tap Ask. Penpal never sends on a pause — only when you ask.",
+            title: "Ask when you are ready",
+            body: "Write a question, then tap Ask Penpal. A pause never sends unfinished thoughts; you stay in control.",
             prepare: [.penpal(true)],
-            demo: .none,
-            advance: .next
+            advance: .eventOrNext(.askTapped),
+            tryItPrompt: "Write a short question and tap Ask, or tap Next"
         ),
         TourStep(
             id: "box_gesture",
             anchor: .page,
-            title: "The Box Gesture",
-            body: "Instead of tapping Ask, draw a rectangular box around any writing with your pen. Penpal reads and solves the enclosed crop!",
-            prepare: [.selectChapter(3), .penpal(true)],
-            demo: .ghost(strokeId: "box.question", replyText: "x = 4"),
+            title: "Box anything to send it",
+            body: "Write a tiny prompt inside the highlighted area, then draw a rectangle around it. Boxing is the fast gesture version of Ask.",
+            prepare: [.penpal(true), .capability("companion")],
             advance: .eventOrNext(.boxDrawn),
-            tryItPrompt: "Draw a box around writing to try it, or tap Next"
+            tryItPrompt: "Write ‘hello’, box it, or tap Next"
         ),
         TourStep(
             id: "strike_gesture",
             anchor: .page,
-            title: "Strike-Through Gesture",
-            body: "No need to switch to the eraser — drawing a single line across any written word immediately deletes it.",
-            prepare: [.selectChapter(3)],
-            demo: .ghost(strokeId: "strike.sentence", replyText: nil),
+            title: "Strike to erase",
+            body: "Write a word, then draw one horizontal line through it. Penpal removes the word and the strike together; Undo brings both back.",
+            prepare: [.penpal(true)],
             advance: .eventOrNext(.strikeDone),
-            tryItPrompt: "Strike through a word to try it, or tap Next"
+            tryItPrompt: "Write a word and strike through it, or tap Next"
         ),
         TourStep(
             id: "equals_math",
             anchor: .page,
-            title: "Instant On-Device Maths",
-            body: "Write any calculation ending in \"=\" (like 12 × 7 =) and pause. A confirmation chip appears to solve it instantly without leaving the device.",
-            prepare: [.selectChapter(3), .penpal(false)],
-            demo: .ghost(strokeId: "equals.expr", replyText: "84"),
+            title: "Maths answers itself",
+            body: "Write a calculation ending in = and pause. Penpal recognises it locally and offers the answer without a cloud request.",
+            prepare: [.toolbarSection(.pageTools), .penpal(false)],
             advance: .eventOrNext(.equalsSolved),
-            tryItPrompt: "Write a calculation ending in = (e.g. 12 × 7 =) to try it, or tap Next"
+            tryItPrompt: "Try 12 × 7 =, or tap Next"
         ),
         TourStep(
             id: "insert_blocks",
             anchor: .insert,
-            title: "Live Page Blocks",
-            body: "Tap 📎 to insert interactive widgets, diagrams, tables, checklists or videos that sit behind your ink so you can annotate over them.",
-            prepare: [.penpal(false)],
-            demo: .none,
+            title: "Put live things on paper",
+            body: "Insert adds photos, interactive widgets, diagrams, text, tables, and checklists behind the ink so you can annotate over them.",
+            prepare: [.toolbarSection(.pageTools), .penpal(false)],
             advance: .next
         ),
         TourStep(
-            id: "sidebar_search",
-            anchor: .sidebar,
-            title: "Library & Handwriting Search",
-            body: "Organise folders and search not just typed text, but your actual handwritten strokes via on-device Vision recognition.",
-            prepare: [],
-            demo: .none,
+            id: "arrange",
+            anchor: .arrange,
+            title: "Arrange the page",
+            body: "Arrange mode lets you move, resize, and edit inserted blocks while keeping handwriting safely out of the way.",
+            prepare: [.toolbarSection(.pageTools), .penpal(false)],
             advance: .next
         ),
         TourStep(
-            id: "more_actions",
+            id: "camera",
+            anchor: .camera,
+            title: "Bring in the outside world",
+            body: "With Penpal open, use the camera to ask about a worksheet, diagram, or photo. Illustrator can trace a photo back into editable ink.",
+            prepare: [.penpal(true)],
+            advance: .next
+        ),
+        TourStep(
+            id: "make_it_yours",
             anchor: .more,
-            title: "Make It Unmistakably Yours",
-            body: "Under ⋯, tap 'Train Handwriting' to teach Penpal your own handwriting style, or access spaced practice and backups.",
-            prepare: [],
-            demo: .none,
+            title: "Make the writing yours",
+            body: "The more menu contains handwriting training, settings, spaced practice, and Add Writing Space when you need another screen below.",
+            prepare: [.toolbarSection(.document), .penpal(true)],
+            advance: .next
+        ),
+        TourStep(
+            id: "training",
+            anchor: nil,
+            title: "Teach Penpal your hand",
+            body: "Training captures your real letters, words, joins, maths symbols, and punctuation so replies can be written in your own style.",
+            prepare: [.openSidebar(false), .showTraining(true)],
+            advance: .next
+        ),
+        TourStep(
+            id: "settings",
+            anchor: nil,
+            title: "Shape how Penpal responds",
+            body: "Settings controls writing style, paper, response behaviour, privacy, backups, and the connection to the Penpal brain.",
+            prepare: [.showTraining(false), .showSettings(true)],
+            advance: .next
+        ),
+        TourStep(
+            id: "workspace_library",
+            anchor: .workspace,
+            title: "Your pages are still close",
+            body: "Tap the Penpal workspace badge to open the sidebar whenever you want an older page or folder. It stays out of the way until you ask for it.",
+            prepare: [.showSettings(false), .openSidebar(false), .toolbarSection(.pageTools)],
+            advance: .eventOrNext(.workspaceOpened),
+            tryItPrompt: "Tap Penpal workspace to open the sidebar, or tap Next"
+        ),
+        TourStep(
+            id: "finish",
+            anchor: .share,
+            title: "Your workspace is ready",
+            body: "Share exports the current page. Finish removes the tour button and leaves only the tools you use. Now write something real and let Penpal meet you there.",
+            prepare: [.openSidebar(false), .toolbarSection(.document), .showTools(false), .penpal(true)],
             advance: .next
         )
     ]

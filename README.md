@@ -1,6 +1,11 @@
 # Penpal
 
-Handwriting mimicry on iOS, plus a Django + Gemini brain for text conversation.
+One living handwriting workspace on iOS, plus a Django + Gemini brain for
+conversation, maths, sketches, languages, debate, and interactive page blocks.
+Penpal opens directly on the same persistent page; a resumable interactive tour
+lets people try the real controls, gestures, training, and settings. Skipping
+keeps a Resume tour action, completing removes it, and the workspace badge opens
+the legacy page library only when it is needed.
 
 ## Capabilities
 
