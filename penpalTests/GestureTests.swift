@@ -184,4 +184,42 @@ final class GestureTests: XCTestCase {
         XCTAssertNil(InkAnalyzer.detectGesture(all: [word(x: 20, y: 20)],
                                                newStart: 0))
     }
+
+    // MARK: - Intent Precedence Classification
+
+    func testIntentPrecedenceClassification() {
+        // 1. Strike-through beats everything
+        let strikeStrokes = [word(x: 20, y: 20), rule(x: 15, y: 32, width: 100)]
+        let strikeIntent = InkAnalyzer.classifyDrawnIntent(all: strikeStrokes, newStart: 1)
+        if case .strikeThrough = strikeIntent {
+            // Success
+        } else {
+            XCTFail("Expected strikeThrough intent")
+        }
+
+        // 2. Double-underline check
+        let underlineStrokes = [word(x: 20, y: 20), rule(x: 20, y: 150), rule(x: 20, y: 160)]
+        let underlineIntent = InkAnalyzer.classifyDrawnIntent(all: underlineStrokes, newStart: 1)
+        if case .checkWork = underlineIntent {
+            // Success
+        } else {
+            XCTFail("Expected checkWork intent")
+        }
+
+        // 3. Theory text is passive, never treated as calculation
+        let theoryIntent = InkAnalyzer.classifyDrawnIntent(all: [word(x: 20, y: 20)], newStart: 0, text: "Force F = ma")
+        if case .passiveNote(let reason) = theoryIntent {
+            XCTAssertTrue(reason.contains("Theory"))
+        } else {
+            XCTFail("Expected passiveNote for theory text")
+        }
+
+        // 4. Arithmetic ending in "=" is inlineMath
+        let mathIntent = InkAnalyzer.classifyDrawnIntent(all: [word(x: 20, y: 20)], newStart: 0, text: "15 * 4 =")
+        if case .inlineMath(let isTrailing) = mathIntent {
+            XCTAssertTrue(isTrailing)
+        } else {
+            XCTFail("Expected inlineMath for arithmetic ending in =")
+        }
+    }
 }

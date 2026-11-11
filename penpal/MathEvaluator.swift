@@ -69,6 +69,70 @@ enum MathEvaluator {
         return s.contains { $0.isLetter && ("a"..."z").contains($0) && $0 != "e" }
     }
 
+    /// True when text appears to be natural language prose, theory notes, or scientific formulas
+    /// rather than a direct calculator expression. Prevents Penpal from hijacking notes like
+    /// "Force F = ma" or "Let mass be m and acceleration be a".
+    static func isTheoryOrProseContext(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let punctuation = CharacterSet(charactersIn: ",;:.!?\"'()[]{}=")
+        let tokens = trimmed.components(separatedBy: CharacterSet.whitespacesAndNewlines.union(punctuation))
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return false }
+
+        let theoryKeywords: Set<String> = [
+            "let", "mass", "where", "force", "acceleration", "when", "if", "then",
+            "we", "and", "is", "are", "of", "for", "with", "be", "have", "has",
+            "since", "assume", "prove", "show", "find", "given", "note", "definition",
+            "theorem", "law", "equation", "calculate", "state", "from", "by", "in",
+            "to", "at", "on", "as", "so", "which", "that", "this", "these", "such",
+            "each", "all", "per", "derivative", "integral", "limit", "value",
+            "constant", "energy", "work", "power", "momentum", "velocity", "speed"
+        ]
+
+        var proseScore = 0
+        var mathScore = 0
+
+        for token in tokens {
+            let lower = token.lowercased()
+            if theoryKeywords.contains(lower) {
+                proseScore += 2
+                continue
+            }
+            if knownWords.contains(lower) {
+                mathScore += 1
+                continue
+            }
+            if lower.count >= 3 && lower.allSatisfy({ $0 >= "a" && $0 <= "z" }) {
+                proseScore += 1
+            } else if lower.contains(where: { $0.isNumber || "^*/+-=%!".contains($0) }) {
+                mathScore += 1
+            }
+        }
+
+        return proseScore > 0 && proseScore >= mathScore
+    }
+
+    /// True when text is structured as a plausible arithmetic calculation attempt
+    /// (primarily numbers, arithmetic operators, parentheses) without arbitrary prose or equations.
+    static func isPlausibleArithmeticAttempt(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if isTheoryOrProseContext(trimmed) { return false }
+
+        let body = trimmed.hasSuffix("=") ? String(trimmed.dropLast()) : trimmed
+        let clean = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return false }
+
+        let hasDigits = clean.contains { $0.isNumber }
+        let hasMathOp = clean.contains { "^*/+-()%!".contains($0) }
+        guard hasDigits && hasMathOp else { return false }
+
+        if hasFreeVariable(clean) { return false }
+        return true
+    }
+
     private static func solve(_ expr: String) -> String? {
         guard isSolvableExpression(expr),
               let value = evaluate(expr), value.isFinite else { return nil }

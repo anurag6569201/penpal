@@ -315,9 +315,71 @@ final class HandwritingCoreTests: XCTestCase {
         // "3x+5=17=" by taking only the RHS.
         // We can't unload MathEngine easily; assert the guard instead.
         XCTAssertTrue(MathEvaluator.hasFreeVariable("3x+5=17"))
-        XCTAssertNil(
-            MathEvaluator.instantAnswer(for: "17=")
-        )
+        XCTAssertNil(MathEvaluator.instantAnswer(for: "17="))
+    }
+
+    func testTheoryAndProseDetection() {
+        XCTAssertTrue(MathEvaluator.isTheoryOrProseContext("Force F = ma"))
+        XCTAssertTrue(MathEvaluator.isTheoryOrProseContext("Let mass be m and acceleration be a"))
+        XCTAssertTrue(MathEvaluator.isTheoryOrProseContext("We define energy E = mc^2"))
+        XCTAssertTrue(MathEvaluator.isTheoryOrProseContext("Since velocity is v = ds/dt"))
+        XCTAssertTrue(MathEvaluator.isTheoryOrProseContext("Assume x + y = 10"))
+
+        XCTAssertFalse(MathEvaluator.isTheoryOrProseContext("2 + 2 ="))
+        XCTAssertFalse(MathEvaluator.isTheoryOrProseContext("12 * 15 ="))
+        XCTAssertFalse(MathEvaluator.isTheoryOrProseContext("sin(pi / 4) ="))
+        XCTAssertFalse(MathEvaluator.isTheoryOrProseContext("sqrt(144) ="))
+    }
+
+    func testPlausibleArithmeticAttempt() {
+        XCTAssertTrue(MathEvaluator.isPlausibleArithmeticAttempt("5 + 5 ="))
+        XCTAssertTrue(MathEvaluator.isPlausibleArithmeticAttempt("12 * 45 ="))
+        XCTAssertTrue(MathEvaluator.isPlausibleArithmeticAttempt("(10 + 2) / 4 ="))
+
+        // Equations with variables or theory notes are NOT arithmetic attempts
+        XCTAssertFalse(MathEvaluator.isPlausibleArithmeticAttempt("F = ma"))
+        XCTAssertFalse(MathEvaluator.isPlausibleArithmeticAttempt("x + y = 10"))
+        XCTAssertFalse(MathEvaluator.isPlausibleArithmeticAttempt("3x + 5 = 17"))
+        XCTAssertFalse(MathEvaluator.isPlausibleArithmeticAttempt("Let mass be m"))
+    }
+
+    func testTrailingEqualsRejectsInternalFormulas() {
+        let digit = makeTestStroke(from: CGPoint(x: 20, y: 40), to: CGPoint(x: 20, y: 65), height: 3)
+        let topBar = makeTestStroke(from: CGPoint(x: 50, y: 50), to: CGPoint(x: 80, y: 50), height: 3)
+        let bottomBar = makeTestStroke(from: CGPoint(x: 50, y: 62), to: CGPoint(x: 80, y: 62), height: 3)
+
+        // Trailing equals: "2 ="
+        let trailingStrokes = [digit, topBar, bottomBar]
+        let isTrailing = MathInkParser.isTrailingEquals(trailingStrokes)
+        let looksLike = MathInkParser.looksLikeEqualsAsk(trailingStrokes)
+        let barRects = MathInkParser.equalsBarRects(in: trailingStrokes)
+
+        XCTAssertTrue(isTrailing, "isTrailing failed for trailingStrokes. bounds: \(trailingStrokes.map(\.renderBounds))")
+        XCTAssertTrue(looksLike, "looksLikeEqualsAsk failed for trailingStrokes")
+        XCTAssertNotNil(barRects, "equalsBarRects failed for trailingStrokes")
+
+        // Internal equals: "2 = 4" (with substantial content following the equals sign)
+        let trailingDigit = makeTestStroke(from: CGPoint(x: 100, y: 40), to: CGPoint(x: 100, y: 65), height: 3)
+        let formulaStrokes = [digit, topBar, bottomBar, trailingDigit]
+
+        XCTAssertFalse(MathInkParser.isTrailingEquals(formulaStrokes))
+        XCTAssertFalse(MathInkParser.looksLikeEqualsAsk(formulaStrokes))
+        XCTAssertNil(MathInkParser.equalsBarRects(in: formulaStrokes))
+    }
+
+    private func makeTestStroke(from a: CGPoint, to b: CGPoint, height: CGFloat = 3) -> PKStroke {
+        let steps = max(2, Int(hypot(b.x - a.x, b.y - a.y) / 2))
+        let points = (0...steps).map { i -> PKStrokePoint in
+            let t = CGFloat(i) / CGFloat(steps)
+            return PKStrokePoint(
+                location: CGPoint(x: a.x + (b.x - a.x) * t,
+                                  y: a.y + (b.y - a.y) * t),
+                timeOffset: Double(i) * 0.004,
+                size: CGSize(width: 3, height: height),
+                opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+        }
+        return PKStroke(ink: PKInk(.pen, color: .black),
+                        path: PKStrokePath(controlPoints: points, creationDate: Date()))
     }
 }
 

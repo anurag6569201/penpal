@@ -2206,7 +2206,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         //
         // Nothing was consumed visually, but the stroke counter moved — put
         // it back, so a later box or Ask still sees this ink as new input.
-        if auto, mathematicianMode || illustratorMode || interactiveMode
+        // Note: mathematicianMode allows on-device arithmetic on pause below,
+        // but guards against auto-calling the brain on pause.
+        if auto, illustratorMode || interactiveMode
                     || languageMode || debateMode || arrangerMode {
             lastReplyStrokeCount = newStart
             return
@@ -2266,12 +2268,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             let trimmed = (candidates.first ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            // "=" still drives the full-line reading below in every mode.
-            // It does NOT reach the on-device calculator in Mathematician
-            // mode: that path returns at the `mathematicianMode` block below,
-            // before any Solve chip can appear.
-            let hasEquals = trimmed.contains("=")
+            // "=" only triggers when it is trailing (at the end of the line)
+            // and not part of theory/prose notes (e.g. "Force F = ma").
+            let isProse = MathEvaluator.isTheoryOrProseContext(trimmed)
+            let hasEquals = !isProse && (
+                trimmed.hasSuffix("=")
                 || MathInkParser.looksLikeEqualsAsk(inkToRead)
+            )
 
             if hasEquals {
                 self.renderer.beginAnalyzing(strokes: inkToRead)
@@ -2427,10 +2430,32 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 return
             }
 
-            // Penpal + Mathematician: "=" is for the brain only — never the
-            // local Solve chip / on-device calculator (that conflicted with LLM).
+            // Parse structured candidates for both local math and brain routing.
+            let structured = hasEquals
+                ? await MathInkParser.parse(strokes: inkToRead, traits: traits)
+                : nil
+            let mathCandidates = Self.withTrailingEquals(
+                [structured].compactMap { $0 } + candidates, force: hasEquals)
+
+            // Penpal + Mathematician:
+            // 1. On-device instant arithmetic (e.g. 12 * 12 =) works immediately, even on pause.
+            // 2. Symbolic math, algebra (e.g. 3x+5=17), or proofs wait for explicit Ask or Box.
+            // 3. A pause while writing does NOT fire the brain uninvited.
             if mathematicianMode {
                 var bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
+                if hasEquals, let hit = Self.calculatorHit(in: mathCandidates) {
+                    if self.settings.confirmBeforeSolving {
+                        self.previewAnswer(expression: hit.expression,
+                                           placement: placement,
+                                           sourceStrokes: inkToRead)
+                    }
+                    if self.offerCalculation(expression: hit.expression, answer: hit.answer,
+                                             placement: placement, strokes: inkToRead) {
+                        releaseAnalyzing = false
+                    }
+                    return
+                }
+
                 if !auto, hasEquals || bestText.contains("=") {
                     bestText = Self.ensureTrailingEquals(bestText)
                     guard self.settings.useBrain else {
@@ -2454,17 +2479,15 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     }
                     self.askBrain(bestText, placement: placement,
                                   capability: "mathematician", fallbackInk: nil)
+                } else {
+                    // On pause (auto: true) in mathematician mode without on-device arithmetic,
+                    // keep stroke count so Ask or Box can consume it.
+                    self.lastReplyStrokeCount = newStart
                 }
                 return
             }
 
             // Local calculator — Companion, or Penpal off. Requires "=".
-            let structured = hasEquals
-                ? await MathInkParser.parse(strokes: inkToRead, traits: traits)
-                : nil
-            let mathCandidates = Self.withTrailingEquals(
-                [structured].compactMap { $0 } + candidates, force: hasEquals)
-
             if hasEquals, let hit = Self.calculatorHit(in: mathCandidates) {
                 // PEN-11 — show the answer immediately, ghosted, while the
                 // confirmation is still pending. The user sees the result the
@@ -2496,16 +2519,19 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             if hasEquals {
                 if let expr = Self.bestEqualsExpression(in: mathCandidates)
                     ?? (trimmed.isEmpty ? nil : Self.ensureTrailingEquals(trimmed)) {
-                    if self.offerCalculation(expression: expr, answer: nil,
-                                             placement: placement, strokes: inkToRead) {
-                        releaseAnalyzing = false
+                    // Only offer calculation if it is a plausible arithmetic attempt!
+                    // If it is theory, an equation with free variables (like F=ma or x+y=10),
+                    // or natural prose notes, do NOT pop up an amber calculator chip.
+                    if MathEvaluator.isPlausibleArithmeticAttempt(expr) {
+                        if self.offerCalculation(expression: expr, answer: nil,
+                                                 placement: placement, strokes: inkToRead) {
+                            releaseAnalyzing = false
+                        }
+                        return
                     }
-                    return
                 }
-                if self.offerCalculation(expression: "=", answer: nil,
-                                         placement: placement, strokes: inkToRead) {
-                    releaseAnalyzing = false
-                }
+                // Never pop up bare "=" chip on theory or notes.
+                self.lastReplyStrokeCount = newStart
                 return
             }
 

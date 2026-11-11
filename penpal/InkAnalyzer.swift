@@ -281,6 +281,56 @@ enum InkAnalyzer {
         case strikeThrough(targetIndices: [Int], strokeIndex: Int)
     }
 
+    // MARK: - Intent Precedence (Strict Conflict Avoidance)
+    //
+    // When ink arrives, multiple detectors might compete:
+    // 1. Gesture Strike-through (Delete) -> highest priority, immediate
+    // 2. Gesture Double-underline (Check Work) -> checked working above
+    // 3. Problem Box (Bounded Loop) -> explicit region selection
+    // 4. Trailing Equals (Inline Math) -> only if arithmetic & not prose/theory
+    // 5. Passive Content -> user notes, formulas like F=ma, theorems -> silent!
+
+    enum IntentPriority {
+        case strikeThrough(targetIndices: [Int], strokeIndex: Int)
+        case checkWork(region: CGRect, strokeIndices: [Int])
+        case problemBox(box: ProblemBox)
+        case inlineMath(isTrailingEquals: Bool)
+        case passiveNote(reason: String)
+    }
+
+    /// Evaluates candidate intent in strict priority order to prevent one action
+    /// from accidentally firing or interfering with another.
+    static func classifyDrawnIntent(all: [PKStroke], newStart: Int, text: String? = nil) -> IntentPriority {
+        // Priority 1 & 2: Gestures
+        if let gesture = detectGesture(all: all, newStart: newStart) {
+            switch gesture {
+            case .strikeThrough(let targets, let strike):
+                return .strikeThrough(targetIndices: targets, strokeIndex: strike)
+            case .checkWork(let region, let indices):
+                return .checkWork(region: region, strokeIndices: indices)
+            }
+        }
+
+        // Priority 3: Bounded Selection Box
+        if let box = detectProblemBox(all: all, newStart: newStart) {
+            return .problemBox(box: box)
+        }
+
+        // Priority 4: Inline trailing math equals
+        let newStrokes = Array(all[newStart...])
+        let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty && MathEvaluator.isTheoryOrProseContext(trimmed) {
+            return .passiveNote(reason: "Theory/prose context")
+        }
+
+        let isTrailing = trimmed.hasSuffix("=") || MathInkParser.isTrailingEquals(newStrokes)
+        if isTrailing {
+            return .inlineMath(isTrailingEquals: true)
+        }
+
+        return .passiveNote(reason: "Standard writing")
+    }
+
     /// Looks for a gesture among the newest strokes. Runs BEFORE box
     /// detection, because a double underline is also two long thin strokes
     /// and would otherwise be mistaken for something else.

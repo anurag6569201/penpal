@@ -57,15 +57,38 @@ enum MathInkParser {
         return groups.map { idxs in idxs.map { usable[$0] } }
     }
 
-    /// True when stroke geometry looks like a trailing "=" (two stacked bars).
+    /// True when stroke geometry looks like a TRAILING "=" (two stacked bars at the end of the line).
     /// Used to start the math highlight even if OCR dropped the equals mark.
+    /// Internal formulas (e.g. "F = ma", "x = 5") do NOT count as equals asks because there is
+    /// substantial stroke content to the right of the equals sign.
     static func looksLikeEqualsAsk(_ strokes: [PKStroke]) -> Bool {
+        isTrailingEquals(strokes)
+    }
+
+    /// Checks if the equals symbol is trailing (the rightmost cluster with no significant symbol after it).
+    static func isTrailingEquals(_ strokes: [PKStroke]) -> Bool {
         let usable = strokes.filter { $0.renderBounds.width > 0.5 || $0.renderBounds.height > 0.5 }
         guard usable.count >= 2 else { return false }
         let unit = symbolUnit(usable)
         guard unit > 4 else { return false }
         let groups = cluster(usable, unit: unit)
-        return groups.contains { operatorSymbol(for: $0, in: usable, unit: unit) == "=" }
+        guard let equalsIdx = groups.indices.last(where: {
+            operatorSymbol(for: groups[$0], in: usable, unit: unit) == "="
+        }) else { return false }
+
+        // Must be at or very near the rightmost end of the stroke cluster sequence.
+        let remaining = groups[(equalsIdx + 1)...]
+        if remaining.isEmpty { return true }
+
+        // If there are clusters after the '=', ensure they are only minor stray dots or noise,
+        // NOT a full symbol or letter (like 'm' or 'a' in 'F = ma').
+        for r in remaining {
+            let rBounds = bounds(of: r, in: usable)
+            if rBounds.height > unit * 0.4 || rBounds.width > unit * 0.35 {
+                return false
+            }
+        }
+        return true
     }
 
     /// Layout test used by unit tests — is `cur` a superscript of `base`?
@@ -82,16 +105,28 @@ enum MathInkParser {
     }
 
     /// Top and bottom bar rects of a trailing geometric "=" — for the living
-    /// equals animation. Nil when geometry doesn't see stacked bars.
+    /// equals animation. Nil when geometry doesn't see stacked bars, or when the "="
+    /// is in the middle of a formula (e.g. "F = ma").
     static func equalsBarRects(in strokes: [PKStroke]) -> (top: CGRect, bottom: CGRect)? {
         let usable = strokes.filter { $0.renderBounds.width > 0.5 || $0.renderBounds.height > 0.5 }
         guard usable.count >= 2 else { return nil }
         let unit = symbolUnit(usable)
         guard unit > 4 else { return nil }
         let groups = cluster(usable, unit: unit)
-        guard let group = groups.last(where: {
-            operatorSymbol(for: $0, in: usable, unit: unit) == "="
-        }), group.count == 2 else { return nil }
+        guard let equalsIdx = groups.indices.last(where: {
+            operatorSymbol(for: groups[$0], in: usable, unit: unit) == "="
+        }) else { return nil }
+
+        let remaining = groups[(equalsIdx + 1)...]
+        for r in remaining {
+            let rBounds = bounds(of: r, in: usable)
+            if rBounds.height > unit * 0.4 || rBounds.width > unit * 0.35 {
+                return nil
+            }
+        }
+
+        let group = groups[equalsIdx]
+        guard group.count == 2 else { return nil }
         let a = usable[group[0]].renderBounds
         let b = usable[group[1]].renderBounds
         return a.midY < b.midY ? (a, b) : (b, a)
@@ -315,7 +350,12 @@ enum MathInkParser {
     private static func symbolUnit(_ strokes: [PKStroke]) -> CGFloat {
         let heights = strokes.map { $0.renderBounds.height }.filter { $0 > 2 }.sorted()
         guard !heights.isEmpty else { return 0 }
-        return heights[min(heights.count - 1, Int(Double(heights.count) * 0.7))]
+        let h = heights[min(heights.count - 1, Int(Double(heights.count) * 0.7))]
+        if h <= 5 && strokes.count >= 2 {
+            let total = strokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+            if total.height > 6 { return total.height }
+        }
+        return h
     }
 
     private static func bounds(of group: [Int], in strokes: [PKStroke]) -> CGRect {
