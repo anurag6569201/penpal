@@ -113,6 +113,14 @@ final class PaperBackgroundView: UIView {
 
 final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionDelegate, PKToolPickerObserver, UIGestureRecognizerDelegate {
 
+    /// Transient HUD feedback emitted by canvas gestures (e.g. 2-finger undo / 3-finger redo).
+    struct GestureFeedback: Equatable {
+        let id = UUID()
+        let icon: String
+        let message: String
+        let didPerform: Bool
+    }
+
     // MARK: Tunables (set from SwiftUI)
 
     var settings: HandwritingSettings = .shared { didSet { applySettings() } }
@@ -122,7 +130,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// or a finished "=" expression. Deliberately a constant and not a
     /// setting: it is a recognition delay, not a reply delay, and no
     /// capability can fire from it.
-    static let gestureScanDelay: TimeInterval = 1.5
+    static let gestureScanDelay: TimeInterval = 1.1
     var showDetection: Bool { settings.diagnostics }
     var messiness: CGFloat { CGFloat(settings.variation / 10) }
 
@@ -131,6 +139,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// True while ink is being OCR'd / math-parsed (the slow local read).
     var onReadingChange: ((Bool) -> Void)?
     var onStatus: ((String) -> Void)?
+    /// Emitted when a canvas gesture (2-finger tap undo, 3-finger tap redo, etc.) runs.
+    var onGestureFeedback: ((GestureFeedback) -> Void)?
+    /// Emitted whenever a plottable function of `x` is solved or discussed so UI can offer 1-tap Graph.
+    var onPlottableFunctionChange: ((String?) -> Void)?
     var onInteractivePermissionRequest: ((
         InteractivePermissionPrompt,
         @escaping (InteractivePermissionDecision) -> Void
@@ -200,6 +212,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// animation (orphaned first glyphs on the page) and B's placement
     /// aligns to just the continuation strokes (reply indented mid-page).
     private var brainBusy = false
+    /// Incremented on note load / clear so stale async responses from an
+    /// abandoned note never land on the newly active page.
+    private var loadGeneration = 0
     private var provider = HandAwareReplyProvider()
     private var typedLabels: [UILabel] = []
     /// Persisted models behind `typedLabels` (same order is not required).
@@ -338,6 +353,50 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                                    selector: #selector(undoStateChanged),
                                                    name: name, object: nil)
         }
+
+        // Gesture-based Undo & Redo (finger-only, never fights Apple Pencil):
+        // - Two-finger tap or three-finger swipe left  → Undo
+        // - Three-finger tap or three-finger swipe right → Redo
+        let directTouch = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+
+        let threeFingerRedoTap = UITapGestureRecognizer(target: self,
+                                                        action: #selector(handleThreeFingerRedoTap(_:)))
+        threeFingerRedoTap.numberOfTouchesRequired = 3
+        threeFingerRedoTap.numberOfTapsRequired = 1
+        threeFingerRedoTap.allowedTouchTypes = directTouch
+        threeFingerRedoTap.cancelsTouchesInView = false
+        threeFingerRedoTap.delegate = self
+
+        let twoFingerUndoTap = UITapGestureRecognizer(target: self,
+                                                      action: #selector(handleTwoFingerUndoTap(_:)))
+        twoFingerUndoTap.numberOfTouchesRequired = 2
+        twoFingerUndoTap.numberOfTapsRequired = 1
+        twoFingerUndoTap.allowedTouchTypes = directTouch
+        twoFingerUndoTap.cancelsTouchesInView = false
+        twoFingerUndoTap.delegate = self
+        // Prevent a 3-finger tap from firing a 2-finger undo first.
+        twoFingerUndoTap.require(toFail: threeFingerRedoTap)
+
+        let threeFingerSwipeLeft = UISwipeGestureRecognizer(target: self,
+                                                            action: #selector(handleThreeFingerUndoSwipe(_:)))
+        threeFingerSwipeLeft.direction = .left
+        threeFingerSwipeLeft.numberOfTouchesRequired = 3
+        threeFingerSwipeLeft.allowedTouchTypes = directTouch
+        threeFingerSwipeLeft.cancelsTouchesInView = false
+        threeFingerSwipeLeft.delegate = self
+
+        let threeFingerSwipeRight = UISwipeGestureRecognizer(target: self,
+                                                             action: #selector(handleThreeFingerRedoSwipe(_:)))
+        threeFingerSwipeRight.direction = .right
+        threeFingerSwipeRight.numberOfTouchesRequired = 3
+        threeFingerSwipeRight.allowedTouchTypes = directTouch
+        threeFingerSwipeRight.cancelsTouchesInView = false
+        threeFingerSwipeRight.delegate = self
+
+        canvas.addGestureRecognizer(threeFingerRedoTap)
+        canvas.addGestureRecognizer(twoFingerUndoTap)
+        canvas.addGestureRecognizer(threeFingerSwipeLeft)
+        canvas.addGestureRecognizer(threeFingerSwipeRight)
 
         // PEN-22 — Apple Pencil hover. Shows where a reply will land before
         // the pen touches down, which removes a whole class of surprise about
@@ -484,10 +543,18 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                      resetReplyCursor: Bool = true) {
         // A reply that was still animating belongs to the previous note —
         // stop it and drop it so it can't leak onto this one.
+        loadGeneration += 1
         pendingBake = nil
         pendingBoxStrokes = nil
         bakedUpTo = 0
+        brainBusy = false
+        onThinkingChange?(false)
+        onWritingStateChange?(false)
+        actionSnapshot = nil
+        actionName = nil
         renderer.cancelWriting()
+        renderer.endAnalyzing()
+        setReadingBanner(false)
         renderer.clearInk()
         dismissIntentChip()
         idleTimer?.invalidate()
@@ -624,24 +691,104 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
     }
 
-    func undo() {
-        canvas.undoManager?.undo()
-        publishUndoRedo()
-        onDrawingChange?(canvas.drawing)
+    @objc private func handleTwoFingerUndoTap(_ g: UITapGestureRecognizer) {
+        guard g.state == .ended, !isPageEditMode else { return }
+        undo(showFeedback: true)
     }
 
-    func redo() {
-        canvas.undoManager?.redo()
+    @objc private func handleThreeFingerRedoTap(_ g: UITapGestureRecognizer) {
+        guard g.state == .ended, !isPageEditMode else { return }
+        redo(showFeedback: true)
+    }
+
+    @objc private func handleThreeFingerUndoSwipe(_ g: UISwipeGestureRecognizer) {
+        guard g.state == .ended, !isPageEditMode else { return }
+        undo(showFeedback: true)
+    }
+
+    @objc private func handleThreeFingerRedoSwipe(_ g: UISwipeGestureRecognizer) {
+        guard g.state == .ended, !isPageEditMode else { return }
+        redo(showFeedback: true)
+    }
+
+    func undo(showFeedback: Bool = false) {
+        idleTimer?.invalidate()
+        dismissIntentChip()
+        dismissAnswerPreviewIfNeeded()
+        if renderer.isWriting {
+            completePendingReplyInstantly()
+        }
+        guard let manager = canvas.undoManager, manager.canUndo else {
+            if showFeedback {
+                onGestureFeedback?(GestureFeedback(
+                    icon: "arrow.uturn.backward",
+                    message: "Nothing to undo",
+                    didPerform: false
+                ))
+            }
+            return
+        }
+        let actionName = manager.undoActionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        manager.undo()
         publishUndoRedo()
         onDrawingChange?(canvas.drawing)
+        TourEventBus.shared.emit(.undoPerformed)
+        if showFeedback {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            let label = actionName.isEmpty ? "Undo" : "Undid \(actionName)"
+            onGestureFeedback?(GestureFeedback(
+                icon: "arrow.uturn.backward",
+                message: label,
+                didPerform: true
+            ))
+        }
+    }
+
+    func redo(showFeedback: Bool = false) {
+        idleTimer?.invalidate()
+        dismissIntentChip()
+        dismissAnswerPreviewIfNeeded()
+        guard let manager = canvas.undoManager, manager.canRedo else {
+            if showFeedback {
+                onGestureFeedback?(GestureFeedback(
+                    icon: "arrow.uturn.forward",
+                    message: "Nothing to redo",
+                    didPerform: false
+                ))
+            }
+            return
+        }
+        let actionName = manager.redoActionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        manager.redo()
+        publishUndoRedo()
+        onDrawingChange?(canvas.drawing)
+        if showFeedback {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            let label = actionName.isEmpty ? "Redo" : "Redid \(actionName)"
+            onGestureFeedback?(GestureFeedback(
+                icon: "arrow.uturn.forward",
+                message: label,
+                didPerform: true
+            ))
+        }
     }
 
     func clearDrawing() {
+        loadGeneration += 1
         pendingBake = nil
         pendingBoxStrokes = nil
         bakedUpTo = 0
+        brainBusy = false
+        onThinkingChange?(false)
+        onWritingStateChange?(false)
+        actionSnapshot = nil
+        actionName = nil
         renderer.cancelWriting()
+        renderer.endAnalyzing()
+        setReadingBanner(false)
         renderer.clearInk()
+        dismissIntentChip()
+        idleTimer?.invalidate()
         suppressChanges = true
         canvas.drawing = PKDrawing()
         lastReplyStrokeCount = 0
@@ -908,6 +1055,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("Tracing your image…")
+        let gen = loadGeneration
 
         Task { @MainActor in
             let store = ConversationStore.shared
@@ -918,6 +1066,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     quality: self.settings.illustratorQuality,
                     baseURL: self.settings.apiBaseURL
                 )
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 store.append(role: "user", content: "(image to trace)")
@@ -938,6 +1087,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     self.onWritingStateChange?(false)
                 }
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
@@ -956,27 +1106,27 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// preview that is right or absent, never a guess flickering under the
     /// pen. A wrong preview would be worse than none: the user reads it,
     /// believes it, and moves on.
-    private func previewAnswer(expression: String, placement: ReplyPlacement,
+    private func previewAnswer(answer: String, placement: ReplyPlacement,
                                sourceStrokes: [PKStroke]) {
         // No `useBrain` check on purpose: the preview is computed entirely
         // on device, so it works with the brain switched off or offline.
-        guard !renderer.isWriting,
-              let answer = MathEvaluator.instantAnswer(for: expression),
-              !answer.isEmpty else {
+        guard !renderer.isWriting, !answer.isEmpty else {
             renderer.clearAnswerGhost()
             return
         }
 
+        let inline = inlineAnswerPlacement(answer: answer, from: placement,
+                                           sourceStrokes: sourceStrokes)
         let matched = Self.sampleUserInk(from: sourceStrokes)
         let baseWidth = matched.map { max(1.2, $0.width * 0.9) }
-            ?? max(1.2, placement.xHeight * 0.1)
+            ?? max(1.2, inline.xHeight * 0.1)
         let sequence = StrokeFont.layoutSequence(
             text: answer,
-            origin: placement.origin,
-            xHeight: placement.xHeight,
-            maxX: placement.maxX,
+            origin: inline.origin,
+            xHeight: inline.xHeight,
+            maxX: inline.maxX,
             lineGap: lineGap,
-            maxY: placement.maxY,
+            maxY: inline.maxY,
             messiness: messiness * 0.5,
             useUserHand: true,
             settings: settings,
@@ -1504,15 +1654,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         true
     }
 
-    /// The block tap observes every finger tap on the page — but a tap that
-    /// floating chrome already claimed (an intent-chip button, a toolbar…)
-    /// must not ALSO wake or sleep a block that happens to sit underneath.
+    /// The block tap and undo/redo finger gestures observe touches on the page —
+    /// but a tap that floating chrome already claimed (an intent-chip button, a
+    /// toolbar…) or touches inside an active code block must not fire them.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
-        guard gestureRecognizer is UITapGestureRecognizer else { return true }
+        guard gestureRecognizer is UITapGestureRecognizer
+            || gestureRecognizer is UISwipeGestureRecognizer else { return true }
         var v = touch.view
         while let cur = v, cur !== canvas {
             if cur is UIControl || cur is MathIntentChip { return false }
+            if let active = activeCodeBlock, cur === active,
+               (gestureRecognizer as? UITapGestureRecognizer)?.numberOfTouchesRequired ?? 0 >= 2
+                || gestureRecognizer is UISwipeGestureRecognizer {
+                return false
+            }
             v = cur.superview
         }
         return true
@@ -1818,10 +1974,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Boxing is a direct canvas action, so don't make the user wait for the
     /// normal pause/OCR timer. A boxed question is an explicit send, like Ask.
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
-        guard !renderer.isWriting, pendingBake == nil, !brainBusy else { return }
+        guard !isPageEditMode, !renderer.isWriting, pendingBake == nil, !brainBusy else { return }
         let all = canvasView.drawing.strokes
         guard all.count > lastReplyStrokeCount else { return }
         let newStart = lastReplyStrokeCount
+        // Double underline / strike-through take precedence over box detection.
+        guard InkAnalyzer.detectGesture(all: all, newStart: newStart) == nil else { return }
         if consumeBoxedSelectionIfPresent(all: all, newStart: newStart) {
             idleTimer?.invalidate()
             lastReplyStrokeCount = all.count
@@ -1903,7 +2061,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
         idleTimer?.invalidate()
-        guard !renderer.isWriting else {
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
             onStatus?("Wait for the current reply to finish.")
             return
         }
@@ -1974,6 +2132,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
 
+        let gen = loadGeneration
+        brainBusy = true
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
@@ -1991,12 +2151,16 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     customMood: settings.customMoodText,
                     mathDetail: settings.mathDetail
                 )
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 store.append(role: "user", content: trimmed)
                 store.append(role: "assistant", content: reply)
                 onThinkingChange?(false)
                 onWritingStateChange?(false)
                 writeReplyText(reply)
             } catch {
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 onThinkingChange?(false)
                 onWritingStateChange?(false)
                 // PEN-12: if we're simply offline, keep the message and say so
@@ -2170,12 +2334,16 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
         // Drawn intent (PEN-07) runs FIRST: a double underline is also two
         // long thin strokes, and would otherwise be read as something else.
-        if penpalEnabled,
-           let gesture = InkAnalyzer.detectGesture(all: all, newStart: newStart) {
-            if (languageMode || debateMode), case .checkWork = gesture {
-                // A double underline in Language Partner must never invoke the
-                // math grader. Leave it as ordinary ink for this turn.
-            } else {
+        // Strike-through and scribble-erase work even when Penpal dock is hidden
+        // so erasing mistakes in math is always effortless.
+        if let gesture = InkAnalyzer.detectGesture(all: all, newStart: newStart) {
+            switch gesture {
+            case .checkWork:
+                if penpalEnabled && !(languageMode || debateMode) {
+                    perform(gesture, all: all)
+                    return
+                }
+            case .strikeThrough, .scribbleErase:
                 perform(gesture, all: all)
                 return
             }
@@ -2244,6 +2412,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // "=" (or a boxed problem) — never for ordinary companion pauses.
         let inkToRead = newStrokes
         let traits = traitCollection
+        let gen = loadGeneration
 
         Task { @MainActor in
             var analyzing = false
@@ -2251,7 +2420,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             // filaments) until the chip dismisses or solves.
             var releaseAnalyzing = true
             defer {
-                if analyzing && releaseAnalyzing {
+                if analyzing && releaseAnalyzing && self.loadGeneration == gen {
                     self.renderer.endAnalyzing()
                     self.setReadingBanner(false)
                 }
@@ -2265,14 +2434,19 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 strokes: inkToRead,
                 traits: traits,
                 recognitionLanguages: recognitionLanguages)
+            guard self.loadGeneration == gen else { return }
             let trimmed = (candidates.first ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let lastLineTrimmed = trimmed
+                .components(separatedBy: .newlines)
+                .last?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? trimmed
 
             // "=" only triggers when it is trailing (at the end of the line)
             // and not part of theory/prose notes (e.g. "Force F = ma").
             let isProse = MathEvaluator.isTheoryOrProseContext(trimmed)
             let hasEquals = !isProse && (
-                trimmed.hasSuffix("=")
+                lastLineTrimmed.hasSuffix("=")
                 || MathInkParser.looksLikeEqualsAsk(inkToRead)
             )
 
@@ -2284,6 +2458,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
             // Prefer a full-line reading when "=" is only in the latest stroke.
             var fullLineText: String?
+            var lineCandidates: [String] = []
+            var lineMatesStrokes: [PKStroke] = []
             if hasEquals {
                 let lastLineRect = (InkAnalyzer.clusterLines(inkToRead)
                     .max { $0.rect.maxY < $1.rect.maxY })?.rect
@@ -2296,11 +2472,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                         return mid >= bandMinY && mid <= bandMaxY
                     }
                     if lineMates.count > inkToRead.count {
-                        let lineCandidates = await InkRecognizer.recognizeCandidates(
+                        let recognizedLine = await InkRecognizer.recognizeCandidates(
                             strokes: lineMates,
                             traits: traits,
                             recognitionLanguages: recognitionLanguages)
-                        fullLineText = lineCandidates.first?
+                        guard self.loadGeneration == gen else { return }
+                        lineCandidates = recognizedLine
+                        lineMatesStrokes = lineMates
+                        fullLineText = recognizedLine.first?
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if mathematicianMode {
                             self.renderer.beginAnalyzing(strokes: lineMates)
@@ -2434,8 +2613,76 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             let structured = hasEquals
                 ? await MathInkParser.parse(strokes: inkToRead, traits: traits)
                 : nil
+            guard self.loadGeneration == gen else { return }
+            let lineStructured: String? = (hasEquals && !lineMatesStrokes.isEmpty)
+                ? await MathInkParser.parse(strokes: lineMatesStrokes, traits: traits)
+                : nil
+            guard self.loadGeneration == gen else { return }
+
             let mathCandidates = Self.withTrailingEquals(
                 [structured].compactMap { $0 } + candidates, force: hasEquals)
+            let lineMathCandidates = lineMatesStrokes.isEmpty
+                ? []
+                : Self.withTrailingEquals(
+                    [lineStructured].compactMap { $0 } + lineCandidates,
+                    force: hasEquals)
+
+            let startsWithContinuationOp = lastLineTrimmed.first.map {
+                "+-*×/÷^".contains($0)
+            } ?? false
+            var resolvedVariables: [String: Double] = [:]
+            var resolvedHit: (hit: (expression: String, answer: String), strokes: [PKStroke])? = {
+                guard hasEquals else { return nil }
+                if startsWithContinuationOp, !lineMathCandidates.isEmpty {
+                    if let h = Self.calculatorHit(in: lineMathCandidates) {
+                        return (h, lineMatesStrokes)
+                    }
+                    if let h = Self.calculatorHit(in: mathCandidates) {
+                        return (h, inkToRead)
+                    }
+                    return nil
+                }
+                if let h = Self.calculatorHit(in: mathCandidates) {
+                    return (h, inkToRead)
+                }
+                if !lineMathCandidates.isEmpty,
+                   let h = Self.calculatorHit(in: lineMathCandidates) {
+                    return (h, lineMatesStrokes)
+                }
+                return nil
+            }()
+
+            // Page-level math variables ("r = 5" above, then "2*pi*r =" here):
+            // only scanned when an expression ending in "=" has free variables
+            // and direct evaluation couldn't resolve it.
+            if hasEquals, resolvedHit == nil {
+                let probeCandidates = (startsWithContinuationOp && !lineMathCandidates.isEmpty)
+                    ? lineMathCandidates : mathCandidates
+                let needsVars = probeCandidates.contains { cand in
+                    let body = cand.hasSuffix("=") ? String(cand.dropLast()) : cand
+                    return !body.contains("=") && MathEvaluator.hasFreeVariable(body)
+                }
+                if needsVars {
+                    let targetStrokes = (startsWithContinuationOp && !lineMatesStrokes.isEmpty)
+                        ? lineMatesStrokes : inkToRead
+                    let targetRect = targetStrokes.reduce(CGRect.null) { $0.union($1.renderBounds) }
+                    let pageVars = await self.scanPageVariables(above: targetRect.minY,
+                                                                in: all,
+                                                                excluding: targetStrokes,
+                                                                traits: traits)
+                    guard self.loadGeneration == gen else { return }
+                    if !pageVars.isEmpty {
+                        if let h = Self.calculatorHit(in: probeCandidates, variables: pageVars) {
+                            resolvedHit = (h, targetStrokes)
+                            resolvedVariables = pageVars
+                        } else if !lineMathCandidates.isEmpty,
+                                  let h = Self.calculatorHit(in: lineMathCandidates, variables: pageVars) {
+                            resolvedHit = (h, lineMatesStrokes)
+                            resolvedVariables = pageVars
+                        }
+                    }
+                }
+            }
 
             // Penpal + Mathematician:
             // 1. On-device instant arithmetic (e.g. 12 * 12 =) works immediately, even on pause.
@@ -2443,21 +2690,30 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             // 3. A pause while writing does NOT fire the brain uninvited.
             if mathematicianMode {
                 var bestText = (fullLineText?.isEmpty == false ? fullLineText! : trimmed)
-                if hasEquals, let hit = Self.calculatorHit(in: mathCandidates) {
+                if let resolved = resolvedHit {
+                    self.onPlottableFunctionChange?(GraphPlotter.plottableExpression(from: resolved.hit.expression))
                     if self.settings.confirmBeforeSolving {
-                        self.previewAnswer(expression: hit.expression,
+                        self.previewAnswer(answer: resolved.hit.answer,
                                            placement: placement,
-                                           sourceStrokes: inkToRead)
+                                           sourceStrokes: resolved.strokes)
                     }
-                    if self.offerCalculation(expression: hit.expression, answer: hit.answer,
-                                             placement: placement, strokes: inkToRead) {
+                    if self.offerCalculation(expression: resolved.hit.expression,
+                                             answer: resolved.hit.answer,
+                                             placement: placement,
+                                             strokes: resolved.strokes,
+                                             variables: resolvedVariables) {
                         releaseAnalyzing = false
                     }
+                    return
+                }
+                if !auto, let body = GraphPlotter.functionBody(in: bestText),
+                   self.drawGraph(of: body) {
                     return
                 }
 
                 if !auto, hasEquals || bestText.contains("=") {
                     bestText = Self.ensureTrailingEquals(bestText)
+                    self.onPlottableFunctionChange?(GraphPlotter.plottableExpression(from: bestText))
                     guard self.settings.useBrain else {
                         self.onStatus?("Solving this needs the brain — enable it in Settings → Behavior.")
                         return
@@ -2470,6 +2726,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                         self.onStatus?("Write a problem, then tap Ask.")
                         return
                     }
+                    self.onPlottableFunctionChange?(GraphPlotter.plottableExpression(from: bestText))
                     guard self.settings.useBrain else {
                         self.lastReplyStrokeCount = newStart
                         self.onStatus?(
@@ -2488,43 +2745,39 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             }
 
             // Local calculator — Companion, or Penpal off. Requires "=".
-            if hasEquals, let hit = Self.calculatorHit(in: mathCandidates) {
+            if let resolved = resolvedHit {
+                self.onPlottableFunctionChange?(GraphPlotter.plottableExpression(from: resolved.hit.expression))
                 // PEN-11 — show the answer immediately, ghosted, while the
                 // confirmation is still pending. The user sees the result the
                 // moment it is known instead of after another interaction.
                 if self.settings.confirmBeforeSolving {
-                    self.previewAnswer(expression: hit.expression,
+                    self.previewAnswer(answer: resolved.hit.answer,
                                        placement: placement,
-                                       sourceStrokes: inkToRead)
+                                       sourceStrokes: resolved.strokes)
                 }
-                if self.offerCalculation(expression: hit.expression, answer: hit.answer,
-                                         placement: placement, strokes: inkToRead) {
+                if self.offerCalculation(expression: resolved.hit.expression,
+                                         answer: resolved.hit.answer,
+                                         placement: placement,
+                                         strokes: resolved.strokes,
+                                         variables: resolvedVariables) {
                     releaseAnalyzing = false
                 }
                 return
             }
 
-            if hasEquals, let full = fullLineText, !full.isEmpty {
-                let lineCandidates = [full]
-                let lineMath = Self.withTrailingEquals(lineCandidates, force: true)
-                if let hit = Self.calculatorHit(in: lineMath) {
-                    if self.offerCalculation(expression: hit.expression, answer: hit.answer,
-                                             placement: placement, strokes: inkToRead) {
-                        releaseAnalyzing = false
-                    }
-                    return
-                }
-            }
-
             if hasEquals {
-                if let expr = Self.bestEqualsExpression(in: mathCandidates)
+                let reviewCandidates = (startsWithContinuationOp && !lineMathCandidates.isEmpty)
+                    ? lineMathCandidates : mathCandidates
+                let reviewStrokes = (startsWithContinuationOp && !lineMatesStrokes.isEmpty)
+                    ? lineMatesStrokes : inkToRead
+                if let expr = Self.bestEqualsExpression(in: reviewCandidates)
                     ?? (trimmed.isEmpty ? nil : Self.ensureTrailingEquals(trimmed)) {
                     // Only offer calculation if it is a plausible arithmetic attempt!
                     // If it is theory, an equation with free variables (like F=ma or x+y=10),
                     // or natural prose notes, do NOT pop up an amber calculator chip.
                     if MathEvaluator.isPlausibleArithmeticAttempt(expr) {
                         if self.offerCalculation(expression: expr, answer: nil,
-                                                 placement: placement, strokes: inkToRead) {
+                                                 placement: placement, strokes: reviewStrokes) {
                             releaseAnalyzing = false
                         }
                         return
@@ -2556,7 +2809,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             }
 
             // Companion below.
-            //
+            if let body = GraphPlotter.functionBody(in: bestText),
+               self.drawGraph(of: body) {
+                return
+            }
+
             // Algebra the on-device calculator could not finish ("2x + 5 =")
             // escalates to the maths brain. This sits BELOW the guard on
             // purpose: it is a network call, so a pause must not trigger it,
@@ -2569,7 +2826,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 return
             }
 
-            guard !trimmed.isEmpty else {
+            guard !bestText.isEmpty else {
                 self.lastReplyStrokeCount = newStart
                 self.onStatus?("I couldn’t read that. Try boxing the question, then tap Ask again.")
                 return
@@ -2578,7 +2835,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 self.renderLocalReply(placement: placement, newStrokes: inkToRead)
                 return
             }
-            self.askBrain(trimmed, placement: placement,
+            self.askBrain(bestText, placement: placement,
                           capability: self.settings.capability, fallbackInk: inkToRead)
         }
     }
@@ -2616,14 +2873,15 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// are tried most-math-looking first ("2^10" beats "210"), so one bad
     /// reading doesn't sink a solvable expression — or worse, silently
     /// compute the wrong one.
-    private static func calculatorHit(in candidates: [String])
+    private static func calculatorHit(in candidates: [String],
+                                      variables: [String: Double] = [:])
         -> (expression: String, answer: String)? {
         func mathScore(_ s: String) -> Int {
             s.reduce(0) { "^*/+-()%!".contains($1) ? $0 + 2 : ($1.isNumber ? $0 + 1 : $0) }
         }
         func attempt(_ candidate: String) -> (String, String)? {
             let text = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let answer = MathEvaluator.instantAnswer(for: text) else { return nil }
+            guard let answer = MathEvaluator.instantAnswer(for: text, variables: variables) else { return nil }
             return (text, answer)
         }
         if let first = candidates.first, let hit = attempt(first) { return hit }
@@ -2632,6 +2890,42 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             if let hit = attempt(candidate) { return hit }
         }
         return nil
+    }
+
+    /// Scans recent lines ABOVE `cutoffY` on the page for variable definitions
+    /// (e.g. `r = 5`, `a = 3`, `b = 2a`) so expressions below can use them live.
+    @MainActor
+    private func scanPageVariables(above cutoffY: CGFloat,
+                                   in all: [PKStroke],
+                                   excluding current: [PKStroke],
+                                   traits: UITraitCollection) async -> [String: Double] {
+        let excludedBounds = current.map(\.renderBounds)
+        let priorStrokes = all.filter { stroke in
+            let rb = stroke.renderBounds
+            guard rb.maxY < cutoffY - 4 else { return false }
+            return !excludedBounds.contains(rb)
+        }
+        guard !priorStrokes.isEmpty else { return [:] }
+        // Cluster into lines and examine the most recent 8 lines above the ask.
+        let lines = InkAnalyzer.clusterLines(priorStrokes)
+            .sorted { $0.rect.midY < $1.rect.midY }
+            .suffix(8)
+        var recognizedLines: [String] = []
+        for line in lines {
+            let band = line.rect.insetBy(dx: -4, dy: -4)
+            let lineStrokes = priorStrokes.filter { band.intersects($0.renderBounds) }
+            guard lineStrokes.count >= 2, lineStrokes.count <= 36 else { continue }
+            let cands = await InkRecognizer.recognizeCandidates(
+                strokes: lineStrokes,
+                traits: traits,
+                recognitionLanguages: ["en-US"]
+            )
+            if let first = cands.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !first.isEmpty {
+                recognizedLines.append(first)
+            }
+        }
+        return MathEvaluator.extractVariables(from: recognizedLines)
     }
 
     /// Requests a perspective-labelled counterargument. This is deliberately
@@ -2655,6 +2949,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
             let store = ConversationStore.shared
@@ -2664,6 +2959,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     history: store.historyForAPI(),
                     baseURL: self.settings.apiBaseURL
                 )
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 store.append(role: "user", content: message)
@@ -2675,6 +2971,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     purpose: .debate
                 )
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.abandonPendingBox()
                 self.brainBusy = false
                 self.onThinkingChange?(false)
@@ -2708,6 +3005,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
             let store = ConversationStore.shared
@@ -2718,6 +3016,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     history: store.historyForAPI(),
                     baseURL: self.settings.apiBaseURL
                 )
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 store.append(role: "user", content: message)
@@ -2729,6 +3028,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     sourceStrokes: sourceStrokes
                 )
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.abandonPendingBox()
                 self.brainBusy = false
                 self.onThinkingChange?(false)
@@ -2882,6 +3182,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
             let store = ConversationStore.shared
@@ -2896,6 +3197,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     illustrationQuality: self.settings.illustratorQuality,
                     pageWidth: usableWidth
                 )
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 store.append(role: "user", content: message)
@@ -2903,6 +3205,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                              content: "\(page.reply) [Page: \(page.title)]")
                 await self.layOutArrangedPage(page)
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
@@ -2918,6 +3221,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// person would build it is most of what makes the result feel written
     /// rather than pasted.
     private func layOutArrangedPage(_ page: PenpalAPI.ArrangedPageResponse) async {
+        let gen = loadGeneration
         let usableWidth = max(220, bounds.width - leftMargin - 24)
         let top = max(lastReplyBottom + lineGap * 1.5, rulesTopInset + lineGap)
         // Two columns is the most a handwritten page carries comfortably;
@@ -2945,14 +3249,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         ensureRoom(below: composition.contentBottom + lineGap * 3)
         scrollToReveal(top)
         beginUndoableAction("Arrange Page")
+        defer {
+            if self.loadGeneration == gen {
+                self.endUndoableAction()
+            }
+        }
 
         let byID = Dictionary(uniqueKeysWithValues:
             page.sections.map { ($0.id, $0) })
 
         for placed in composition.placements {
+            guard self.loadGeneration == gen else { return }
             guard let section = byID[placed.id] else { continue }
             await drawArrangedSection(section, at: placed.frame)
         }
+        guard self.loadGeneration == gen else { return }
 
         lastReplyBottom = composition.contentBottom
         lastReplyStrokeCount = canvas.drawing.strokes.count
@@ -3093,6 +3404,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
             let store = ConversationStore.shared
@@ -3102,6 +3414,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     quality: self.settings.illustratorQuality,
                     baseURL: self.settings.apiBaseURL
                 )
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 store.append(role: "user", content: message)
@@ -3126,6 +3439,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     self.onWritingStateChange?(false)
                 }
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.abandonPendingBox()
                 self.brainBusy = false
                 self.onThinkingChange?(false)
@@ -3144,6 +3458,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onWritingStateChange?(true)
         onStatus?("")
         brainBusy = true
+        let gen = loadGeneration
         Task { @MainActor in
             let store = ConversationStore.shared
             let history = store.historyForAPI()
@@ -3158,6 +3473,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     customMood: self.settings.customMoodText,
                     mathDetail: self.settings.mathDetail
                 )
+                guard self.loadGeneration == gen else { return }
                 store.append(role: "user", content: message)
                 store.append(role: "assistant", content: reply)
                 self.onThinkingChange?(false)
@@ -3169,6 +3485,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 // the ink is fully baked.
                 self.brainBusy = false
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
@@ -3185,6 +3502,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         placement: ReplyPlacement?,
         sourceStrokes: [PKStroke]
     ) {
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current reply to finish.")
+            return
+        }
         guard settings.useBrain else {
             onStatus?(
                 "Interactive blocks need the brain — enable it in Settings → Behavior."
@@ -3195,6 +3516,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onWritingStateChange?(true)
         onStatus?("")
         brainBusy = true
+        let gen = loadGeneration
 
         Task { @MainActor in
             let store = ConversationStore.shared
@@ -3208,14 +3530,16 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     language: self.settings.targetLanguage,
                     mathDetail: self.settings.mathDetail
                 )
+                guard self.loadGeneration == gen else { return }
                 let blockID = UUID()
-                self.onThinkingChange?(false)
-                self.onWritingStateChange?(false)
                 let runtime = await self.prepareInteractiveRuntime(
                     blockID: blockID,
                     title: result.title,
                     manifest: result.manifest ?? .empty
                 )
+                guard self.loadGeneration == gen else { return }
+                self.onThinkingChange?(false)
+                self.onWritingStateChange?(false)
                 store.append(role: "user", content: message)
                 store.append(
                     role: "assistant",
@@ -3232,7 +3556,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     self.writeReplyText(result.reply)
                 }
                 self.afterWriting { [weak self] in
-                    self?.insertGeneratedInteractiveBlock(
+                    guard let self, self.loadGeneration == gen else { return }
+                    self.insertGeneratedInteractiveBlock(
                         id: blockID,
                         html: result.html,
                         preferredHeight: CGFloat(result.preferred_height),
@@ -3241,6 +3566,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 }
                 self.brainBusy = false
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.abandonPendingBox()
                 self.brainBusy = false
                 self.onThinkingChange?(false)
@@ -3414,7 +3740,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private func offerCalculation(expression: String,
                                   answer: String?,
                                   placement: ReplyPlacement,
-                                  strokes: [PKStroke]) -> Bool {
+                                  strokes: [PKStroke],
+                                  variables: [String: Double] = [:]) -> Bool {
         let query = Self.ensureTrailingEquals(expression)
 
         if !settings.confirmBeforeSolving, let answer {
@@ -3425,14 +3752,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // Confirm off but no answer yet — try once more, else fall through
         // to the chip so the user can fix the reading.
         if !settings.confirmBeforeSolving {
-            if let computed = MathEvaluator.instantAnswer(for: query) {
+            if let computed = MathEvaluator.instantAnswer(for: query, variables: variables) {
                 commitCalculation(expression: query, answer: computed,
                                   placement: placement, sourceStrokes: strokes)
                 return false
             }
         }
 
-        dismissIntentChip()
+        clearIntentChip(endAnalyzing: false)
         let body = query.hasSuffix("=") ? String(query.dropLast()) : query
         let shown = body.trimmingCharacters(in: .whitespacesAndNewlines)
         let needsReview = answer == nil
@@ -3441,7 +3768,19 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             renderer.setAnalyzingUncertain(true)
         }
 
-        let chip = MathIntentChip(expression: shown, needsReview: needsReview)
+        let usedVars = MathEvaluator.referencedVariables(in: shown, from: variables)
+        let varSummary: String? = usedVars.isEmpty
+            ? nil
+            : usedVars.map { "\($0.name)=\(MathEvaluator.format($0.value))" }.joined(separator: ", ")
+        let plottableBody = GraphPlotter.plottableExpression(from: shown)
+        let showSteps = settings.useBrain && penpalEnabled
+
+        let chip = MathIntentChip(expression: shown,
+                                  answerPreview: answer,
+                                  variableSummary: varSummary,
+                                  needsReview: needsReview,
+                                  showStepsAction: showSteps,
+                                  showGraphAction: plottableBody != nil)
         chip.onSolve = { [weak self] edited in
             guard let self else { return }
             let learned = shown.isEmpty ? 0 : MathCorrectionTrainer.learn(
@@ -3453,8 +3792,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     : "Learned \(n) symbols from your correction")
             }
             let solveQuery = Self.ensureTrailingEquals(edited)
-            guard let solved = MathEvaluator.instantAnswer(for: solveQuery) else {
-                self.onStatus?("Couldn't solve \"\(edited)\" — check the expression.")
+            guard let solved = MathEvaluator.instantAnswer(for: solveQuery, variables: variables) else {
+                self.onStatus?("Couldn't solve \"\(edited)\" — tap Steps for full working or check the expression.")
                 return
             }
             let inline = self.inlineAnswerPlacement(answer: solved, from: placement,
@@ -3479,6 +3818,30 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             } else {
                 go()
             }
+        }
+        chip.onSteps = { [weak self] edited in
+            guard let self else { return }
+            self.intentChip = nil
+            self.renderer.endAnalyzing()
+            self.renderer.clearAnswerGhost()
+            self.setReadingBanner(false)
+            chip.dismiss(animated: true, notify: false)
+            let askQuery = Self.ensureTrailingEquals(edited)
+            self.askBrain(askQuery, placement: placement,
+                          capability: "mathematician", fallbackInk: nil)
+        }
+        chip.onGraph = { [weak self] edited in
+            guard let self else { return }
+            guard let plotBody = GraphPlotter.plottableExpression(from: edited) ?? plottableBody else {
+                self.onStatus?("Couldn't graph \"\(edited)\" — try an expression in x.")
+                return
+            }
+            self.intentChip = nil
+            self.renderer.endAnalyzing()
+            self.renderer.clearAnswerGhost()
+            self.setReadingBanner(false)
+            chip.dismiss(animated: true, notify: false)
+            self.drawGraph(of: plotBody)
         }
         chip.onDismiss = { [weak self] in
             self?.intentChip = nil
@@ -3555,12 +3918,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     func dismissIntentChip() {
+        clearIntentChip(endAnalyzing: true)
+    }
+
+    private func clearIntentChip(endAnalyzing: Bool) {
+        let hadChip = intentChip != nil
         intentChip?.dismiss(animated: false, notify: false)
         intentChip = nil
         // PEN-11: the chip and the preview describe the same expression, so
         // they live and die together. Leaving a ghost after the chip is gone
         // would show an answer with no way to accept it.
         renderer.clearAnswerGhost()
+        if endAnalyzing, hadChip {
+            renderer.endAnalyzing()
+            setReadingBanner(false)
+        }
     }
 
     /// Writes the locally computed answer right after the user's "=" — same
@@ -3576,7 +3948,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             .max(by: { $0.rect.maxY < $1.rect.maxY })?.rect
             ?? placement.newInkBounds
 
-        let thinkTime = min(1.3, 0.55 + Double(expression.count) * 0.03)
+        let thinkTime = min(0.48, 0.22 + Double(expression.count) * 0.012)
         let dotSpot = CGPoint(x: inline.origin.x + inline.xHeight * 0.3,
                               y: inline.origin.y - inline.xHeight * 0.4)
 
@@ -3714,6 +4086,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// question, dissolve the box, then reply in the current mode. Same
     /// "write it, then Ask or box it" grammar as Interactive.
     private func sendBoxedHandwriting(_ box: InkAnalyzer.ProblemBox, all: [PKStroke]) {
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current reply to finish.")
+            return
+        }
         let enclosed = box.enclosedIndices.map { all[$0] }
         let boxStrokes = box.boxStrokeIndices.map { all[$0] }
 
@@ -3725,13 +4101,19 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let traits = traitCollection
         let recognitionLanguages = settings.capability == "language"
             ? [settings.targetLanguage] : ["en-US"]
+        let gen = loadGeneration
         Task { @MainActor in
-            defer { self.setReadingBanner(false) }
+            defer {
+                if self.loadGeneration == gen {
+                    self.setReadingBanner(false)
+                }
+            }
             let candidates = await InkRecognizer.recognizeCandidates(
                 strokes: enclosed,
                 traits: traits,
                 recognitionLanguages: recognitionLanguages
             )
+            guard self.loadGeneration == gen else { return }
             let text = (candidates.first ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
@@ -3741,11 +4123,21 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 )
                 return
             }
+            if self.settings.capability == "companion" || self.settings.capability == "illustrator",
+               let body = GraphPlotter.functionBody(in: text),
+               self.drawGraph(of: body) {
+                return
+            }
             guard self.settings.useBrain else {
                 self.abandonPendingBox()
                 self.onStatus?(
                     "This reply needs the brain — enable it in Settings → Behavior."
                 )
+                return
+            }
+            guard !self.brainBusy, !self.renderer.isWriting, self.pendingBake == nil else {
+                self.abandonPendingBox()
+                self.onStatus?("Wait for the current reply to finish.")
                 return
             }
 
@@ -3866,6 +4258,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// exponents, roots and matrices exactly as drawn, states its reading
     /// ("Reading as: ..."), solves, and the answer is written below the box.
     private func solveBoxedProblem(_ box: InkAnalyzer.ProblemBox, all: [PKStroke]) {
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current problem to finish.")
+            return
+        }
         let enclosed = box.enclosedIndices.map { all[$0] }
         let boxStrokes = box.boxStrokeIndices.map { all[$0] }
         let boxStroke = all[box.boxStrokeIndex]
@@ -3901,12 +4297,18 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             onStatus?("Nothing readable inside the box — write the problem, then box it.")
             return
         }
+        brainBusy = true
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
-            defer { self.setReadingBanner(false) }
+            defer {
+                if self.loadGeneration == gen {
+                    self.setReadingBanner(false)
+                }
+            }
             let store = ConversationStore.shared
             let history = store.historyForAPI()
             do {
@@ -3916,6 +4318,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     baseURL: self.settings.apiBaseURL,
                     mathDetail: self.settings.mathDetail
                 )
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 // The reply opens with "Reading as: ..." — that line carries
                 // the problem into conversation history for follow-ups.
                 store.append(role: "user", content: "(boxed handwritten problem, sent as image)")
@@ -3926,6 +4330,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                      boxRect: box.rect, all: all,
                                      matchStrokes: enclosed)
             } catch {
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 // PEN-12: a boxed problem is expensive to redraw, so keep the
@@ -4046,6 +4452,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             // One undo restores everything — a mis-detected strike must never
             // cost the user work they can't get back.
             dissolveBoxStrokes(doomed, actionName: "Delete Struck Text")
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            onStatus?("")
+
+        case .scribbleErase(let targetIndices, let strokeIndex):
+            TourEventBus.shared.emit(.strikeDone)
+            let doomed = (targetIndices + [strokeIndex]).map { all[$0] }
+            dissolveBoxStrokes(doomed, actionName: "Erase Scribbled Ink")
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             onStatus?("")
 
         }
@@ -4073,6 +4487,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Shared implementation — used by the menu and by the double-underline
     /// gesture, which passes only the working above the mark.
     func checkWorking(in content: CGRect, strokes all: [PKStroke]) {
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current reply to finish.")
+            return
+        }
         guard !content.isNull, !all.isEmpty else {
             onStatus?("Write out your working first, then ask me to check it.")
             return
@@ -4087,24 +4505,32 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
 
+        brainBusy = true
         renderer.beginAnalyzing(strokes: all)
         setReadingBanner(true)
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
             defer {
-                self.renderer.endAnalyzing()
-                self.setReadingBanner(false)
+                if self.loadGeneration == gen {
+                    self.renderer.endAnalyzing()
+                    self.setReadingBanner(false)
+                }
             }
             do {
                 let marking = try await PenpalAPI.checkWork(
                     pngData: png, baseURL: self.settings.apiBaseURL)
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 self.showMarking(marking, region: region, all: all)
             } catch {
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 self.onStatus?(PenpalError.message(for: error))
@@ -4175,6 +4601,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     func solveWorksheet(in region: CGRect) {
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current worksheet to finish.")
+            return
+        }
         let all = canvas.drawing.strokes
         guard !all.isEmpty else {
             onStatus?("Nothing to solve on this page yet.")
@@ -4190,27 +4620,35 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
 
+        brainBusy = true
         let inside = all.filter { padded.intersects($0.renderBounds) }
         renderer.beginAnalyzing(strokes: inside)
         setReadingBanner(true)
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
             defer {
-                self.renderer.endAnalyzing()
-                self.setReadingBanner(false)
+                if self.loadGeneration == gen {
+                    self.renderer.endAnalyzing()
+                    self.setReadingBanner(false)
+                }
             }
             do {
                 let problems = try await PenpalAPI.solveWorksheet(
                     pngData: png,
                     baseURL: self.settings.apiBaseURL,
                     mathDetail: self.settings.mathDetail)
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 self.writeWorksheetAnswers(problems, region: padded, all: all)
             } catch {
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 self.onStatus?(PenpalError.message(for: error))
@@ -4240,8 +4678,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 < ($1.box?.y ?? .greatestFiniteMagnitude)
         }
 
+        let gen = loadGeneration
         var queue = ordered[...]
         func writeNext() {
+            guard self.loadGeneration == gen else { return }
             guard let problem = queue.first else {
                 if !unreadable.isEmpty {
                     let labels = unreadable.map(\.label).joined(separator: ", ")
@@ -4260,7 +4700,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             // next problem — the pause is what makes it read as working down a
             // page rather than as a progress bar.
             self.afterWriting { [weak self] in
-                guard self != nil else { return }
+                guard let self, self.loadGeneration == gen else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { writeNext() }
             }
         }
@@ -4332,9 +4772,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         onThinkingChange?(true)
         onWritingStateChange?(true)
         onStatus?("")
+        let gen = loadGeneration
 
         Task { @MainActor in
-            defer { self.setReadingBanner(false) }
+            defer {
+                if self.loadGeneration == gen {
+                    self.setReadingBanner(false)
+                }
+            }
             let store = ConversationStore.shared
             do {
                 let turn = try await PenpalAPI.visionTurn(
@@ -4346,6 +4791,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     history: store.historyForAPI(),
                     baseURL: self.settings.apiBaseURL
                 )
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
 
@@ -4393,6 +4839,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                     purpose: purpose
                 )
             } catch {
+                guard self.loadGeneration == gen else { return }
                 self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
@@ -4445,6 +4892,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// bigger lift for a first pass. Image blocks are the exception, since
     /// their box IS how they get cropped, not just where they'd be placed.
     func importPhotoPage(_ rawImage: UIImage) {
+        guard !brainBusy, !renderer.isWriting, pendingBake == nil else {
+            onStatus?("Wait for the current task to finish.")
+            return
+        }
         guard settings.useBrain else {
             onStatus?("Photo import needs the brain — enable it in Settings → Behavior.")
             return
@@ -4467,19 +4918,29 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // The reading banner + ink thinking indicator carry the wait. NOT
         // onStatus: that presents a modal alert in ContentView, and a dialog
         // demanding OK mid-import is exactly the interruption DESIGN.md bans.
+        brainBusy = true
         setReadingBanner(true)
         onThinkingChange?(true)
         onWritingStateChange?(true)
+        let gen = loadGeneration
 
         Task { @MainActor in
-            defer { self.setReadingBanner(false) }
+            defer {
+                if self.loadGeneration == gen {
+                    self.setReadingBanner(false)
+                }
+            }
             do {
                 let blocks = try await PenpalAPI.importPage(
                     pngData: pngData, baseURL: self.settings.apiBaseURL)
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 self.writeImportedBlocks(blocks, sourceImage: image)
             } catch {
+                guard self.loadGeneration == gen else { return }
+                self.brainBusy = false
                 self.onThinkingChange?(false)
                 self.onWritingStateChange?(false)
                 self.onStatus?(PenpalError.message(for: error))
@@ -4505,9 +4966,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         setToolsVisible(true)
         onMarkupOpened?()
 
+        let gen = loadGeneration
         var skippedImages = 0
         var queue = blocks[...]
         func writeNext() {
+            guard self.loadGeneration == gen else { return }
             guard let block = queue.first else {
                 if skippedImages > 0 {
                     onStatus?("Imported the page — \(skippedImages) image region\(skippedImages == 1 ? "" : "s") couldn't be cropped.")
@@ -4537,7 +5000,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 writeNext()
                 return
             }
-            writeImportedReply(text) {
+            writeImportedReply(text) { [weak self] in
+                guard let self, self.loadGeneration == gen else { return }
                 // A short beat between blocks so the page reads as being
                 // worked down by a hand, not dumped (PEN-09).
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { writeNext() }

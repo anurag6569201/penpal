@@ -597,7 +597,9 @@ struct PenpalSettingsView: View {
         } footer: {
             Text("Every solution is re-derived by a second, independent pass before it's written. Exact results come from a computer-algebra engine where possible.")
         }
-        .task { health = await PenpalAPI.verificationHealth(baseURL: settings.apiBaseURL) }
+        .task(id: settings.apiBaseURL) {
+            health = await PenpalAPI.verificationHealth(baseURL: settings.apiBaseURL)
+        }
 
         Section {
             Toggle("Gemini brain", isOn: $settings.useBrain)
@@ -701,7 +703,7 @@ struct PenpalSettingsView: View {
         } header: {
             Label("Debug", systemImage: "waveform.path.ecg")
         } footer: {
-            Text("Gestures: box a question to send it (or tap Ask) · double-underline your working to have it checked · strike through ink to delete it.")
+            Text("Gestures: 2-finger tap or 3-finger swipe left to undo · 3-finger tap or swipe right to redo · scribble over a term or strike through ink to erase · box a problem to send · double-underline your working to have it checked.")
         }
     }
 

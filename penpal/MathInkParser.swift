@@ -41,6 +41,10 @@ enum MathInkParser {
         if let stacked = await parseVerticalFraction(usable, unit: unit, traits: traits) {
             return stacked
         }
+        // Square-root radical? A check-mark stroke with a roof covering strokes inside.
+        if let radical = await parseRadical(usable, unit: unit, traits: traits) {
+            return radical
+        }
         return await parseInline(usable, unit: unit, traits: traits, requireOperator: true)
     }
 
@@ -52,6 +56,7 @@ enum MathInkParser {
         let unit = symbolUnit(usable)
         guard unit > 2 else { return usable.map { [$0] } }
         var groups = cluster(usable, unit: unit)
+        groups = splitOutEquals(groups, in: usable, unit: unit)
         groups = splitOutSlashes(groups, in: usable, unit: unit)
         groups = splitOutSuperscripts(groups, in: usable, unit: unit)
         return groups.map { idxs in idxs.map { usable[$0] } }
@@ -71,7 +76,7 @@ enum MathInkParser {
         guard usable.count >= 2 else { return false }
         let unit = symbolUnit(usable)
         guard unit > 4 else { return false }
-        let groups = cluster(usable, unit: unit)
+        let groups = splitOutEquals(cluster(usable, unit: unit), in: usable, unit: unit)
         guard let equalsIdx = groups.indices.last(where: {
             operatorSymbol(for: groups[$0], in: usable, unit: unit) == "="
         }) else { return false }
@@ -89,6 +94,20 @@ enum MathInkParser {
             }
         }
         return true
+    }
+
+    /// True when a two-stroke cluster matches a geometric "=" sign.
+    static func isEqualsCluster(_ cluster: [PKStroke], unit: CGFloat) -> Bool {
+        guard cluster.count == 2, unit > 2 else { return false }
+        return operatorSymbol(for: [0, 1], in: cluster, unit: unit) == "="
+    }
+
+    /// Classifies an isolated stroke cluster into a geometric operator (`=`, `+`,
+    /// `*`, `/`, `-`, `^`, `.`) when its stroke geometry is unambiguous.
+    static func classifyOperator(_ cluster: [PKStroke], unit: CGFloat) -> String? {
+        guard !cluster.isEmpty, unit > 2 else { return nil }
+        let indices = Array(cluster.indices)
+        return operatorSymbol(for: indices, in: cluster, unit: unit)
     }
 
     /// Layout test used by unit tests — is `cur` a superscript of `base`?
@@ -112,7 +131,7 @@ enum MathInkParser {
         guard usable.count >= 2 else { return nil }
         let unit = symbolUnit(usable)
         guard unit > 4 else { return nil }
-        let groups = cluster(usable, unit: unit)
+        let groups = splitOutEquals(cluster(usable, unit: unit), in: usable, unit: unit)
         guard let equalsIdx = groups.indices.last(where: {
             operatorSymbol(for: groups[$0], in: usable, unit: unit) == "="
         }) else { return nil }
@@ -189,7 +208,7 @@ enum MathInkParser {
         guard usable.count >= 2 else { return 0.35 }
         let unit = symbolUnit(usable)
         guard unit > 4 else { return 0.35 }
-        let groups = cluster(usable, unit: unit)
+        let groups = splitOutEquals(cluster(usable, unit: unit), in: usable, unit: unit)
         let equalsGroup = groups.last(where: {
             operatorSymbol(for: $0, in: usable, unit: unit) == "="
         }) ?? groups.suffix(1).flatMap { $0 }
@@ -224,6 +243,7 @@ enum MathInkParser {
                                     traits: UITraitCollection?,
                                     requireOperator: Bool) async -> String? {
         var groups = cluster(strokes, unit: unit)
+        groups = splitOutEquals(groups, in: strokes, unit: unit)
         groups = splitOutSlashes(groups, in: strokes, unit: unit)
         groups = splitOutSuperscripts(groups, in: strokes, unit: unit)
         guard !groups.isEmpty, groups.count <= 40 else { return nil }
@@ -387,6 +407,59 @@ enum MathInkParser {
         return groups
     }
 
+    /// Peel a tightly written "=" pair off an adjacent symbol without breaking
+    /// letters or digits containing horizontal bars (like E, F, 5, 2, 7).
+    private static func splitOutEquals(_ groups: [[Int]], in strokes: [PKStroke],
+                                       unit: CGFloat) -> [[Int]] {
+        var out: [[Int]] = []
+        for group in groups {
+            guard group.count > 2 else {
+                out.append(group)
+                continue
+            }
+            let hBars = group.filter { isHorizontalBar(strokes[$0], unit: unit) }
+            guard hBars.count >= 2 else {
+                out.append(group)
+                continue
+            }
+            var splitApplied = false
+            for i in stride(from: hBars.count - 1, through: 1, by: -1) {
+                for j in stride(from: i - 1, through: 0, by: -1) {
+                    let b1 = hBars[j], b2 = hBars[i]
+                    let r1 = strokes[b1].renderBounds
+                    let r2 = strokes[b2].renderBounds
+                    let dy = abs(r1.midY - r2.midY)
+                    let minW = min(r1.width, r2.width)
+                    let maxW = max(r1.width, r2.width)
+                    let overlapX = min(r1.maxX, r2.maxX) - max(r1.minX, r2.minX)
+                    guard dy > unit * 0.12, dy < unit * 0.95,
+                          maxW > 0, minW > maxW * 0.45,
+                          overlapX > minW * 0.5 else { continue }
+
+                    let barSet: Set<Int> = [b1, b2]
+                    let others = group.filter { !barSet.contains($0) }
+                    guard !others.isEmpty else { continue }
+                    let barsRect = r1.union(r2)
+                    let left = others.filter { strokes[$0].renderBounds.midX < barsRect.midX }
+                    let right = others.filter { strokes[$0].renderBounds.midX >= barsRect.midX }
+
+                    let leftClear = left.isEmpty || bounds(of: left, in: strokes).maxX <= barsRect.minX + unit * 0.12
+                    let rightClear = right.isEmpty || bounds(of: right, in: strokes).minX >= barsRect.maxX - unit * 0.12
+                    guard leftClear && rightClear else { continue }
+
+                    if !left.isEmpty { out.append(left) }
+                    out.append([b1, b2])
+                    if !right.isEmpty { out.append(right) }
+                    splitApplied = true
+                    break
+                }
+                if splitApplied { break }
+            }
+            if !splitApplied { out.append(group) }
+        }
+        return out
+    }
+
     private static func splitOutSlashes(_ groups: [[Int]], in strokes: [PKStroke],
                                         unit: CGFloat) -> [[Int]] {
         var out: [[Int]] = []
@@ -457,6 +530,10 @@ enum MathInkParser {
         if group.count == 1, b.width < unit * 0.30, b.height < unit * 0.30 {
             return "."
         }
+        // Division sign "÷": one horizontal bar with one small dot above and one below.
+        if group.count == 3, isDivisionCluster(group, in: strokes, unit: unit) {
+            return "/"
+        }
         if group.count == 2,
            group.allSatisfy({ isHorizontalBar(strokes[$0], unit: unit) }) {
             let a = strokes[group[0]].renderBounds
@@ -471,7 +548,13 @@ enum MathInkParser {
             let s1 = angle(of: strokes[group[0]])
             let s2 = angle(of: strokes[group[1]])
             if min(abs(s1), abs(s2)) < 0.35, max(abs(s1), abs(s2)) > 1.2 { return "+" }
-            if s1 * s2 < 0, abs(s1) > 0.45, abs(s2) > 0.45 { return "*" }
+            if s1 * s2 < 0, abs(s1) > 0.45, abs(s2) > 0.45 {
+                let r1 = strokes[group[0]].renderBounds
+                let r2 = strokes[group[1]].renderBounds
+                if r1.intersects(r2.insetBy(dx: -unit * 0.15, dy: -unit * 0.15)) {
+                    return "*"
+                }
+            }
         }
         if group.count == 1 {
             let s = strokes[group[0]]
@@ -479,6 +562,30 @@ enum MathInkParser {
             if isHorizontalBar(s, unit: unit), b.width > unit * 0.35 { return "-" }
         }
         return nil
+    }
+
+    /// Division sign "÷": 1 horizontal bar + 1 dot above + 1 dot below, aligned in x.
+    private static func isDivisionCluster(_ group: [Int], in strokes: [PKStroke],
+                                          unit: CGFloat) -> Bool {
+        guard group.count == 3 else { return false }
+        let bars = group.filter { isHorizontalBar(strokes[$0], unit: unit) }
+        guard bars.count == 1, let barIdx = bars.first else { return false }
+        let bar = strokes[barIdx].renderBounds
+        let others = group.filter { $0 != barIdx }
+        guard others.count == 2 else { return false }
+        let r0 = strokes[others[0]].renderBounds
+        let r1 = strokes[others[1]].renderBounds
+        let maxDot = max(unit * 0.36, 7)
+        guard r0.width < maxDot, r0.height < maxDot,
+              r1.width < maxDot, r1.height < maxDot else { return false }
+        let margin = max(bar.width * 0.35, unit * 0.25)
+        let aligned0 = r0.midX >= bar.minX - margin && r0.midX <= bar.maxX + margin
+        let aligned1 = r1.midX >= bar.minX - margin && r1.midX <= bar.maxX + margin
+        guard aligned0 && aligned1 else { return false }
+        let oneAboveOneBelow = (r0.midY < bar.minY && r1.midY > bar.maxY)
+            || (r1.midY < bar.minY && r0.midY > bar.maxY)
+        guard oneAboveOneBelow else { return false }
+        return abs(r0.midY - r1.midY) < unit * 1.4
     }
 
     /// Caret "^": peak near top-center with both ends lower.
@@ -505,12 +612,19 @@ enum MathInkParser {
             let a1 = angle(of: strokes[group[1]])
             guard a0 * a1 < 0, abs(a0) > 0.35, abs(a1) > 0.35,
                   abs(a0) < 1.35, abs(a1) < 1.35 else { return false }
-            let t0 = strokes[group[0]].renderBounds
-            let t1 = strokes[group[1]].renderBounds
-            let topsClose = abs(t0.minY - t1.minY) < unit * 0.35
-            let meetHigh = min(t0.minY, t1.minY) < b.midY - b.height * 0.1
-            let compact = b.height < unit * 0.95
-            return topsClose && meetHigh && compact
+            let pts0 = points(strokes[group[0]])
+            let pts1 = points(strokes[group[1]])
+            guard let p0First = pts0.first, let p0Last = pts0.last,
+                  let p1First = pts1.first, let p1Last = pts1.last else { return false }
+            // Top endpoints must converge near the apex while bottom endpoints diverge,
+            // preventing a crossed "×" (whose top ends are at opposite corners) from matching.
+            let (top0, bot0) = p0First.y <= p0Last.y ? (p0First, p0Last) : (p0Last, p0First)
+            let (top1, bot1) = p1First.y <= p1Last.y ? (p1First, p1Last) : (p1Last, p1First)
+            let topsMeetX = abs(top0.x - top1.x) < b.width * 0.38
+            let topsMeetY = abs(top0.y - top1.y) < max(b.height * 0.35, unit * 0.25)
+            let apexAtTop = max(top0.y, top1.y) < b.minY + b.height * 0.32
+            let botsApart = abs(bot0.x - bot1.x) > b.width * 0.50
+            return topsMeetX && topsMeetY && apexAtTop && botsApart
         }
         return false
     }
@@ -545,8 +659,17 @@ enum MathInkParser {
     }
 
     private static func isHorizontalBar(_ s: PKStroke, unit: CGFloat) -> Bool {
-        let b = s.renderBounds
-        return isStraight(s) && b.width > b.height * 2.6 && b.height < unit * 0.45
+        guard isStraight(s), abs(angle(of: s)) < 0.32 else { return false }
+        let pts = points(s)
+        guard let minX = pts.map(\.x).min(), let maxX = pts.map(\.x).max(),
+              let minY = pts.map(\.y).min(), let maxY = pts.map(\.y).max() else {
+            return false
+        }
+        let pathWidth = maxX - minX
+        let pathHeight = maxY - minY
+        return pathWidth > max(6, unit * 0.25)
+            && pathHeight <= max(3.5, pathWidth * 0.35)
+            && s.renderBounds.height < unit * 0.55
     }
 
     private static func isSlash(_ s: PKStroke, unit: CGFloat) -> Bool {
@@ -597,6 +720,96 @@ enum MathInkParser {
             }
         }
         return out.isEmpty ? nil : out
+    }
+
+    // MARK: - Square-root radicals ("√144", "√(9+16)")
+
+    /// Detects a handwritten radical stroke (dip down to a low vertex, rise to
+    /// the top-left corner, then run right as a roof bar) with radicand strokes
+    /// tucked underneath its roof.
+    @MainActor
+    private static func parseRadical(_ strokes: [PKStroke], unit: CGFloat,
+                                     traits: UITraitCollection?) async -> String? {
+        guard let radIdx = strokes.indices.first(where: { isRadicalStroke(strokes[$0], unit: unit) }) else {
+            return nil
+        }
+        let rad = strokes[radIdx]
+        let rb = rad.renderBounds
+        let pts = points(rad)
+        // Find where the roof starts (highest point on the rising leg before running right).
+        guard let roofStart = pts.min(by: { $0.y < $1.y }) else { return nil }
+        let roofMinX = roofStart.x - unit * 0.15
+        let roofMaxX = rb.maxX + unit * 0.25
+
+        var inside: [PKStroke] = []
+        var left: [PKStroke] = []
+        var right: [PKStroke] = []
+        for i in strokes.indices where i != radIdx {
+            let b = strokes[i].renderBounds
+            if b.midX >= roofMinX && b.midX <= roofMaxX
+                && b.midY > rb.minY - unit * 0.1
+                && b.midY <= rb.maxY + unit * 0.35 {
+                inside.append(strokes[i])
+            } else if b.maxX <= rb.minX + unit * 0.25 {
+                left.append(strokes[i])
+            } else if b.minX >= roofMaxX - unit * 0.25 {
+                right.append(strokes[i])
+            }
+        }
+        guard !inside.isEmpty else { return nil }
+        guard let body = await subExpression(inside, traits: traits) else { return nil }
+        var expression = "sqrt(\(body))"
+        if !left.isEmpty {
+            guard let lead = await subExpression(left, traits: traits) else { return nil }
+            expression = lead + expression
+        }
+        if !right.isEmpty {
+            guard let tail = await subExpression(right, traits: traits) else { return nil }
+            expression += tail
+        }
+        return expression
+    }
+
+    /// True when a single stroke has the classic √ shape: enters on the left,
+    /// dips down to a lower vertex in the left half, rises steeply to the top,
+    /// and extends rightward as a roof bar spanning at least 45% of its width.
+    static func isRadicalStroke(_ s: PKStroke, unit: CGFloat) -> Bool {
+        let b = s.renderBounds
+        guard b.height > unit * 0.7, b.width > unit * 1.15 else { return false }
+        let pts = points(s)
+        guard pts.count >= 8, let first = pts.first, let last = pts.last else { return false }
+        // Starts on the left, finishes on the upper-right roof.
+        guard first.x < b.minX + b.width * 0.28,
+              last.x > b.maxX - b.width * 0.22,
+              last.y < b.minY + b.height * 0.38 else { return false }
+
+        // Find the bottom vertex (maximum y) in the left half, and the top-of-rise
+        // (minimum y) that follows it.
+        var bottomIdx = 0
+        for i in pts.indices where pts[i].y > pts[bottomIdx].y {
+            bottomIdx = i
+        }
+        let bottom = pts[bottomIdx]
+        guard bottomIdx > 0, bottomIdx < pts.count - 3,
+              bottom.x < b.minX + b.width * 0.52,
+              bottom.y > b.maxY - b.height * 0.22 else { return false }
+
+        // Must dip down before bottom (or enter below top) and then rise sharply to top.
+        let afterBottom = pts[(bottomIdx + 1)...]
+        guard let topAfter = afterBottom.enumerated().min(by: { $0.element.y < $1.element.y }) else {
+            return false
+        }
+        let topIdx = bottomIdx + 1 + topAfter.offset
+        let topPt = pts[topIdx]
+        guard topPt.y < b.minY + b.height * 0.30,
+              topPt.x > bottom.x - b.width * 0.05 else { return false }
+
+        // Roof extends rightward from topPt to last, staying near the top.
+        let roofSpan = last.x - topPt.x
+        guard roofSpan > b.width * 0.42 else { return false }
+        let roofPts = pts[topIdx...]
+        let roofMaxY = roofPts.map(\.y).max() ?? b.maxY
+        return roofMaxY < b.minY + b.height * 0.45
     }
 
     // MARK: - Vertical fractions

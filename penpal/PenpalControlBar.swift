@@ -54,7 +54,12 @@ struct PenpalControlBar: View {
     @ObservedObject var settings: HandwritingSettings
     var activityPhase: InkThinkingIndicator.Phase?
     var statusText: String?
+    var rulerActive: Bool = false
     var onAsk: () -> Void
+    var onCheckWork: () -> Void = {}
+    var onSolveWholePage: () -> Void = {}
+    var onPlotGraph: () -> Void = {}
+    var onToggleRuler: () -> Void = {}
     var onVisionCamera: () -> Void
     var onVisionPhoto: () -> Void
     var onClose: () -> Void
@@ -166,7 +171,7 @@ struct PenpalControlBar: View {
                 TourEventBus.shared.emit(.askTapped)
                 onAsk()
             } label: {
-                Label("Ask Penpal", systemImage: "sparkle")
+                Label(isMathematician ? "Solve" : "Ask Penpal", systemImage: "sparkle")
                     .padding(.horizontal, 12)
                     .frame(height: 36)
                     .foregroundStyle(Pen.onAccent)
@@ -176,9 +181,27 @@ struct PenpalControlBar: View {
             }
             .buttonStyle(.plain)
             .disabled(activityPhase != nil)
-            .accessibilityLabel("Ask Penpal")
+            .accessibilityLabel(isMathematician ? "Solve with Penpal" : "Ask Penpal")
             .accessibilityHint("Sends the new handwriting. You can also draw a box around a question.")
             .tourAnchor(.ask)
+
+            if isMathematician {
+                Button(action: onCheckWork) {
+                    Label("Check", systemImage: "checkmark.circle")
+                        .padding(.horizontal, 10)
+                        .frame(height: 36)
+                        .foregroundStyle(Pen.inkPrimary)
+                        .background(Pen.accentWash, in: Capsule())
+                        .frame(height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(activityPhase != nil)
+                .accessibilityLabel("Check My Working")
+                .accessibilityHint("Checks your handwritten math steps for the first mistake")
+
+                mathQuickToolsMenu
+            }
 
             Menu {
                 Button("Take Photo", systemImage: "camera") {
@@ -302,6 +325,48 @@ struct PenpalControlBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Solution detail, \(selectedDetailTitle)")
+    }
+
+    private var mathQuickToolsMenu: some View {
+        Menu {
+            Button("Plot a Function…", systemImage: "chart.xyaxis.line") {
+                onPlotGraph()
+            }
+            Button("Solve Whole Page", systemImage: "list.number") {
+                onSolveWholePage()
+            }
+            Button(rulerActive ? "Hide Ruler" : "Show Ruler",
+                   systemImage: rulerActive ? "ruler.fill" : "ruler") {
+                onToggleRuler()
+            }
+            Divider()
+            Toggle("Instant \"=\" (Skip Chip)", isOn: Binding(
+                get: { !settings.confirmBeforeSolving },
+                set: { settings.confirmBeforeSolving = !$0 }
+            ))
+            Divider()
+            Menu("Paper Style", systemImage: "squareshape.split.3x3") {
+                ForEach([("grid", "Graph Grid", "squareshape.split.3x3"),
+                         ("dots", "Dot Grid", "circle.grid.3x3"),
+                         ("ruled", "Ruled", "line.3.horizontal"),
+                         ("blank", "Blank", "doc")], id: \.0) { tag, title, icon in
+                    Button {
+                        settings.paperStyle = tag
+                    } label: {
+                        Label(title, systemImage: settings.paperStyle == tag ? "checkmark" : icon)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "function")
+                .font(.body.weight(.medium))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Pen.inkPrimary)
+        .disabled(activityPhase != nil)
+        .accessibilityLabel("Math Tools")
+        .accessibilityHint("Plot a function, solve the whole page, toggle ruler, or switch to grid paper")
     }
 
     private var languageMenu: some View {

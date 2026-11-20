@@ -90,11 +90,12 @@ struct TourStep: Identifiable, Equatable {
         ),
         TourStep(
             id: "undo",
-            anchor: .undo,
-            title: "Undo whole ideas",
-            body: "Undo and redo handle your strokes normally, while a generated Penpal answer, graph, or sketch reverses as one clean action.",
-            prepare: [.toolbarSection(.history), .showTools(false)],
-            advance: .next
+            anchor: .page,
+            title: "Gesture undo & redo",
+            body: "Tap the page with two fingers (or swipe left with three) to undo, and tap with three fingers (or swipe right with three) to redo. A whole Penpal reply, graph, or sketch reverses in one clean gesture.",
+            prepare: [.showTools(false)],
+            advance: .eventOrNext(.undoPerformed),
+            tryItPrompt: "Try a two-finger tap to undo, or tap Next"
         ),
         TourStep(
             id: "penpal_button",
@@ -142,11 +143,11 @@ struct TourStep: Identifiable, Equatable {
         TourStep(
             id: "strike_gesture",
             anchor: .page,
-            title: "Strike to erase",
-            body: "Write a word, then draw one horizontal line through it. Penpal removes the word and the strike together; Undo brings both back.",
+            title: "Strike or scribble to erase",
+            body: "Draw a horizontal line through a word, or scribble back and forth over a wrong digit or sign in maths. Penpal erases it cleanly — two-finger tap brings it right back.",
             prepare: [.penpal(true)],
             advance: .eventOrNext(.strikeDone),
-            tryItPrompt: "Write a word and strike through it, or tap Next"
+            tryItPrompt: "Write a number and scribble or strike through it, or tap Next"
         ),
         TourStep(
             id: "equals_math",

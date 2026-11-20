@@ -25,27 +25,99 @@ enum GraphPlotter {
     struct Plot {
         var axes: [InkStroke]
         var curve: [InkStroke]
+        /// Hand-drawn tick marks, arrowheads, axis labels, equation title, and intercept dots.
+        var annotations: [InkStroke] = []
         var labels: [(text: String, at: CGPoint)]
-        /// Everything, in draw order: axes first, then the curve.
-        var strokes: [InkStroke] { axes + curve }
+        /// Everything, in draw order: axes first, then ticks/labels, then the curve.
+        var strokes: [InkStroke] { axes + annotations + curve }
     }
 
-    /// Recognises "y = ...", "plot ...", "graph ..." and returns the body.
+    /// Recognises "y = ...", "f(x) = ...", "plot ...", "graph ..." and returns the body.
     static func functionBody(in text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("=") {
+            trimmed = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !trimmed.isEmpty else { return nil }
+
+        func stripLHS(_ candidate: String) -> String? {
+            let lower = candidate.lowercased()
+            for prefix in ["y =", "y=", "f(x) =", "f(x)="] where lower.hasPrefix(prefix) {
+                return String(candidate.dropFirst(prefix.count))
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            return nil
+        }
+
         let lowered = trimmed.lowercased()
         for prefix in ["plot ", "graph ", "sketch "] where lowered.hasPrefix(prefix) {
-            var body = String(trimmed.dropFirst(prefix.count))
-            if body.lowercased().hasPrefix("y =") { body = String(body.dropFirst(3)) }
-            else if body.lowercased().hasPrefix("y=") { body = String(body.dropFirst(2)) }
-            return body.trimmingCharacters(in: .whitespaces)
+            let rest = String(trimmed.dropFirst(prefix.count))
+                .trimmingCharacters(in: .whitespaces)
+            if let rhs = stripLHS(rest) {
+                return rhs.isEmpty ? nil : rhs
+            }
+            return rest.isEmpty ? nil : rest
         }
-        if lowered.hasPrefix("y =") || lowered.hasPrefix("y=") {
-            let body = trimmed.drop { $0 != "=" }.dropFirst()
-            return body.trimmingCharacters(in: .whitespaces)
+        if let rhs = stripLHS(trimmed) {
+            return rhs.isEmpty ? nil : rhs
         }
         return nil
+    }
+
+    /// Extracts a plottable `f(x)` body from an arbitrary math expression or equation:
+    /// - `"y = sin(x)"` → `"sin(x)"`
+    /// - `"x^2 - 4"` → `"x^2 - 4"`
+    /// - `"x^2 - 5x + 6 = 0"` → `"x^2 - 5x + 6"`
+    /// - `"x^2 = 16"` → `"(x^2) - (16)"`
+    /// Returns nil when the expression does not depend on `x` (or has other free variables).
+    static func plottableExpression(from raw: String) -> String? {
+        if let body = functionBody(in: raw), isPlottableInX(body) {
+            return body
+        }
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("=") {
+            trimmed = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !trimmed.isEmpty else { return nil }
+
+        // Equation in x: "lhs = rhs" → plot "lhs - rhs" (or just "lhs" when rhs is 0).
+        let parts = trimmed.split(separator: "=", omittingEmptySubsequences: false).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        let candidate: String
+        if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty {
+            if parts[1] == "0" {
+                candidate = parts[0]
+            } else if parts[0] == "0" {
+                candidate = parts[1]
+            } else {
+                candidate = "(\(parts[0])) - (\(parts[1]))"
+            }
+        } else if parts.count == 1 {
+            candidate = trimmed
+        } else {
+            return nil
+        }
+        return isPlottableInX(candidate) ? candidate : nil
+    }
+
+    private static func isPlottableInX(_ body: String) -> Bool {
+        // Must actually contain a standalone variable x / X.
+        guard body.range(of: #"(?<![a-zA-Z])[xX](?![a-zA-Z])"#,
+                         options: .regularExpression) != nil else { return false }
+        // Must not contain other unknown free variables (like y, a, b).
+        let test = body.replacingOccurrences(
+            of: #"(?<![a-zA-Z])[xX](?![a-zA-Z])"#,
+            with: "(1)",
+            options: .regularExpression
+        )
+        guard !MathEvaluator.hasFreeVariable(test) else { return false }
+        // Quick sanity probe at a few points so invalid syntax never offers Graph.
+        let probes: [Double] = [0, 1, -1, 2, 0.5]
+        return probes.contains { x in
+            if let y = value(of: body, at: x), y.isFinite { return true }
+            return false
+        }
     }
 
     /// Samples `body` over `xRange` and lays out a hand-drawn plot inside
@@ -125,17 +197,68 @@ enum GraphPlotter {
                            y: frame.maxY - CGFloat(ty) * frame.height)
         }
 
-        // 3. Axes, drawn with the same wobble as everything else.
+        // 3. Axes + arrowheads, drawn with the same wobble as everything else.
         let originY = project(0, 0).y
         let originX = project(0, 0).x
         var axes: [InkStroke] = []
+        var annotations: [InkStroke] = []
+        let arrow: CGFloat = 6.5
+
         if frame.minY...frame.maxY ~= originY {
             axes.append(handDrawnLine(from: CGPoint(x: frame.minX, y: originY),
                                       to: CGPoint(x: frame.maxX, y: originY)))
+            // +x arrowhead
+            annotations.append(handDrawnLine(from: CGPoint(x: frame.maxX - arrow, y: originY - arrow * 0.65),
+                                             to: CGPoint(x: frame.maxX, y: originY), duration: 0.08))
+            annotations.append(handDrawnLine(from: CGPoint(x: frame.maxX - arrow, y: originY + arrow * 0.65),
+                                             to: CGPoint(x: frame.maxX, y: originY), duration: 0.08))
+            // x-axis ticks
+            let xTickStep = niceStep(for: xRange.upperBound - xRange.lowerBound, targetTicks: 5)
+            var tx = ceil(xRange.lowerBound / xTickStep) * xTickStep
+            while tx <= xRange.upperBound + 1e-9 {
+                if abs(tx) > xTickStep * 0.15 {
+                    let px = project(tx, 0).x
+                    if px > frame.minX + 12 && px < frame.maxX - 16 {
+                        annotations.append(handDrawnLine(from: CGPoint(x: px, y: originY - 3.5),
+                                                         to: CGPoint(x: px, y: originY + 3.5),
+                                                         duration: 0.05))
+                    }
+                }
+                tx += xTickStep
+            }
+            annotations.append(contentsOf: inkLabel("x", at: CGPoint(x: frame.maxX - 8, y: originY - 8), size: 9))
         }
         if frame.minX...frame.maxX ~= originX {
             axes.append(handDrawnLine(from: CGPoint(x: originX, y: frame.minY),
                                       to: CGPoint(x: originX, y: frame.maxY)))
+            // +y arrowhead
+            annotations.append(handDrawnLine(from: CGPoint(x: originX - arrow * 0.65, y: frame.minY + arrow),
+                                             to: CGPoint(x: originX, y: frame.minY), duration: 0.08))
+            annotations.append(handDrawnLine(from: CGPoint(x: originX + arrow * 0.65, y: frame.minY + arrow),
+                                             to: CGPoint(x: originX, y: frame.minY), duration: 0.08))
+            // y-axis ticks
+            let yTickStep = niceStep(for: yMax - yMin, targetTicks: 4)
+            var ty = ceil(yMin / yTickStep) * yTickStep
+            while ty <= yMax + 1e-9 {
+                if abs(ty) > yTickStep * 0.15 {
+                    let py = project(0, ty).y
+                    if py > frame.minY + 14 && py < frame.maxY - 12 {
+                        annotations.append(handDrawnLine(from: CGPoint(x: originX - 3.5, y: py),
+                                                         to: CGPoint(x: originX + 3.5, y: py),
+                                                         duration: 0.05))
+                    }
+                }
+                ty += yTickStep
+            }
+            annotations.append(contentsOf: inkLabel("y", at: CGPoint(x: originX + 9, y: frame.minY + 10), size: 9))
+        }
+
+        // Equation title in the top-left corner of the plot frame.
+        let cleanTitle = "y = \(body.trimmingCharacters(in: .whitespaces))"
+        if cleanTitle.count <= 26 {
+            annotations.append(contentsOf: inkLabel(cleanTitle,
+                                                    at: CGPoint(x: frame.minX + 6, y: frame.minY + 11),
+                                                    size: 9))
         }
 
         // 4. The curve. Each segment is one stroke, so the pen lifts at a
@@ -153,21 +276,85 @@ enum GraphPlotter {
         }
         guard !curve.isEmpty else { return nil }
 
+        // 5. Key feature dots: y-intercept and x-intercepts (roots) inside the frame.
+        if xRange.contains(0), let y0 = value(of: body, at: 0), y0.isFinite, y0 >= yMin, y0 <= yMax {
+            let pt = project(0, y0)
+            annotations.append(InkStroke(points: [pt], isDot: true, dotRadius: 2.6))
+        }
+        var rootDots = 0
+        for segment in segments where rootDots < 4 {
+            for i in 1..<segment.count where rootDots < 4 {
+                let a = segment[i - 1], b = segment[i]
+                if a.y == 0 || (a.y * b.y < 0) {
+                    let frac = a.y == b.y ? 0 : (-a.y / (b.y - a.y))
+                    let rx = a.x + (b.x - a.x) * frac
+                    let pt = project(rx, 0)
+                    if frame.contains(pt) {
+                        annotations.append(InkStroke(points: [pt], isDot: true, dotRadius: 2.6))
+                        rootDots += 1
+                    }
+                }
+            }
+        }
+
         let labels: [(String, CGPoint)] = [
-            (format(xRange.upperBound), CGPoint(x: frame.maxX - 12, y: originY + 16)),
-            (format(yMax), CGPoint(x: originX + 8, y: frame.minY + 12)),
+            (format(xRange.upperBound), CGPoint(x: frame.maxX - 18, y: originY + 15)),
+            (format(yMax), CGPoint(x: originX + 8, y: frame.minY + 22)),
         ]
-        return Plot(axes: axes, curve: curve, labels: labels)
+        for (text, pt) in labels where frame.insetBy(dx: -4, dy: -20).contains(pt) {
+            annotations.append(contentsOf: inkLabel(text, at: pt, size: 8.5))
+        }
+        return Plot(axes: axes, curve: curve, annotations: annotations, labels: labels)
+    }
+
+    /// Hand-drawn small stroke-font label for graph axes and scale values.
+    private static func inkLabel(_ text: String, at origin: CGPoint, size: CGFloat) -> [InkStroke] {
+        var x = origin.x
+        var out: [InkStroke] = []
+        for ch in text {
+            if ch == " " {
+                x += size * 0.45
+                continue
+            }
+            let (glyphStrokes, adv) = StrokeFont.inkStrokes(for: ch,
+                                                            originX: x,
+                                                            baselineY: origin.y,
+                                                            size: size,
+                                                            messiness: 0.12)
+            for var s in glyphStrokes {
+                s.duration = 0.05
+                out.append(s)
+            }
+            x += adv
+        }
+        return out
+    }
+
+    private static func niceStep(for span: Double, targetTicks: Int) -> Double {
+        guard span > 0, targetTicks > 0 else { return 1 }
+        let raw = span / Double(targetTicks)
+        let mag = pow(10, floor(log10(raw)))
+        let norm = raw / mag
+        let nice: Double = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10
+        return max(1e-6, nice * mag)
     }
 
     // MARK: - Helpers
 
     /// Evaluates the body with `x` substituted, via the on-device evaluator.
     private static func value(of body: String, at x: Double) -> Double? {
-        // Bracket negatives so "x^2" at x = -3 doesn't parse as subtraction.
+        // Bracket negatives so "x^2" at x = -3 doesn't parse as subtraction,
+        // and only replace standalone variable `x` / `X` so `exp(x)` stays intact.
+        let replacement = x < 0 ? "(\(x))" : "\(x)"
         let substituted = body.replacingOccurrences(
-            of: "x", with: x < 0 ? "(\(x))" : "\(x)")
-        return MathEvaluator.evaluate(MathEvaluator.normalize(substituted))
+            of: #"(?<![a-zA-Z])[xX](?![a-zA-Z])"#,
+            with: replacement,
+            options: .regularExpression
+        )
+        return MathEvaluator.evaluate(
+            MathEvaluator.normalize(substituted),
+            trigInRadians: true
+        )
     }
 
     /// Slight, smooth deviation so the curve reads as drawn, not printed.
@@ -184,8 +371,9 @@ enum GraphPlotter {
         }
     }
 
-    private static func handDrawnLine(from a: CGPoint, to b: CGPoint) -> InkStroke {
-        let steps = max(8, Int(hypot(b.x - a.x, b.y - a.y) / 12))
+    private static func handDrawnLine(from a: CGPoint, to b: CGPoint,
+                                      duration: TimeInterval = 0.35) -> InkStroke {
+        let steps = max(4, Int(hypot(b.x - a.x, b.y - a.y) / 12))
         let points = (0...steps).map { i -> CGPoint in
             let t = CGFloat(i) / CGFloat(steps)
             let drift = sin(Double(t) * 3.1) * 0.7
@@ -193,7 +381,7 @@ enum GraphPlotter {
                            y: a.y + (b.y - a.y) * t + CGFloat(drift))
         }
         var stroke = InkStroke(points: points)
-        stroke.duration = 0.35
+        stroke.duration = duration
         stroke.source = .letters
         stroke.confidence = 0.9
         return stroke

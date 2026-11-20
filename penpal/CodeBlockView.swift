@@ -1533,10 +1533,11 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         }
         webView = WKWebView(frame: .zero, configuration: config)
         super.init(frame: block.frame)
+        let weakHandler = WeakScriptMessageHandler(self)
         if generatedInteractive {
-            config.userContentController.add(self, name: "penpalRuntime")
+            config.userContentController.add(weakHandler, name: "penpalRuntime")
         } else {
-            config.userContentController.add(self, name: "penpalBlockChanged")
+            config.userContentController.add(weakHandler, name: "penpalBlockChanged")
         }
         setup()
         webView.navigationDelegate = self
@@ -2643,5 +2644,20 @@ private struct BlockPreview: UIViewRepresentable {
         context.coordinator.lastHTML = html
         web.loadHTMLString(CodedPaper.blockDocument(from: html),
                            baseURL: CodeBlockView.contentBaseURL)
+    }
+}
+
+/// Breaks the `WKUserContentController -> messageHandler` strong reference cycle
+/// so `CodeBlockView`, its `WKWebView`, and `runtimeWatchdog` deallocate normally.
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    private weak var target: WKScriptMessageHandler?
+
+    init(_ target: WKScriptMessageHandler) {
+        self.target = target
+    }
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        target?.userContentController(userContentController, didReceive: message)
     }
 }

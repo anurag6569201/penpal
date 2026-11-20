@@ -20,22 +20,33 @@ final class MathIntentChip: UIView {
     /// Caller dismisses the chip (e.g. toward the answer) — we don't auto-dismiss
     /// so a failed solve can leave the chip up for another edit.
     var onSolve: ((String) -> Void)?
+    /// Optional: asks the AI Mathematician to write full step-by-step working.
+    var onSteps: ((String) -> Void)?
+    /// Optional: plots the expression directly on paper in hand-drawn ink.
+    var onGraph: ((String) -> Void)?
     /// Called when the chip is dismissed without solving.
     var onDismiss: (() -> Void)?
 
     private let expressionButton = UIButton(type: .system)
     private let expressionField = UITextField()
+    private let previewLabel = UILabel()
     private let solveButton = UIButton(type: .system)
+    private let stepsButton = UIButton(type: .system)
+    private let graphButton = UIButton(type: .system)
     private let stack = UIStackView()
     private var expression: String
+    private let answerPreview: String?
+    private let variableSummary: String?
     private let needsReview: Bool
+    private let showStepsAction: Bool
+    private let showGraphAction: Bool
 
     /// Same tokens as everywhere else — this used to hand-roll its own near
     /// duplicates of `Pen.inkPrimary` / `Pen.inkCaution`, which is exactly the
     /// "three slightly different indigos" drift the design system exists to
     /// prevent. Now it just asks DesignSystem for the real thing.
     private static var graphite: UIColor { UIColor(Pen.inkPrimary) }
-
+    private static var accent: UIColor { UIColor(Pen.inkAccent) }
     private static var reviewAmber: UIColor { UIColor(Pen.inkCaution) }
 
     /// Pretty display form: 5*5 → "5 × 5", sqrt(2) → "√(2)", pi → "π".
@@ -60,9 +71,18 @@ final class MathIntentChip: UIView {
         return s.trimmingCharacters(in: .whitespaces)
     }
 
-    init(expression: String, needsReview: Bool = false) {
+    init(expression: String,
+         answerPreview: String? = nil,
+         variableSummary: String? = nil,
+         needsReview: Bool = false,
+         showStepsAction: Bool = false,
+         showGraphAction: Bool = false) {
         self.expression = expression
+        self.answerPreview = answerPreview
+        self.variableSummary = variableSummary
         self.needsReview = needsReview
+        self.showStepsAction = showStepsAction
+        self.showGraphAction = showGraphAction
         super.init(frame: .zero)
         setup()
     }
@@ -136,20 +156,59 @@ final class MathIntentChip: UIView {
         expressionField.returnKeyType = .go
         expressionField.isHidden = true
         expressionField.delegate = self
-        expressionField.widthAnchor.constraint(greaterThanOrEqualToConstant: 130).isActive = true
+        expressionField.inputAccessoryView = makeMathKeyboardBar()
+        expressionField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
+
+        // Live preview of the computed result (plus any page variables applied).
+        var previewParts: [String] = []
+        if let variableSummary, !variableSummary.isEmpty {
+            previewParts.append("[\(variableSummary)]")
+        }
+        if let answerPreview, !answerPreview.isEmpty {
+            let short = answerPreview.count > 24
+                ? String(answerPreview.prefix(23)) + "…"
+                : answerPreview
+            previewParts.append("= \(short)")
+        }
+        previewLabel.text = previewParts.joined(separator: " ")
+        previewLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        previewLabel.textColor = Self.accent
+        previewLabel.isHidden = previewParts.isEmpty
 
         var config = UIButton.Configuration.filled()
         config.title = "Solve"
         config.image = UIImage(systemName: "equal.circle.fill")
         config.imagePadding = 6
         config.cornerStyle = .capsule
-        config.baseBackgroundColor = Self.graphite
-        config.baseForegroundColor = UIColor { traits in
-            traits.userInterfaceStyle == .dark ? .black : .white
-        }
+        config.baseBackgroundColor = Self.accent
+        config.baseForegroundColor = UIColor(Pen.onAccent)
         config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 16)
         solveButton.configuration = config
         solveButton.addTarget(self, action: #selector(solveTapped), for: .touchUpInside)
+
+        var stepsConfig = UIButton.Configuration.tinted()
+        stepsConfig.title = "Steps"
+        stepsConfig.image = UIImage(systemName: "list.number")
+        stepsConfig.imagePadding = 4
+        stepsConfig.cornerStyle = .capsule
+        stepsConfig.baseBackgroundColor = Self.accent
+        stepsConfig.baseForegroundColor = Self.accent
+        stepsConfig.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 11, bottom: 7, trailing: 12)
+        stepsButton.configuration = stepsConfig
+        stepsButton.isHidden = !showStepsAction
+        stepsButton.addTarget(self, action: #selector(stepsTapped), for: .touchUpInside)
+
+        var graphConfig = UIButton.Configuration.tinted()
+        graphConfig.title = "Graph"
+        graphConfig.image = UIImage(systemName: "chart.xyaxis.line")
+        graphConfig.imagePadding = 4
+        graphConfig.cornerStyle = .capsule
+        graphConfig.baseBackgroundColor = Self.accent
+        graphConfig.baseForegroundColor = Self.accent
+        graphConfig.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 11, bottom: 7, trailing: 12)
+        graphButton.configuration = graphConfig
+        graphButton.isHidden = !showGraphAction
+        graphButton.addTarget(self, action: #selector(graphTapped), for: .touchUpInside)
 
         let close = UIButton(type: .system)
         close.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
@@ -164,7 +223,10 @@ final class MathIntentChip: UIView {
         stack.layoutMargins = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 10)
         stack.addArrangedSubview(expressionButton)
         stack.addArrangedSubview(expressionField)
+        stack.addArrangedSubview(previewLabel)
         stack.addArrangedSubview(solveButton)
+        stack.addArrangedSubview(stepsButton)
+        stack.addArrangedSubview(graphButton)
         stack.addArrangedSubview(close)
         addSubview(stack)
 
@@ -180,24 +242,96 @@ final class MathIntentChip: UIView {
         ])
     }
 
+    // MARK: - Math quick-key keyboard bar
+
+    private func makeMathKeyboardBar() -> UIView {
+        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: 320, height: 44))
+        bar.barStyle = .default
+        let symbols: [(label: String, insert: String)] = [
+            ("+", "+"), ("−", "-"), ("×", "*"), ("÷", "/"),
+            ("^", "^"), ("√", "sqrt("), ("π", "pi"),
+            ("(", "("), (")", ")"), ("x", "x"), ("y", "y"), ("=", "="),
+        ]
+        let scroll = UIScrollView()
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 6
+        row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        for item in symbols {
+            var cfg = UIButton.Configuration.tinted()
+            cfg.title = item.label
+            cfg.baseBackgroundColor = Self.accent
+            cfg.baseForegroundColor = Self.graphite
+            cfg.cornerStyle = .medium
+            cfg.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 11, bottom: 5, trailing: 11)
+            let btn = UIButton(configuration: cfg, primaryAction: UIAction { [weak self] _ in
+                self?.expressionField.insertText(item.insert)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            })
+            row.addArrangedSubview(btn)
+        }
+        scroll.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 4),
+            row.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -4),
+            row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -8),
+            row.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -8),
+        ])
+        let container = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 46))
+        container.backgroundColor = .secondarySystemBackground
+        container.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: container.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        _ = bar
+        return container
+    }
+
     // MARK: - Actions
+
+    private var currentExpression: String {
+        (expressionField.isHidden ? expression : (expressionField.text ?? expression))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     @objc private func editExpression() {
         expressionButton.isHidden = true
+        previewLabel.isHidden = true
         expressionField.isHidden = false
         expressionField.becomeFirstResponder()
         expressionField.selectAll(nil)
     }
 
     @objc private func solveTapped() {
-        let edited = (expressionField.isHidden
-                      ? expression
-                      : (expressionField.text ?? expression))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let edited = currentExpression
         guard !edited.isEmpty else { return }
         expressionField.resignFirstResponder()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         onSolve?(edited)
+    }
+
+    @objc private func stepsTapped() {
+        let edited = currentExpression
+        guard !edited.isEmpty else { return }
+        expressionField.resignFirstResponder()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        onSteps?(edited)
+    }
+
+    @objc private func graphTapped() {
+        let edited = currentExpression
+        guard !edited.isEmpty else { return }
+        expressionField.resignFirstResponder()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        onGraph?(edited)
     }
 
     @objc private func dismissTapped() {

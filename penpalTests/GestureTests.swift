@@ -72,6 +72,41 @@ final class GestureTests: XCTestCase {
         return false
     }
 
+    private func isScribble(_ g: InkAnalyzer.Gesture?) -> Bool {
+        if case .scribbleErase = g { return true }
+        return false
+    }
+
+    /// Dense zig-zag scribble covering `rect` (mimics scratching out a math digit/term).
+    private func scribble(over rect: CGRect, passes: Int = 6) -> PKStroke {
+        var pts: [CGPoint] = []
+        for i in 0...passes {
+            let t = CGFloat(i) / CGFloat(passes)
+            let y = rect.minY + rect.height * t
+            let x = i % 2 == 0 ? rect.minX : rect.maxX
+            pts.append(CGPoint(x: x, y: y))
+        }
+        // Densify each segment so interpolatedPoints has plenty of samples.
+        var dense: [PKStrokePoint] = []
+        var time: Double = 0
+        for i in 1..<pts.count {
+            let a = pts[i - 1], b = pts[i]
+            let steps = max(4, Int(hypot(b.x - a.x, b.y - a.y) / 2))
+            for s in 0...steps {
+                let f = CGFloat(s) / CGFloat(steps)
+                dense.append(PKStrokePoint(
+                    location: CGPoint(x: a.x + (b.x - a.x) * f,
+                                      y: a.y + (b.y - a.y) * f),
+                    timeOffset: time,
+                    size: CGSize(width: 3, height: 3),
+                    opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2))
+                time += 0.004
+            }
+        }
+        return PKStroke(ink: PKInk(.pen, color: .black),
+                        path: PKStrokePath(controlPoints: dense, creationDate: Date()))
+    }
+
     // MARK: - Double underline → check my working
 
     func testDoubleUnderlineUnderWorkingIsRecognised() {
@@ -221,5 +256,53 @@ final class GestureTests: XCTestCase {
         } else {
             XCTFail("Expected inlineMath for arithmetic ending in =")
         }
+
+        // 5. Unit conversions and percentages ending in "=" are inlineMath, not passive prose
+        let pctIntent = InkAnalyzer.classifyDrawnIntent(all: [word(x: 20, y: 20)], newStart: 0, text: "15% of 80 =")
+        if case .inlineMath = pctIntent {
+        } else {
+            XCTFail("Expected inlineMath for percentage expression")
+        }
+    }
+
+    // MARK: - Scribble-to-erase (ideal for single digits & math terms)
+
+    func testScribbleOverSingleDigitIsRecognised() {
+        // A single tall digit ("7" or "5") that's too narrow for a 60pt strike-through.
+        let digit = stroke(from: CGPoint(x: 50, y: 40), to: CGPoint(x: 68, y: 66))
+        let scratch = scribble(over: CGRect(x: 46, y: 38, width: 28, height: 30), passes: 6)
+        let gesture = InkAnalyzer.detectGesture(all: [digit, scratch], newStart: 1)
+        XCTAssertTrue(isScribble(gesture))
+        if case .scribbleErase(let targets, let index) = gesture {
+            XCTAssertEqual(targets, [0])
+            XCTAssertEqual(index, 1)
+        }
+    }
+
+    func testScribbleOverMathTermErasesAllCoveredStrokes() {
+        let digit = stroke(from: CGPoint(x: 40, y: 40), to: CGPoint(x: 55, y: 64))
+        let varX1 = stroke(from: CGPoint(x: 62, y: 44), to: CGPoint(x: 78, y: 64))
+        let varX2 = stroke(from: CGPoint(x: 78, y: 44), to: CGPoint(x: 62, y: 64))
+        let untouched = stroke(from: CGPoint(x: 160, y: 40), to: CGPoint(x: 175, y: 64))
+        let scratch = scribble(over: CGRect(x: 38, y: 38, width: 44, height: 30), passes: 7)
+        let gesture = InkAnalyzer.detectGesture(all: [digit, varX1, varX2, untouched, scratch], newStart: 4)
+        if case .scribbleErase(let targets, let idx) = gesture {
+            XCTAssertEqual(Set(targets), [0, 1, 2])
+            XCTAssertEqual(idx, 4)
+        } else {
+            XCTFail("Expected scribbleErase covering 3x while sparing untouched stroke")
+        }
+    }
+
+    func testScribbleInEmptySpaceDoesNothing() {
+        let digit = stroke(from: CGPoint(x: 40, y: 40), to: CGPoint(x: 55, y: 64))
+        let emptyScratch = scribble(over: CGRect(x: 200, y: 200, width: 40, height: 30), passes: 6)
+        XCTAssertFalse(isScribble(InkAnalyzer.detectGesture(all: [digit, emptyScratch], newStart: 1)))
+    }
+
+    func testCrossingPlusSignIsNotAScribble() {
+        let horiz = stroke(from: CGPoint(x: 40, y: 52), to: CGPoint(x: 64, y: 52))
+        let vert = stroke(from: CGPoint(x: 52, y: 40), to: CGPoint(x: 52, y: 64))
+        XCTAssertNil(InkAnalyzer.detectGesture(all: [horiz, vert], newStart: 1))
     }
 }

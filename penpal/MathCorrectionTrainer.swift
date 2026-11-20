@@ -71,7 +71,15 @@ enum MathCorrectionTrainer {
               let had = tokens(in: original),
               want != had else { return 0 }
 
-        let clusters = MathInkParser.symbolClusters(in: strokes)
+        var clusters = MathInkParser.symbolClusters(in: strokes)
+        if clusters.count == want.count + 1,
+           let last = clusters.last {
+            let heights = strokes.map { $0.renderBounds.height }.filter { $0 > 2 }.sorted()
+            let unit = heights.isEmpty ? 0 : heights[min(heights.count - 1, Int(Double(heights.count) * 0.7))]
+            if MathInkParser.isEqualsCluster(last, unit: unit) {
+                clusters.removeLast()
+            }
+        }
         // Strict 1:1 — wrong length means we can't trust which ink is which glyph.
         guard clusters.count == want.count, clusters.count <= 40 else { return 0 }
 

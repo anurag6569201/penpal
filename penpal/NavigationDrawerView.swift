@@ -20,10 +20,20 @@ struct NavigationDrawerView: View {
     /// Default to the notes list — the drawer opens where the note lives; the
     /// user can step out to folders from there.
     @State private var page: Page = .notes
+    @State private var dragOffset: CGFloat = 0
 
     private enum Page {
         case folders
         case notes
+    }
+
+    private var activeListTitle: String {
+        if store.showPinnedOnly { return "Pinned" }
+        if let tag = store.selectedTagFilter, !tag.isEmpty,
+           store.selectedFolder?.systemKind == .allNotes {
+            return "#\(tag)"
+        }
+        return store.selectedFolder?.name ?? "Notes"
     }
 
     var body: some View {
@@ -37,6 +47,7 @@ struct NavigationDrawerView: View {
                 FoldersSidebarView(
                     store: store,
                     onSelectFolder: { _ in showNotes() },
+                    onOpenSmartView: { showNotes() },
                     onClose: onClose
                 )
                 .transition(pageTransition)
@@ -44,7 +55,7 @@ struct NavigationDrawerView: View {
             case .notes:
                 NotesListView(
                     store: store,
-                    folderTitle: store.selectedFolder?.name ?? "Notes",
+                    folderTitle: activeListTitle,
                     onBack: showFolders,
                     onClose: onClose,
                     onSelectNote: onSelectNote,
@@ -63,11 +74,34 @@ struct NavigationDrawerView: View {
                 .strokeBorder(Pen.inkPrimary.opacity(0.1), lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.18), radius: 24, x: 8, y: 8)
+        .offset(x: min(0, dragOffset))
+        .gesture(
+            DragGesture(minimumDistance: 24, coordinateSpace: .local)
+                .onChanged { value in
+                    // Only track clear horizontal left-swipes to avoid fighting vertical list scroll.
+                    guard value.translation.width < 0,
+                          abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
+                    dragOffset = value.translation.width
+                }
+                .onEnded { value in
+                    if value.translation.width < -90 || value.predictedEndTranslation.width < -150 {
+                        dragOffset = 0
+                        onClose()
+                    } else {
+                        withAnimation(reduceMotion ? nil : Pen.spring) {
+                            dragOffset = 0
+                        }
+                    }
+                }
+        )
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape, onClose)
         .onChange(of: isPresented) { _, open in
             // Every time it opens, land on the notes list (no slide animation).
-            if open { page = .notes }
+            if open {
+                page = .notes
+                dragOffset = 0
+            }
         }
     }
 

@@ -40,18 +40,32 @@ final class VoiceInput: NSObject, ObservableObject {
     @Published private(set) var transcript = ""
     @Published private(set) var errorMessage: String?
 
-    private let recognizer = SFSpeechRecognizer(locale: Locale.current)
+    private var recognizer = SFSpeechRecognizer(locale: Locale.current)
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private let engine = AVAudioEngine()
+    private var tapInstalled = false
+    private var finishHandler: ((String) -> Void)?
+    private var delivered = false
 
     var isAvailable: Bool { recognizer?.isAvailable ?? false }
 
     /// Asks for permission, then starts. `onFinish` receives the final text
-    /// converted to written maths.
-    func start(onFinish: @escaping (String) -> Void) {
+    /// converted to written maths. Pass a BCP-47 locale (e.g. in Language
+    /// Partner mode) to recognise speech in that language.
+    func start(locale localeIdentifier: String? = nil,
+               onFinish: @escaping (String) -> Void) {
         guard !isListening else { return }
         errorMessage = nil
+        transcript = ""
+        delivered = false
+        finishHandler = onFinish
+
+        let targetLocale = localeIdentifier.flatMap { id -> Locale? in
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : Locale(identifier: trimmed)
+        } ?? Locale.current
+        recognizer = SFSpeechRecognizer(locale: targetLocale) ?? SFSpeechRecognizer(locale: Locale.current)
 
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             Task { @MainActor in
@@ -66,14 +80,14 @@ final class VoiceInput: NSObject, ObservableObject {
                             self.errorMessage = "Penpal needs microphone access to hear you."
                             return
                         }
-                        self.beginSession(onFinish: onFinish)
+                        self.beginSession()
                     }
                 }
             }
         }
     }
 
-    private func beginSession(onFinish: @escaping (String) -> Void) {
+    private func beginSession() {
         guard let recognizer, recognizer.isAvailable else {
             errorMessage = "Speech recognition isn't available right now."
             return
@@ -99,10 +113,15 @@ final class VoiceInput: NSObject, ObservableObject {
         self.request = request
 
         let input = engine.inputNode
+        if tapInstalled {
+            input.removeTap(onBus: 0)
+            tapInstalled = false
+        }
         input.installTap(onBus: 0, bufferSize: 1024,
                          format: input.outputFormat(forBus: 0)) { buffer, _ in
             request.append(buffer)
         }
+        tapInstalled = true
         engine.prepare()
         do {
             try engine.start()
@@ -119,32 +138,53 @@ final class VoiceInput: NSObject, ObservableObject {
                 if let result {
                     self.transcript = result.bestTranscription.formattedString
                     if result.isFinal {
-                        let written = SpokenMath.toWrittenForm(self.transcript)
-                        self.stop()
-                        if !written.isEmpty { onFinish(written) }
+                        self.deliverAndStop()
                     }
                 }
                 if error != nil, self.isListening {
                     // Ending the session normally surfaces as an error too, so
                     // deliver whatever was heard rather than discarding it.
-                    let written = SpokenMath.toWrittenForm(self.transcript)
-                    self.stop()
-                    if !written.isEmpty { onFinish(written) }
+                    self.deliverAndStop()
                 }
             }
         }
     }
 
-    func stop() {
+    func stop(commit: Bool = true) {
         guard isListening else { return }
+        if commit {
+            deliverTranscriptIfNeeded()
+        }
         isListening = false
         engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
         request?.endAudio()
+        finishHandler = nil
         cleanUp()
     }
 
+    private func deliverAndStop() {
+        deliverTranscriptIfNeeded()
+        stop(commit: false)
+    }
+
+    private func deliverTranscriptIfNeeded() {
+        guard !delivered else { return }
+        delivered = true
+        let raw = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, let handler = finishHandler else { return }
+        let written = SpokenMath.toWrittenForm(raw)
+        if !written.isEmpty { handler(written) }
+    }
+
     private func cleanUp() {
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
         task?.cancel()
         task = nil
         request = nil

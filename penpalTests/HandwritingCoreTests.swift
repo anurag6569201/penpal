@@ -367,6 +367,217 @@ final class HandwritingCoreTests: XCTestCase {
         XCTAssertNil(MathInkParser.equalsBarRects(in: formulaStrokes))
     }
 
+    func testExtendedMathSheetUnitsAndSystems() {
+        MathEngine.shared.warmUp()
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            if MathEngine.shared.solve("1+1") != nil { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        let cases: [(String, String)] = [
+            ("120-45=", "75"),
+            ("10-25=", "-15"),
+            ("12 - 5=", "7"),
+            ("√144=", "12"),
+            ("√(9+16)=", "5"),
+            ("log(1000)=", "3"),
+            ("LOG(1000)=", "3"),
+            ("log2(1024)=", "10"),
+            ("log2(8^10)=", "30"),
+            ("15% of 80=", "12"),
+            ("50% of 50% of 200=", "50"),
+            ("5 inch to cm=", "12.7 cm"),
+            ("90 minute to hour=", "1.5 hour"),
+            ("gcd(48,18)=", "6"),
+            ("lcm(12,18)=", "36"),
+            ("nCr(5,2)=", "10"),
+            ("x+y=5 x-y=1=", "x = 3, y = 2"),
+            ("2a+b=7, a-b=2=", "a = 3, b = 1"),
+            ("x+y=5\nx-y=1=", "x = 3, y = 2"),
+            ("integrate(sin(x))=", "-cos(x) + C"),
+            ("5+5=10+2=", "12"),
+            ("ans+8=", "20"),
+        ]
+        for (expr, expected) in cases {
+            XCTAssertEqual(MathEvaluator.instantAnswer(for: expr), expected, "failed for \(expr)")
+        }
+
+        for refusal in ["1/0=", "sqrt(-4)=", "tan(90)=", "5="] {
+            XCTAssertNil(MathEvaluator.instantAnswer(for: refusal), "should decline \(refusal)")
+        }
+    }
+
+    func testCalculatorIdiomsNotMisclassifiedAsProse() {
+        for expr in [
+            "15% of 80=",
+            "50% of 50% of 200=",
+            "5 inch to cm=",
+            "60 mi to km=",
+            "90 minute to hour=",
+            "10 cm to in=",
+            "100 degC to degF=",
+            "integrate(2x)=",
+            "factor(x^2-5x+6)=",
+            "simplify(2x+3x-x)=",
+        ] {
+            XCTAssertFalse(MathEvaluator.isTheoryOrProseContext(expr), "rejected calculator input: \(expr)")
+        }
+
+        for prose in ["Force F = ma", "Let mass be m", "Find the sum of x and y"] {
+            XCTAssertTrue(MathEvaluator.isTheoryOrProseContext(prose), "missed prose: \(prose)")
+        }
+
+        for arithmetic in ["12 × 3 =", "144 ÷ 12 =", "√144 =", "sin(30) =", "log(1000) ="] {
+            XCTAssertTrue(MathEvaluator.isPlausibleArithmeticAttempt(arithmetic), "rejected arithmetic: \(arithmetic)")
+        }
+    }
+
+    func testCrossMultiplicationNotMistakenForCaret() {
+        let diag1 = makeTestStroke(from: CGPoint(x: 40, y: 40), to: CGPoint(x: 62, y: 62))
+        let diag2 = makeTestStroke(from: CGPoint(x: 62, y: 40), to: CGPoint(x: 40, y: 62))
+        XCTAssertEqual(MathInkParser.classifyOperator([diag1, diag2], unit: 24), "*")
+
+        let caretLeft = makeTestStroke(from: CGPoint(x: 40, y: 58), to: CGPoint(x: 52, y: 42))
+        let caretRight = makeTestStroke(from: CGPoint(x: 52, y: 42), to: CGPoint(x: 64, y: 58))
+        XCTAssertEqual(MathInkParser.classifyOperator([caretLeft, caretRight], unit: 24), "^")
+    }
+
+    func testTightTrailingEqualsAndEqualsCluster() {
+        let digit = makeTestStroke(from: CGPoint(x: 20, y: 40), to: CGPoint(x: 20, y: 66))
+        let topBar = makeTestStroke(from: CGPoint(x: 24, y: 49), to: CGPoint(x: 48, y: 49))
+        let bottomBar = makeTestStroke(from: CGPoint(x: 24, y: 59), to: CGPoint(x: 48, y: 59))
+        let tight = [digit, topBar, bottomBar]
+        XCTAssertTrue(MathInkParser.isTrailingEquals(tight))
+        XCTAssertTrue(MathInkParser.looksLikeEqualsAsk(tight))
+        XCTAssertNotNil(MathInkParser.equalsBarRects(in: tight))
+        XCTAssertTrue(MathInkParser.isEqualsCluster([topBar, bottomBar], unit: 26))
+    }
+
+    func testGraphPlotterHandlesRadiansAndExp() throws {
+        XCTAssertEqual(GraphPlotter.functionBody(in: "y = x^2"), "x^2")
+        XCTAssertEqual(GraphPlotter.functionBody(in: "plot sin(x)"), "sin(x)")
+        XCTAssertEqual(GraphPlotter.functionBody(in: "f(x) = 2x + 1 ="), "2x + 1")
+
+        let frame = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let sinPlot = try XCTUnwrap(GraphPlotter.plot("sin(x)", in: frame))
+        XCTAssertEqual(sinPlot.curve.count, 1)
+        // sin(x) spans [-1, 1] (width 2); with 10% span padding yMax is ~1.2.
+        XCTAssertEqual(sinPlot.labels.last?.text, "1.2")
+
+        XCTAssertNotNil(GraphPlotter.plot("exp(x)", in: frame))
+        let reciprocal = try XCTUnwrap(GraphPlotter.plot("1/x", in: frame))
+        XCTAssertEqual(reciprocal.curve.count, 2)
+    }
+
+    func testCorrectionTrainerHandlesTrailingEquals() {
+        let digit1 = makeTestStroke(from: CGPoint(x: 10, y: 40), to: CGPoint(x: 20, y: 66))
+        let plusH = makeTestStroke(from: CGPoint(x: 34, y: 53), to: CGPoint(x: 52, y: 53))
+        let plusV = makeTestStroke(from: CGPoint(x: 43, y: 44), to: CGPoint(x: 43, y: 62))
+        let digit2 = makeTestStroke(from: CGPoint(x: 72, y: 40), to: CGPoint(x: 72, y: 66))
+        let eqTop = makeTestStroke(from: CGPoint(x: 92, y: 49), to: CGPoint(x: 114, y: 49))
+        let eqBot = makeTestStroke(from: CGPoint(x: 92, y: 59), to: CGPoint(x: 114, y: 59))
+        let strokes = [digit1, plusH, plusV, digit2, eqTop, eqBot]
+        let clusters = MathInkParser.symbolClusters(in: strokes)
+        XCTAssertEqual(clusters.count, 4)
+        XCTAssertTrue(MathInkParser.isEqualsCluster(clusters[3], unit: 26))
+        let beforeCount = PersonalFontStore.shared.variantCount(forChar: "3")
+        XCTAssertEqual(
+            MathCorrectionTrainer.learn(from: strokes, original: "8+2=", corrected: "3+2="),
+            1
+        )
+        let afterCount = PersonalFontStore.shared.variantCount(forChar: "3")
+        if afterCount > beforeCount {
+            PersonalFontStore.shared.removeVariant(forChar: "3", at: afterCount - 1)
+        }
+    }
+
+    func testPageLevelMathVariablesAndChaining() {
+        MathEngine.shared.warmUp()
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            if MathEngine.shared.solve("1+1") != nil { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        let vars = MathEvaluator.extractVariables(from: [
+            "r = 5",
+            "a = 3 + 1",
+            "b = 2a",
+            "Force F = ma", // prose must be ignored
+        ])
+        XCTAssertEqual(vars["r"], 5)
+        XCTAssertEqual(vars["a"], 4)
+        XCTAssertEqual(vars["b"], 8)
+        XCTAssertNil(vars["f"])
+
+        XCTAssertEqual(MathEvaluator.instantAnswer(for: "3a + b =", variables: vars), "20")
+        XCTAssertEqual(MathEvaluator.instantAnswer(for: "r = 5\nr^2 ="), "25")
+        // Equation solving must still solve symbolically even if x is bound on the page.
+        let solved = MathEvaluator.instantAnswer(for: "x^2 - 5x + 6 = 0 =", variables: ["x": 99])
+        XCTAssertNotNil(solved)
+        XCTAssertTrue(solved?.contains("2") == true && solved?.contains("3") == true)
+    }
+
+    func testDivisionSignAndRadicalGeometry() {
+        // Division "÷": horizontal bar + dot above + dot below.
+        let bar = makeTestStroke(from: CGPoint(x: 40, y: 52), to: CGPoint(x: 64, y: 52))
+        let topDot = makeTestStroke(from: CGPoint(x: 52, y: 42), to: CGPoint(x: 53, y: 43))
+        let botDot = makeTestStroke(from: CGPoint(x: 52, y: 62), to: CGPoint(x: 53, y: 63))
+        XCTAssertEqual(MathInkParser.classifyOperator([bar, topDot, botDot], unit: 26), "/")
+
+        // Handwritten √ stroke: left entry → bottom vertex → rising diagonal → right roof.
+        let radicalPts: [CGPoint] = [
+            CGPoint(x: 20, y: 56),
+            CGPoint(x: 28, y: 74),
+            CGPoint(x: 42, y: 36),
+            CGPoint(x: 96, y: 36),
+        ]
+        var dense: [PKStrokePoint] = []
+        var t: Double = 0
+        for i in 1..<radicalPts.count {
+            let a = radicalPts[i - 1], b = radicalPts[i]
+            let steps = max(4, Int(hypot(b.x - a.x, b.y - a.y) / 2))
+            for s in 0...steps {
+                let f = CGFloat(s) / CGFloat(steps)
+                dense.append(PKStrokePoint(
+                    location: CGPoint(x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f),
+                    timeOffset: t, size: CGSize(width: 3, height: 3),
+                    opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2))
+                t += 0.004
+            }
+        }
+        let radStroke = PKStroke(ink: PKInk(.pen, color: .black),
+                                 path: PKStrokePath(controlPoints: dense, creationDate: Date()))
+        XCTAssertTrue(MathInkParser.isRadicalStroke(radStroke, unit: 24))
+    }
+
+    func testGraphPlotterExpressionsAndAnnotations() throws {
+        XCTAssertEqual(GraphPlotter.plottableExpression(from: "x^2 - 4"), "x^2 - 4")
+        XCTAssertEqual(GraphPlotter.plottableExpression(from: "x^2 - 5x + 6 = 0 ="), "x^2 - 5x + 6")
+        XCTAssertEqual(GraphPlotter.plottableExpression(from: "y = sin(x)"), "sin(x)")
+        XCTAssertNil(GraphPlotter.plottableExpression(from: "5 + 5 ="))
+
+        let plot = try XCTUnwrap(GraphPlotter.plot("x^2 - 4", in: CGRect(x: 0, y: 0, width: 320, height: 220)))
+        XCTAssertFalse(plot.annotations.isEmpty, "Plot should include ticks, arrowheads, labels, and intercepts")
+        XCTAssertGreaterThan(plot.strokes.count, plot.axes.count + plot.curve.count)
+    }
+
+    func testExpandedMathGhostWorkSteps() {
+        let quadSteps = MathGhostWork.steps(for: "x^2-5x+6=0=", answer: "x = 2, x = 3")
+        XCTAssertEqual(quadSteps.count, 2)
+        XCTAssertTrue(quadSteps[0].contains("D ="))
+
+        let pctSteps = MathGhostWork.steps(for: "15% of 80=", answer: "12")
+        XCTAssertEqual(pctSteps.first, "0.15 × 80")
+
+        let fracSteps = MathGhostWork.steps(for: "3/4+1/6=", answer: "11/12")
+        XCTAssertEqual(fracSteps.first, "(9 + 2) / 12")
+
+        let parenSteps = MathGhostWork.steps(for: "(2+3)*4=", answer: "20")
+        XCTAssertEqual(parenSteps.first, "2+3 = 5")
+    }
+
     private func makeTestStroke(from a: CGPoint, to b: CGPoint, height: CGFloat = 3) -> PKStroke {
         let steps = max(2, Int(hypot(b.x - a.x, b.y - a.y) / 2))
         let points = (0...steps).map { i -> PKStrokePoint in

@@ -311,6 +311,8 @@ struct SpotlightOverlay: View {
             return "✓ Sidebar opened!"
         case .inkWritten:
             return "✓ Ink captured!"
+        case .undoPerformed:
+            return "✓ Undone with a gesture! Three-finger tap redoes."
         }
     }
 }

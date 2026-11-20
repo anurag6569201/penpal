@@ -23,6 +23,10 @@ nonisolated struct NoteFolder: Identifiable, Codable, Hashable {
     var isExpanded: Bool
     var sortOrder: Int
     var systemKind: SystemFolderKind?
+    /// Optional visual icon (SF Symbol name) for custom folders.
+    var iconName: String?
+    /// Optional color palette key ("teal", "indigo", "blue", "amber", "rose", "forest", "slate").
+    var colorName: String?
 
     enum SystemFolderKind: String, Codable {
         case quickNotes
@@ -37,13 +41,63 @@ nonisolated struct NoteFolder: Identifiable, Codable, Hashable {
          parentID: UUID? = nil,
          isExpanded: Bool = true,
          sortOrder: Int = 0,
-         systemKind: SystemFolderKind? = nil) {
+         systemKind: SystemFolderKind? = nil,
+         iconName: String? = nil,
+         colorName: String? = nil) {
         self.id = id
         self.name = name
         self.parentID = parentID
         self.isExpanded = isExpanded
         self.sortOrder = sortOrder
         self.systemKind = systemKind
+        self.iconName = iconName
+        self.colorName = colorName
+    }
+
+    static let paletteIcons: [(symbol: String, label: String)] = [
+        ("folder", "Folder"),
+        ("x.squareroot", "Maths"),
+        ("function", "Calculus"),
+        ("atom", "Science"),
+        ("book.closed", "Study"),
+        ("graduationcap", "Course"),
+        ("lightbulb", "Ideas"),
+        ("pencil.and.outline", "Sketches"),
+        ("doc.text", "Notes"),
+        ("star", "Favorites"),
+        ("bookmark", "Reference"),
+        ("checklist", "Tasks"),
+    ]
+
+    static let paletteColors: [(key: String, label: String, color: Color)] = [
+        ("teal", "Teal", Pen.inkAccent),
+        ("indigo", "Indigo", Color(light: Color(red: 0.28, green: 0.30, blue: 0.65),
+                                   dark: Color(red: 0.56, green: 0.59, blue: 0.94))),
+        ("blue", "Cobalt", Color(light: Color(red: 0.16, green: 0.44, blue: 0.72),
+                                 dark: Color(red: 0.46, green: 0.72, blue: 0.96))),
+        ("forest", "Forest", Pen.inkPositive),
+        ("amber", "Amber", Pen.inkCaution),
+        ("rose", "Terracotta", Color(light: Color(red: 0.72, green: 0.31, blue: 0.30),
+                                     dark: Color(red: 0.90, green: 0.52, blue: 0.50))),
+        ("slate", "Graphite", Color(light: Color(red: 0.34, green: 0.38, blue: 0.42),
+                                    dark: Color(red: 0.65, green: 0.69, blue: 0.73))),
+    ]
+
+    var resolvedIconName: String {
+        if let iconName, !iconName.isEmpty { return iconName }
+        switch systemKind {
+        case .allNotes: return "tray.full"
+        case .recentlyDeleted: return "trash"
+        case .notes, .quickNotes, .shared, .none: return "folder"
+        }
+    }
+
+    var resolvedColor: Color {
+        if let colorName,
+           let match = Self.paletteColors.first(where: { $0.key == colorName }) {
+            return match.color
+        }
+        return Pen.inkAccent
     }
 }
 
@@ -372,14 +426,23 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
     /// first copies potentially large HTML blocks into a temporary string on
     /// every query, even when the title or body already matches.
     func matchesSearch(_ query: String) -> Bool {
-        if displayTitle.localizedCaseInsensitiveContains(query)
-            || body.localizedCaseInsensitiveContains(query)
-            || normalizedTags.contains(where: { $0.localizedCaseInsensitiveContains(query) })
-            || (typedTexts ?? []).contains(where: { $0.text.localizedCaseInsensitiveContains(query) })
-            || (replyTranscript ?? []).contains(where: { $0.localizedCaseInsensitiveContains(query) })
-            || (handwritingTranscript?.localizedCaseInsensitiveContains(query) ?? false)
-            || (htmlContent?.localizedCaseInsensitiveContains(query) ?? false)
-            || (codeBlocks ?? []).contains(where: { $0.html.localizedCaseInsensitiveContains(query) }) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        // Support `#tag` queries cleanly.
+        if trimmed.hasPrefix("#") {
+            let tagQuery = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+            if !tagQuery.isEmpty {
+                return normalizedTags.contains { $0.localizedCaseInsensitiveContains(tagQuery) }
+            }
+        }
+        if displayTitle.localizedCaseInsensitiveContains(trimmed)
+            || body.localizedCaseInsensitiveContains(trimmed)
+            || normalizedTags.contains(where: { $0.localizedCaseInsensitiveContains(trimmed) })
+            || (typedTexts ?? []).contains(where: { $0.text.localizedCaseInsensitiveContains(trimmed) })
+            || (replyTranscript ?? []).contains(where: { $0.localizedCaseInsensitiveContains(trimmed) })
+            || (handwritingTranscript?.localizedCaseInsensitiveContains(trimmed) ?? false)
+            || (htmlContent?.localizedCaseInsensitiveContains(trimmed) ?? false)
+            || (codeBlocks ?? []).contains(where: { $0.html.localizedCaseInsensitiveContains(trimmed) }) {
             return true
         }
         return false
@@ -395,11 +458,19 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !firstLine.isEmpty { return firstLine }
         if isCoded { return "Coded paper" }
-        if !drawingData.isEmpty || !(replyInks ?? []).isEmpty { return "Handwritten note" }
+        // Use the first clean line of the local handwriting transcript so handwritten
+        // notes are immediately distinguishable instead of all reading "Handwritten note".
+        if let transcriptLine = handwritingTranscript?
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .first(where: { $0.count >= 2 }) {
+            return String(transcriptLine.prefix(52))
+        }
         if let first = typedTexts?.first?.text.trimmingCharacters(in: .whitespacesAndNewlines),
            !first.isEmpty {
             return String(first.prefix(60))
         }
+        if !drawingData.isEmpty || !(replyInks ?? []).isEmpty { return "Handwritten note" }
         return "New Note"
     }
 
@@ -412,14 +483,35 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
                 .description
         }
         if isCoded { return "Coded paper — HTML page" }
-        if !drawingData.isEmpty || !(replyInks ?? []).isEmpty { return "Handwritten note" }
+        if let transcript = handwritingTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !transcript.isEmpty {
+            let lines = transcript
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            // If displayTitle already came from line 1, show lines 2+ as preview when available.
+            let snippet = (title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lines.count > 1)
+                ? lines.dropFirst().joined(separator: " · ")
+                : lines.joined(separator: " · ")
+            if !snippet.isEmpty {
+                return String(snippet.prefix(120))
+            }
+        }
+        if let lastReply = replyTranscript?.last?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !lastReply.isEmpty {
+            return lastReply
+                .replacingOccurrences(of: "\n", with: " ")
+                .prefix(120)
+                .description
+        }
         if let texts = typedTexts, !texts.isEmpty {
             return texts.map(\.text).joined(separator: " ")
                 .replacingOccurrences(of: "\n", with: " ")
                 .prefix(120)
                 .description
         }
-        return "No additional text"
+        if !drawingData.isEmpty || !(replyInks ?? []).isEmpty { return "Handwritten ink" }
+        return "Empty page"
     }
 
     var drawing: PKDrawing {
@@ -477,12 +569,30 @@ final class NotesStore: ObservableObject {
     /// no longer asks people to manage files before they can use Penpal.
     static let workspaceNoteID = UUID(uuidString: "5E1C0A00-0000-4000-8000-000000000100")!
 
+    enum NoteSortOption: String, CaseIterable, Identifiable {
+        case dateModified = "Recently Edited"
+        case dateCreated = "Date Created"
+        case titleAsc = "Title (A–Z)"
+        var id: String { rawValue }
+    }
+
     @Published var folders: [NoteFolder] = []
     @Published var notes: [Note] = []
     @Published var selectedFolderID: UUID?
     @Published var selectedNoteID: UUID?
     @Published var isEditingFolders = false
     @Published var searchQuery = ""
+    @Published var selectedTagFilter: String? = nil
+    @Published var showPinnedOnly = false
+    @Published var searchAllFolders = false
+    @Published var noteSortOption: NoteSortOption = {
+        let raw = UserDefaults.standard.string(forKey: "penpal.notes.sortOption") ?? ""
+        return NoteSortOption(rawValue: raw) ?? .dateModified
+    }() {
+        didSet {
+            UserDefaults.standard.set(noteSortOption.rawValue, forKey: "penpal.notes.sortOption")
+        }
+    }
     @Published private(set) var isLoading = true
 
     private let saveURL: URL
@@ -561,33 +671,123 @@ final class NotesStore: ObservableObject {
         }
     }
 
+    /// Counts active notes inside `folder` plus all nested descendant subfolders.
+    func recursiveNoteCount(for folder: NoteFolder) -> Int {
+        guard folder.systemKind == nil else { return noteCount(for: folder) }
+        var ids: Set<UUID> = [folder.id]
+        var queue = [folder.id]
+        while let current = queue.popLast() {
+            for child in folders where child.parentID == current && child.systemKind == nil {
+                if ids.insert(child.id).inserted {
+                    queue.append(child.id)
+                }
+            }
+        }
+        return notes.filter { !$0.isDeleted && ids.contains($0.folderID) }.count
+    }
+
+    var pinnedNotesCount: Int {
+        notes.filter { !$0.isDeleted && $0.pinned }.count
+    }
+
     var recentlyDeletedSelected: Bool {
         selectedFolder?.systemKind == .recentlyDeleted
     }
 
-    func visibleNotes() -> [Note] {
-        let base: [Note]
+    func folderName(for folderID: UUID) -> String? {
+        folders.first { $0.id == folderID }?.name
+    }
+
+    func folder(for folderID: UUID) -> NoteFolder? {
+        folders.first { $0.id == folderID }
+    }
+
+    func recentNotes(limit: Int = 6) -> [Note] {
+        Array(
+            notes
+                .filter { !$0.isDeleted }
+                .sorted { $0.modifiedAt > $1.modifiedAt }
+                .prefix(limit)
+        )
+    }
+
+    /// All tags across active notes, sorted by usage count then alphabetically.
+    func allTags() -> [(tag: String, count: Int)] {
+        tagCounts(in: notes.filter { !$0.isDeleted })
+    }
+
+    /// Tags present in the currently selected folder (ignoring the active tag filter itself).
+    func tagsInCurrentFolder() -> [(tag: String, count: Int)] {
+        tagCounts(in: notesInSelectedFolder())
+    }
+
+    private func tagCounts(in list: [Note]) -> [(tag: String, count: Int)] {
+        var displayByKey: [String: String] = [:]
+        var countsByKey: [String: Int] = [:]
+        for note in list {
+            for tag in note.normalizedTags {
+                let key = tag.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                if displayByKey[key] == nil { displayByKey[key] = tag }
+                countsByKey[key, default: 0] += 1
+            }
+        }
+        return countsByKey.map { key, count in
+            (tag: displayByKey[key] ?? key, count: count)
+        }.sorted { a, b in
+            if a.count != b.count { return a.count > b.count }
+            return a.tag.localizedCaseInsensitiveCompare(b.tag) == .orderedAscending
+        }
+    }
+
+    private func notesInSelectedFolder() -> [Note] {
         guard let folder = selectedFolder else {
-            base = notes.filter { !$0.isDeleted }
-            return filterSearch(base).sorted(by: Self.stableOrder)
+            return notes.filter { !$0.isDeleted }
         }
         switch folder.systemKind {
         case .allNotes:
-            base = notes.filter { !$0.isDeleted }
+            return notes.filter { !$0.isDeleted }
         case .recentlyDeleted:
-            base = notes.filter(\.isDeleted)
+            return notes.filter(\.isDeleted)
         case .notes, .none, .quickNotes, .shared:
-            base = notes.filter { !$0.isDeleted && $0.folderID == folder.id }
+            return notes.filter { !$0.isDeleted && $0.folderID == folder.id }
         }
-        return filterSearch(base).sorted(by: Self.stableOrder)
     }
 
-    /// Newest-created first. Sorting by creation date (not last-edited) keeps
-    /// a note's position stable — opening or editing a note no longer jumps
-    /// it to the top of the list.
-    private static func stableOrder(_ a: Note, _ b: Note) -> Bool {
-        if a.createdAt != b.createdAt { return a.createdAt > b.createdAt }
-        return a.id.uuidString > b.id.uuidString   // deterministic tie-break
+    func visibleNotes() -> [Note] {
+        let isSearching = !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var base: [Note]
+        if isSearching && searchAllFolders && !recentlyDeletedSelected {
+            base = notes.filter { !$0.isDeleted }
+        } else {
+            base = notesInSelectedFolder()
+        }
+        if showPinnedOnly && !recentlyDeletedSelected {
+            base = base.filter(\.pinned)
+        }
+        if let activeTag = selectedTagFilter, !activeTag.isEmpty, !recentlyDeletedSelected {
+            let targetKey = activeTag.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            base = base.filter { note in
+                note.normalizedTags.contains {
+                    $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) == targetKey
+                }
+            }
+        }
+        return filterSearch(base).sorted(by: sortComparator)
+    }
+
+    private func sortComparator(_ a: Note, _ b: Note) -> Bool {
+        switch noteSortOption {
+        case .dateModified:
+            if a.modifiedAt != b.modifiedAt { return a.modifiedAt > b.modifiedAt }
+            return a.id.uuidString > b.id.uuidString
+        case .dateCreated:
+            if a.createdAt != b.createdAt { return a.createdAt > b.createdAt }
+            return a.id.uuidString > b.id.uuidString
+        case .titleAsc:
+            let cmp = a.displayTitle.localizedCaseInsensitiveCompare(b.displayTitle)
+            if cmp != .orderedSame { return cmp == .orderedAscending }
+            return a.modifiedAt > b.modifiedAt
+        }
     }
 
     /// Folders a note can be moved into (real, writable folders only).
@@ -595,6 +795,38 @@ final class NotesStore: ObservableObject {
         let systems = folders.filter { $0.systemKind == .notes }
         let customs = folders.filter { $0.systemKind == nil }.sorted { $0.sortOrder < $1.sortOrder }
         return systems + customs
+    }
+
+    /// Depth-ordered writable folders for hierarchical Move pickers.
+    func orderedMovableFolders() -> [(folder: NoteFolder, depth: Int)] {
+        var result: [(NoteFolder, Int)] = []
+        if let notesFolder = folders.first(where: { $0.systemKind == .notes }) {
+            result.append((notesFolder, 0))
+        }
+        func walk(_ parentID: UUID?, depth: Int) {
+            for child in childFolders(of: parentID) {
+                result.append((child, depth))
+                walk(child.id, depth: depth + 1)
+            }
+        }
+        walk(nil, depth: 0)
+        return result
+    }
+
+    /// Valid destination parents when re-parenting `folderID` (excludes self & descendants).
+    func validParentFolders(for folderID: UUID) -> [(folder: NoteFolder, depth: Int)] {
+        var result: [(NoteFolder, Int)] = []
+        func walk(_ parentID: UUID?, depth: Int) {
+            for child in childFolders(of: parentID) {
+                guard child.id != folderID && !isDescendant(folderID: child.id, of: folderID) else {
+                    continue
+                }
+                result.append((child, depth))
+                walk(child.id, depth: depth + 1)
+            }
+        }
+        walk(nil, depth: 0)
+        return result
     }
 
     /// PEN-18 — search across what's actually ON the page, not just the
@@ -623,13 +855,36 @@ final class NotesStore: ObservableObject {
 
     // MARK: Mutations
 
-    func selectFolder(_ id: UUID) {
+    func selectFolder(_ id: UUID,
+                      clearFilters: Bool = true) {
         selectedFolderID = id
+        if clearFilters {
+            selectedTagFilter = nil
+            showPinnedOnly = false
+        }
         let visible = visibleNotes()
         if let current = selectedNoteID, visible.contains(where: { $0.id == current }) {
             return
         }
         selectedNoteID = visible.first?.id
+    }
+
+    /// Jumps to All Notes filtered to pinned notes.
+    func selectPinnedSmartView() {
+        if let allID = folders.first(where: { $0.systemKind == .allNotes })?.id {
+            selectedFolderID = allID
+        }
+        selectedTagFilter = nil
+        showPinnedOnly = true
+    }
+
+    /// Jumps to All Notes filtered to a specific tag.
+    func selectTagSmartView(_ tag: String) {
+        if let allID = folders.first(where: { $0.systemKind == .allNotes })?.id {
+            selectedFolderID = allID
+        }
+        showPinnedOnly = false
+        selectedTagFilter = tag
     }
 
     func selectNote(_ id: UUID?) {
@@ -985,6 +1240,43 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Creates an independent copy of a note (including drawings, blocks, tags,
+    /// and copied attachment files so deleting one never affects the other).
+    @discardableResult
+    func duplicateNote(_ id: UUID) -> Note? {
+        guard let original = notes.first(where: { $0.id == id }) else { return nil }
+        var copy = original
+        copy.id = UUID()
+        copy.deletedAt = nil
+        copy.isPinned = nil
+        let baseTitle = original.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.title = baseTitle.isEmpty ? "\(original.displayTitle) Copy" : "\(baseTitle) Copy"
+        copy.createdAt = .now
+        copy.modifiedAt = .now
+
+        var copiedAttachments: [NoteAttachment] = []
+        for att in original.attachments {
+            let src = attachmentsDir.appendingPathComponent(att.filename)
+            let ext = URL(fileURLWithPath: att.filename).pathExtension
+            let newName = UUID().uuidString + (ext.isEmpty ? "" : ".\(ext)")
+            let dst = attachmentsDir.appendingPathComponent(newName)
+            if (try? FileManager.default.copyItem(at: src, to: dst)) != nil {
+                copiedAttachments.append(NoteAttachment(filename: newName))
+            }
+        }
+        copy.attachments = copiedAttachments
+        if let blocks = original.codeBlocks {
+            copy.codeBlocks = blocks.map { block in
+                var b = block
+                b.id = UUID()
+                return b
+            }
+        }
+        notes.insert(copy, at: 0)
+        scheduleSave()
+        return copy
+    }
+
     // MARK: Batch operations (multi-select)
 
     func deleteNotes(_ ids: Set<UUID>, permanently: Bool = false) {
@@ -997,6 +1289,21 @@ final class NotesStore: ObservableObject {
 
     func moveNotes(_ ids: Set<UUID>, to folderID: UUID) {
         for id in ids { moveNote(id, to: folderID) }
+    }
+
+    func setPinned(_ pinned: Bool, for ids: Set<UUID>) {
+        for id in ids { setPinned(pinned, for: id) }
+    }
+
+    func duplicateNotes(_ ids: Set<UUID>) {
+        for id in ids { _ = duplicateNote(id) }
+    }
+
+    func addTags(_ rawTags: [String], to ids: Set<UUID>) {
+        for id in ids {
+            guard let existing = notes.first(where: { $0.id == id }) else { continue }
+            updateTags(existing.normalizedTags + rawTags, for: id)
+        }
     }
 
     // MARK: Recently Deleted management
@@ -1038,11 +1345,19 @@ final class NotesStore: ObservableObject {
     }
 
     @discardableResult
-    func createFolder(named name: String, parentID: UUID? = nil) -> NoteFolder {
+    func createFolder(named name: String,
+                      parentID: UUID? = nil,
+                      iconName: String? = nil,
+                      colorName: String? = nil) -> NoteFolder {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "New Folder" : trimmed
         let order = (folders.map(\.sortOrder).max() ?? 0) + 1
-        let folder = NoteFolder(name: finalName, parentID: parentID, isExpanded: true, sortOrder: order)
+        let folder = NoteFolder(name: finalName,
+                                parentID: parentID,
+                                isExpanded: true,
+                                sortOrder: order,
+                                iconName: iconName,
+                                colorName: colorName)
         folders.append(folder)
         // Ensure parent is expanded so newly created child is immediately visible
         if let parentID, let idx = folders.firstIndex(where: { $0.id == parentID }) {
@@ -1050,6 +1365,14 @@ final class NotesStore: ObservableObject {
         }
         scheduleSave()
         return folder
+    }
+
+    func updateFolderAppearance(_ id: UUID, iconName: String?, colorName: String?) {
+        guard let idx = folders.firstIndex(where: { $0.id == id }),
+              folders[idx].systemKind == nil else { return }
+        folders[idx].iconName = iconName
+        folders[idx].colorName = colorName
+        scheduleSave()
     }
 
     @discardableResult

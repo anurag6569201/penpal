@@ -31,6 +31,8 @@ struct MagicPaper: UIViewRepresentable {
     ) -> Void
     var onDrawingChange: (PKDrawing) -> Void
     var onUndoRedoChange: (Bool, Bool) -> Void
+    var onGestureFeedback: (MagicPaperView.GestureFeedback) -> Void
+    var onPlottableFunctionChange: (String?) -> Void
     var onTypedTextsChange: ([TypedNoteText]) -> Void
     var onReplyInksChange: ([ReplyInk]) -> Void
     var onCodeBlocksChange: ([CodeBlock]) -> Void
@@ -61,6 +63,8 @@ struct MagicPaper: UIViewRepresentable {
         view.onInteractivePermissionRequest = onInteractivePermissionRequest
         view.onDrawingChange = onDrawingChange
         view.onUndoRedoChange = onUndoRedoChange
+        view.onGestureFeedback = onGestureFeedback
+        view.onPlottableFunctionChange = onPlottableFunctionChange
         view.onTypedTextsChange = onTypedTextsChange
         view.onReplyInksChange = onReplyInksChange
         view.onCodeBlocksChange = onCodeBlocksChange
@@ -102,6 +106,16 @@ struct ContentView: View {
     @State private var isReading = false
     @State private var canUndo = false
     @State private var canRedo = false
+    @State private var rulerActive = false
+    @State private var gestureFeedback: MagicPaperView.GestureFeedback?
+    @State private var showPlotSheet = false
+    @State private var plotExpressionDraft = ""
+    @State private var lastPlottableFunction: String?
+    @State private var showQuickRenameNote = false
+    @State private var quickRenameDraft = ""
+    @State private var showQuickTagNote = false
+    @State private var quickTagDraft = ""
+    @State private var showQuickMoveNote = false
     @State private var showTraining = false
     @State private var showSettings = false
     @State private var showPrefer = false
@@ -222,17 +236,39 @@ struct ContentView: View {
         .tint(accent)
         .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .top) {
-            if store.selectedNote != nil && !navigationDrawerPresented {
-                editorFloatingToolbar
-                    .onGeometryChange(for: CGFloat.self) { geometry in
-                        geometry.size.height
-                    } action: { height in
-                        editorToolbarHeight = height
-                    }
-                    .padding(.top, editorToolbarTopInset)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .zIndex(2)
+            VStack(spacing: 8) {
+                if store.selectedNote != nil && !navigationDrawerPresented {
+                    editorFloatingToolbar
+                        .onGeometryChange(for: CGFloat.self) { geometry in
+                            geometry.size.height
+                        } action: { height in
+                            editorToolbarHeight = height
+                        }
+                        .padding(.top, editorToolbarTopInset)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if let feedback = gestureFeedback {
+                    gestureFeedbackPill(feedback)
+                        .id(feedback.id)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
+            .zIndex(2)
+        }
+        // Keep Cmd+Z / Cmd+Shift+Z keyboard shortcuts active even though undo/redo
+        // on the canvas is now gesture-based (2-finger tap / 3-finger tap).
+        .background {
+            Group {
+                Button("Undo") { proxy.view?.undo(showFeedback: true) }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
+                Button("Redo") { proxy.view?.redo(showFeedback: true) }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
         .overlay(alignment: .bottom) {
             if tour.justCompleted {
@@ -254,6 +290,7 @@ struct ContentView: View {
         .animation(reduceMotion ? nil : Pen.spring, value: tour.justCompleted)
         .animation(reduceMotion ? nil : Pen.spring, value: workspaceNotice?.id)
         .animation(reduceMotion ? nil : Pen.spring, value: showPrefer)
+        .animation(reduceMotion ? nil : Pen.spring, value: gestureFeedback?.id)
         .onAppear(perform: handleAppear)
         .onOpenURL(perform: handleOpenURL)
         .onChange(of: store.isLoading) { _, loading in
@@ -284,6 +321,11 @@ struct ContentView: View {
         }
         .onChange(of: visionPhotoItem) { _, item in
             Task { await respondToVisionPhoto(item) }
+        }
+        .onChange(of: voice.errorMessage) { _, message in
+            guard let message, !message.isEmpty else { return }
+            statusMessage = message
+            showStatus = true
         }
         .sheet(isPresented: $showTraining) {
             CalibrationView(
@@ -351,11 +393,21 @@ struct ContentView: View {
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .photosPicker(isPresented: $showImportPhotos, selection: $importPhotoItem, matching: .images)
         .photosPicker(isPresented: $showVisionPhotos, selection: $visionPhotoItem, matching: .images)
-        .alert("Penpal", isPresented: $showStatus) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(statusMessage)
-        }
+        .modifier(QuickNoteAndMathModifiers(
+            store: store,
+            proxy: proxy,
+            titleText: $titleText,
+            showStatus: $showStatus,
+            statusMessage: statusMessage,
+            showPlotSheet: $showPlotSheet,
+            plotExpressionDraft: $plotExpressionDraft,
+            showQuickRenameNote: $showQuickRenameNote,
+            quickRenameDraft: $quickRenameDraft,
+            showQuickTagNote: $showQuickTagNote,
+            quickTagDraft: $quickTagDraft,
+            showQuickMoveNote: $showQuickMoveNote,
+            quickMoveSheet: { quickMoveNoteSheet }
+        ))
         .onChange(of: tour.preparation) { _, preparation in
             handleTourPrepare(preparation?.actions ?? [])
         }
@@ -498,7 +550,18 @@ struct ContentView: View {
                             settings: settings,
                             activityPhase: penpalActivityPhase,
                             statusText: penpalStatusText,
+                            rulerActive: rulerActive,
                             onAsk: { proxy.view?.replyNow() },
+                            onCheckWork: { proxy.view?.checkMyWorking() },
+                            onSolveWholePage: { proxy.view?.solveWholePageAsWorksheet() },
+                            onPlotGraph: {
+                                plotExpressionDraft = lastPlottableFunction ?? ""
+                                showPlotSheet = true
+                            },
+                            onToggleRuler: {
+                                rulerActive.toggle()
+                                proxy.view?.setRulerActive(rulerActive)
+                            },
                             onVisionCamera: openVisionCamera,
                             onVisionPhoto: { showVisionPhotos = true },
                             onClose: {
@@ -691,41 +754,239 @@ struct ContentView: View {
     }
 
     private var workspaceIdentityPill: some View {
-        Button {
-            if let note = store.selectedNote {
-                store.selectedFolderID = note.folderID
+        let activeNote = store.selectedNote
+        let activeFolder = activeNote.flatMap { store.folder(for: $0.folderID) }
+        let noteHeading = activeNote?.displayTitle ?? "penpal"
+        let folderSubtitle = activeFolder?.name ?? "workspace"
+
+        return HStack(spacing: 0) {
+            Button {
+                if let note = store.selectedNote {
+                    store.selectedFolderID = note.folderID
+                }
+                withAnimation(reduceMotion ? nil : Pen.spring) {
+                    navigationDrawerPresented = true
+                }
+                TourEventBus.shared.emit(.workspaceOpened)
+            } label: {
+                HStack(spacing: 7) {
+                    PenBrandMark(size: 26)
+                    VStack(alignment: .leading, spacing: -1) {
+                        HStack(spacing: 4) {
+                            Text(noteHeading)
+                                .font(.system(.subheadline, design: .serif, weight: .semibold))
+                                .lineLimit(1)
+                                .frame(maxWidth: 150, alignment: .leading)
+                            if activeNote?.pinned == true {
+                                Image(systemName: "pin.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Pen.inkAccent)
+                            }
+                        }
+                        Text(folderSubtitle)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Pen.inkFaded)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.leading, 12)
+                .padding(.trailing, 8)
+                .frame(height: 48)
+                .contentShape(Rectangle())
             }
-            withAnimation(reduceMotion ? nil : Pen.spring) {
-                navigationDrawerPresented = true
-            }
-            TourEventBus.shared.emit(.workspaceOpened)
-        } label: {
-            HStack(spacing: 6) {
-                PenBrandMark(size: 28)
-                VStack(alignment: .leading, spacing: -1) {
-                    Text("penpal")
-                        .font(.system(.subheadline, design: .serif, weight: .semibold))
-                    Text("workspace")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Pen.inkFaded)
+            .buttonStyle(.plain)
+            .contextMenu {
+                if let note = activeNote {
+                    Button("New Note", systemImage: "square.and.pencil") {
+                        flushEditor()
+                        _ = store.createNote(in: note.folderID)
+                    }
+                    Divider()
+                    Button("Rename Note…", systemImage: "pencil") {
+                        quickRenameDraft = note.title.isEmpty ? note.displayTitle : note.title
+                        showQuickRenameNote = true
+                    }
+                    Button("Edit Tags…", systemImage: "tag") {
+                        quickTagDraft = note.normalizedTags.joined(separator: ", ")
+                        showQuickTagNote = true
+                    }
+                    Button("Move to Folder…", systemImage: "folder") {
+                        showQuickMoveNote = true
+                    }
+                    Button(note.pinned ? "Unpin Note" : "Pin Note",
+                           systemImage: note.pinned ? "pin.slash" : "pin") {
+                        store.setPinned(!note.pinned, for: note.id)
+                    }
+                    Button("Duplicate Note", systemImage: "plus.square.on.square") {
+                        flushEditor()
+                        if let copy = store.duplicateNote(note.id) {
+                            store.selectNote(copy.id)
+                        }
+                    }
+                    let recents = store.recentNotes(limit: 6).filter { $0.id != note.id }
+                    if !recents.isEmpty {
+                        Divider()
+                        Menu("Switch to Recent", systemImage: "clock") {
+                            ForEach(recents) { recent in
+                                Button {
+                                    store.selectNote(recent.id)
+                                } label: {
+                                    Text(recent.displayTitle)
+                                }
+                            }
+                        }
+                    }
                 }
             }
+
+            Divider()
+                .frame(height: 20)
+
+            Button {
+                Pen.tapHaptic()
+                flushEditor()
+                _ = store.createNote(in: activeNote?.folderID ?? store.selectedFolderID)
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Pen.inkAccent)
+                    .frame(width: 40, height: 48)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Create New Note")
         }
-        .buttonStyle(.plain)
         .foregroundStyle(Pen.inkPrimary)
-        .padding(.horizontal, 12)
-        .frame(height: 48)
         .background(Pen.paperRaised, in: Capsule())
         .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Open Penpal workspace sidebar")
-        .accessibilityHint("Shows folders and saved pages")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Open Penpal library, \(noteHeading) in \(folderSubtitle)")
+        .accessibilityHint("Tap to open folders and notes, or long-press for quick note actions")
         .tourAnchor(.workspace)
+    }
+
+    private var quickMoveNoteSheet: some View {
+        let currentFolderID = store.selectedNote?.folderID
+        return NavigationStack {
+            List {
+                ForEach(store.orderedMovableFolders(), id: \.folder.id) { item in
+                    Button {
+                        if let id = store.selectedNoteID {
+                            store.moveNote(id, to: item.folder.id)
+                            store.selectedFolderID = item.folder.id
+                        }
+                        showQuickMoveNote = false
+                    } label: {
+                        HStack(spacing: 10) {
+                            if item.depth > 0 {
+                                Spacer().frame(width: CGFloat(item.depth * 16))
+                            }
+                            Image(systemName: item.folder.resolvedIconName)
+                                .foregroundStyle(item.folder.resolvedColor)
+                                .frame(width: 22)
+                            Text(item.folder.name)
+                                .foregroundStyle(Pen.inkPrimary)
+                            Spacer()
+                            Text("\(store.recursiveNoteCount(for: item.folder))")
+                                .font(.caption)
+                                .foregroundStyle(Pen.inkFaded)
+                            if currentFolderID == item.folder.id {
+                                Image(systemName: "checkmark")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(Pen.inkAccent)
+                            }
+                        }
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Pen.paper.ignoresSafeArea())
+            .tint(Pen.inkAccent)
+            .navigationTitle("Move Note")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showQuickMoveNote = false }
+                }
+            }
+        }
+    }
+
+    private func gestureFeedbackPill(_ feedback: MagicPaperView.GestureFeedback) -> some View {
+        Label(feedback.message, systemImage: feedback.icon)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(feedback.didPerform ? Pen.inkPrimary : Pen.inkFaded)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Pen.paperRaised, in: Capsule())
+            .overlay(Capsule().strokeBorder(
+                (feedback.didPerform ? Pen.inkAccent : Pen.inkPrimary).opacity(0.18),
+                lineWidth: 0.75
+            ))
+            .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(feedback.message)
+    }
+
+    private func showGestureFeedback(_ feedback: MagicPaperView.GestureFeedback) {
+        withAnimation(reduceMotion ? nil : Pen.spring) {
+            gestureFeedback = feedback
+        }
+        let id = feedback.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.35) {
+            guard gestureFeedback?.id == id else { return }
+            withAnimation(reduceMotion ? nil : Pen.spring) {
+                gestureFeedback = nil
+            }
+        }
+    }
+
+    private var paperStyleIcon: String {
+        switch settings.paperStyle {
+        case "grid": "squareshape.split.3x3"
+        case "dots": "circle.grid.3x3"
+        case "ruled": "line.3.horizontal"
+        default: "doc"
+        }
     }
 
     private var historyPill: some View {
         HStack(spacing: 0) {
+            Menu {
+                ForEach([("grid", "Graph Grid", "squareshape.split.3x3"),
+                         ("dots", "Dot Grid", "circle.grid.3x3"),
+                         ("ruled", "Ruled", "line.3.horizontal"),
+                         ("blank", "Blank", "doc")], id: \.0) { tag, title, icon in
+                    Button {
+                        settings.paperStyle = tag
+                    } label: {
+                        Label(title, systemImage: settings.paperStyle == tag ? "checkmark" : icon)
+                    }
+                }
+            } label: {
+                Image(systemName: paperStyleIcon)
+                    .foregroundStyle(settings.paperStyle == "grid" || settings.paperStyle == "dots"
+                                     ? Pen.inkAccent : Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+            .menuIndicator(.hidden)
+            .accessibilityLabel("Paper Style")
+            .accessibilityHint("Switch between graph grid, dot grid, ruled, and blank paper")
+
+            Button {
+                rulerActive.toggle()
+                proxy.view?.setRulerActive(rulerActive)
+            } label: {
+                Image(systemName: rulerActive ? "ruler.fill" : "ruler")
+                    .foregroundStyle(rulerActive ? Pen.inkAccent : Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+            .accessibilityLabel(rulerActive ? "Hide Straightedge Ruler" : "Show Straightedge Ruler")
+
             Button {
                 withAnimation(reduceMotion ? nil : Pen.spring) { stickyHidden.toggle() }
                 if !stickyHidden { flushEditor() }
@@ -736,22 +997,6 @@ struct ContentView: View {
             }
             .disabled(store.selectedNote == nil)
             .accessibilityLabel(stickyHidden ? "Show Sticky Note" : "Hide Sticky Note")
-
-            Button { proxy.view?.undo() } label: {
-                Image(systemName: "arrow.uturn.backward.circle")
-                    .foregroundStyle(Pen.inkPrimary).frame(width: 44, height: 44)
-            }
-            .disabled(store.selectedNote == nil || selectedIsCoded || !canUndo)
-            .keyboardShortcut("z", modifiers: .command)
-            .accessibilityLabel("Undo")
-
-            Button { proxy.view?.redo() } label: {
-                Image(systemName: "arrow.uturn.forward.circle")
-                    .foregroundStyle(Pen.inkPrimary).frame(width: 44, height: 44)
-            }
-            .disabled(store.selectedNote == nil || selectedIsCoded || !canRedo)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
-            .accessibilityLabel("Redo")
         }
         .buttonStyle(.plain)
         .frame(height: 48)
@@ -962,6 +1207,22 @@ struct ContentView: View {
             mathChip("Explain", icon: "questionmark.circle", send: "explain")
             mathChip("Another way", icon: "arrow.triangle.branch", send: "another way")
             mathChip("Harder", icon: "flame", send: "harder")
+            if let plottable = lastPlottableFunction {
+                Button {
+                    showMathChips = false
+                    _ = proxy.view?.drawGraph(of: plottable)
+                } label: {
+                    Label("Graph", systemImage: "chart.xyaxis.line")
+                        .font(.footnote.weight(.medium))
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
+                .tint(Pen.inkAccent)
+                .accessibilityLabel("Graph function")
+                .accessibilityHint("Plots \(plottable) onto the page in ink")
+            }
             Button {
                 showMathChips = false
             } label: {
@@ -1079,6 +1340,12 @@ struct ContentView: View {
                 onUndoRedoChange: { u, r in
                     canUndo = u
                     canRedo = r
+                },
+                onGestureFeedback: { feedback in
+                    showGestureFeedback(feedback)
+                },
+                onPlottableFunctionChange: { body in
+                    lastPlottableFunction = body
                 },
                 onTypedTextsChange: { texts in
                     store.updateSelectedTypedTexts(texts)
@@ -1471,6 +1738,40 @@ struct ContentView: View {
                 startPractice()
             }
         }
+        if !selectedIsCoded {
+            // PEN-16 / PEN-15 / PEN-23 — keep grading, whole-page worksheets, graphing, and
+            // accessible undo/redo + voice dictation reachable alongside the drawn/touch gestures.
+            Button("Check My Working", systemImage: "checkmark.circle.badge.questionmark") {
+                proxy.view?.checkMyWorking()
+            }
+            Button("Solve Whole Page", systemImage: "list.number") {
+                proxy.view?.solveWholePageAsWorksheet()
+            }
+            Button("Plot a Function…", systemImage: "chart.xyaxis.line") {
+                plotExpressionDraft = lastPlottableFunction ?? ""
+                showPlotSheet = true
+            }
+            Button(voice.isListening ? "Stop Listening" : "Speak a Problem",
+                   systemImage: voice.isListening ? "stop.circle" : "mic") {
+                if voice.isListening {
+                    voice.stop()
+                } else {
+                    voice.start(locale: isLanguagePartner ? settings.targetLanguage : nil) { spoken in
+                        proxy.view?.sendTextMessage(spoken)
+                    }
+                }
+            }
+            Divider()
+            Button("Undo (2-Finger Tap)", systemImage: "arrow.uturn.backward") {
+                proxy.view?.undo(showFeedback: true)
+            }
+            .disabled(!canUndo)
+            Button("Redo (3-Finger Tap)", systemImage: "arrow.uturn.forward") {
+                proxy.view?.redo(showFeedback: true)
+            }
+            .disabled(!canRedo)
+            Divider()
+        }
         Button("Add Writing Space", systemImage: "arrow.down.to.line.compact") {
             addWritingSpace()
         }
@@ -1510,6 +1811,78 @@ struct ContentView: View {
         .padding(.vertical, 10)
         .background(Pen.paperRaised, in: Capsule())
         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+    }
+}
+
+// MARK: - Quick Note & Math Alerts
+
+private struct QuickNoteAndMathModifiers<MoveContent: View>: ViewModifier {
+    @ObservedObject var store: NotesStore
+    let proxy: PaperProxy
+    @Binding var titleText: String
+    @Binding var showStatus: Bool
+    let statusMessage: String
+    @Binding var showPlotSheet: Bool
+    @Binding var plotExpressionDraft: String
+    @Binding var showQuickRenameNote: Bool
+    @Binding var quickRenameDraft: String
+    @Binding var showQuickTagNote: Bool
+    @Binding var quickTagDraft: String
+    @Binding var showQuickMoveNote: Bool
+    @ViewBuilder let quickMoveSheet: () -> MoveContent
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Penpal", isPresented: $showStatus) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(statusMessage)
+            }
+            .alert("Plot a Function", isPresented: $showPlotSheet) {
+                TextField("e.g. x^2 - 4, sin(x), 1/x", text: $plotExpressionDraft)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Cancel", role: .cancel) {}
+                Button("Plot") {
+                    let raw = plotExpressionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let body = GraphPlotter.plottableExpression(from: raw)
+                        ?? GraphPlotter.functionBody(in: raw)
+                        ?? raw
+                    guard !body.isEmpty else { return }
+                    plotExpressionDraft = ""
+                    _ = proxy.view?.drawGraph(of: body)
+                }
+                .disabled(plotExpressionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } message: {
+                Text("Drawn onto your page in hand-drawn ink with axes, ticks, and intercepts.")
+            }
+            .alert("Rename Note", isPresented: $showQuickRenameNote) {
+                TextField("Note title", text: $quickRenameDraft)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    if let id = store.selectedNoteID {
+                        let trimmed = quickRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        store.renameNote(id, to: trimmed)
+                        titleText = trimmed
+                    }
+                }
+            }
+            .alert("Edit Tags", isPresented: $showQuickTagNote) {
+                TextField("Calculus, Exam, Revision", text: $quickTagDraft)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    if let id = store.selectedNoteID {
+                        store.updateTags(quickTagDraft.split(separator: ",").map(String.init), for: id)
+                    }
+                }
+            } message: {
+                Text("Separate tags with commas.")
+            }
+            .sheet(isPresented: $showQuickMoveNote) {
+                quickMoveSheet()
+                    .presentationDetents([.medium, .large])
+                    .presentationBackground(Pen.paper)
+            }
     }
 }
 

@@ -279,12 +279,14 @@ enum InkAnalyzer {
         case checkWork(region: CGRect, strokeIndices: [Int])
         /// A line drawn through existing ink: "delete this".
         case strikeThrough(targetIndices: [Int], strokeIndex: Int)
+        /// A dense zig-zag scribble drawn over ink (even a single digit or sign): "erase this".
+        case scribbleErase(targetIndices: [Int], strokeIndex: Int)
     }
 
     // MARK: - Intent Precedence (Strict Conflict Avoidance)
     //
     // When ink arrives, multiple detectors might compete:
-    // 1. Gesture Strike-through (Delete) -> highest priority, immediate
+    // 1. Gesture Strike-through / Scribble-erase (Delete) -> highest priority, immediate
     // 2. Gesture Double-underline (Check Work) -> checked working above
     // 3. Problem Box (Bounded Loop) -> explicit region selection
     // 4. Trailing Equals (Inline Math) -> only if arithmetic & not prose/theory
@@ -292,6 +294,7 @@ enum InkAnalyzer {
 
     enum IntentPriority {
         case strikeThrough(targetIndices: [Int], strokeIndex: Int)
+        case scribbleErase(targetIndices: [Int], strokeIndex: Int)
         case checkWork(region: CGRect, strokeIndices: [Int])
         case problemBox(box: ProblemBox)
         case inlineMath(isTrailingEquals: Bool)
@@ -306,6 +309,8 @@ enum InkAnalyzer {
             switch gesture {
             case .strikeThrough(let targets, let strike):
                 return .strikeThrough(targetIndices: targets, strokeIndex: strike)
+            case .scribbleErase(let targets, let scribble):
+                return .scribbleErase(targetIndices: targets, strokeIndex: scribble)
             case .checkWork(let region, let indices):
                 return .checkWork(region: region, strokeIndices: indices)
             }
@@ -338,6 +343,7 @@ enum InkAnalyzer {
         guard newStart < all.count, all.count >= 2 else { return nil }
         if let g = detectDoubleUnderline(all: all, newStart: newStart) { return g }
         if let g = detectStrikeThrough(all: all, newStart: newStart) { return g }
+        if let g = detectScribbleErase(all: all, newStart: newStart) { return g }
         return nil
     }
 
@@ -410,6 +416,93 @@ enum InkAnalyzer {
         let covered = hit.reduce(CGRect.null) { $0.union(all[$1].renderBounds) }
         guard covered.width > line.width * 0.5 else { return nil }
         return .strikeThrough(targetIndices: hit, strokeIndex: idx)
+    }
+
+    /// A dense zig-zag scribble drawn directly over existing ink — ideal in
+    /// maths for erasing a single wrong digit, minus sign, exponent, or term
+    /// where a long horizontal strike-through won't fit.
+    ///
+    /// Deliberately strict so normal letters (`m`, `w`, `8`, `3`, `∫`, `Σ`)
+    /// never false-fire: requires ≥ 4 sharp direction reversals, high path
+    /// density relative to its diagonal, AND substantial overlap with prior ink.
+    private static func detectScribbleErase(all: [PKStroke],
+                                            newStart: Int) -> Gesture? {
+        let idx = all.count - 1
+        guard idx >= newStart, idx > 0 else { return nil }
+        let scribble = all[idx]
+        let sb = scribble.renderBounds
+        // Must have a real two-dimensional scratch footprint, not a stray dot
+        // or a huge page-wide sweep.
+        guard sb.width >= 10, sb.height >= 10,
+              sb.width <= 360, sb.height <= 220 else { return nil }
+
+        let pts = scribble.path.interpolatedPoints(by: .distance(3)).map(\.location)
+        guard pts.count >= 12 else { return nil }
+
+        var length: CGFloat = 0
+        for i in 1..<pts.count {
+            length += hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+        }
+        let diag = hypot(sb.width, sb.height)
+        guard diag > 12, length >= diag * 2.55 else { return nil }
+
+        // Count significant direction reversals along X and Y (filtering micro-jitter).
+        let stepThreshold: CGFloat = max(3.5, min(sb.width, sb.height) * 0.14)
+        func reversals(along values: [CGFloat]) -> Int {
+            var count = 0
+            var dir = 0
+            var anchor = values[0]
+            for v in values.dropFirst() {
+                let delta = v - anchor
+                if abs(delta) < stepThreshold { continue }
+                let newDir = delta > 0 ? 1 : -1
+                if dir != 0 && newDir != dir { count += 1 }
+                dir = newDir
+                anchor = v
+            }
+            return count
+        }
+        let xRev = reversals(along: pts.map(\.x))
+        let yRev = reversals(along: pts.map(\.y))
+        // Either back-and-forth horizontally (≥ 4) or vertically (≥ 4), or
+        // diagonal zig-zag (both ≥ 3, sum ≥ 6).
+        guard max(xRev, yRev) >= 4 || (xRev >= 3 && yRev >= 3) else { return nil }
+
+        // Reject closed loops / boxes (shoelace area high relative to length²).
+        var area2: CGFloat = 0
+        for i in 0..<pts.count {
+            let p = pts[i], q = pts[(i + 1) % pts.count]
+            area2 += p.x * q.y - q.x * p.y
+        }
+        let enclosedArea = abs(area2) / 2
+        if enclosedArea > length * length * 0.045 { return nil }
+
+        // Find earlier strokes covered by this scribble.
+        let paddedScribble = sb.insetBy(dx: -3, dy: -3)
+        var hit: [Int] = []
+        for i in 0..<idx {
+            let b = all[i].renderBounds
+            let inter = paddedScribble.intersection(b)
+            guard !inter.isNull else { continue }
+            let targetArea = max(1, b.width * b.height)
+            let interArea = inter.width * inter.height
+            let widthOverlap = inter.width / max(1, b.width)
+            let heightOverlap = inter.height / max(1, b.height)
+            if interArea / targetArea >= 0.35 || (widthOverlap >= 0.55 && heightOverlap >= 0.45) {
+                hit.append(i)
+            }
+        }
+        guard !hit.isEmpty else { return nil }
+
+        // Most of the scribble must actually sit on the erased ink (not empty space).
+        let covered = hit.reduce(CGRect.null) { $0.union(all[$1].renderBounds) }
+        let overlapWithScribble = sb.intersection(covered.insetBy(dx: -4, dy: -4))
+        guard !overlapWithScribble.isNull else { return nil }
+        let scribbleArea = max(1, sb.width * sb.height)
+        guard (overlapWithScribble.width * overlapWithScribble.height) / scribbleArea >= 0.32 else {
+            return nil
+        }
+        return .scribbleErase(targetIndices: hit, strokeIndex: idx)
     }
 
     // MARK: - Problem box (draw a box/circle around ink → send it)

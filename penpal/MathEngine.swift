@@ -35,15 +35,17 @@ final class MathEngine {
 
     /// Evaluates everything before the trailing "=". Returns e.g. "10",
     /// "11/12 = 0.916667", or "x = 4, x = 2" — nil when unsolvable.
+    /// Optional `variables` binds page-level variable assignments (e.g. `r = 5`).
     /// Thread-safe: hops to the engine's own queue.
-    func solve(_ line: String) -> String? {
+    func solve(_ line: String, variables: [String: Double] = [:]) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 200 else { return nil }
         return queue.sync {
             guard let ctx = ensureLoaded(),
                   let fn = ctx.objectForKeyedSubscript("penpalEval"),
                   !fn.isUndefined else { return nil }
-            guard let result = fn.call(withArguments: [trimmed]),
+            let args: [Any] = variables.isEmpty ? [trimmed] : [trimmed, variables]
+            guard let result = fn.call(withArguments: args),
                   !result.isNull, !result.isUndefined,
                   let answer = result.toString(),
                   !answer.isEmpty, answer != "null", answer != "undefined" else {

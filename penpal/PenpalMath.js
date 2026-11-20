@@ -18,7 +18,9 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
   var FN_WORDS = ["asinh","acosh","atanh","sinh","cosh","tanh","asin","acos",
                   "atan","sqrt","cbrt","floor","ceil","round","sec","csc",
                   "cot","sin","cos","tan","log10","log2","log","ln","abs",
-                  "exp","mod","combinations","permutations","tau","phi","pi","e","deg"];
+                  "exp","mod","gcd","lcm","combinations","permutations","ncr",
+                  "npr","det","mean","median","std","factor","expand",
+                  "simplify","integrate","tau","phi","pi","e","deg","rad","ans"];
 
   // OCR look-alike repair, protecting function words. Case-aware:
   // "G" reads as 6 but "g" as 9, "B" as 8 but "b" as 6.
@@ -41,30 +43,84 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
     return out;
   }
 
+  var MULTI_ARG_FNS = {
+    gcd: true, lcm: true, ncr: true, npr: true,
+    combinations: true, permutations: true,
+    mean: true, median: true, std: true, max: true, min: true
+  };
+
+  // Strip thousands separators (1,000,000/8) without touching commas inside
+  // matrices/vectors ([1,2]) or multi-argument calls (gcd(48,18), nCr(5,2)).
+  function stripThousandsCommas(str) {
+    var out = "";
+    var bracketDepth = 0;
+    var multiArgStack = [];
+    for (var i = 0; i < str.length; i++) {
+      var ch = str[i];
+      if (ch === "[") {
+        bracketDepth++;
+        out += ch;
+        continue;
+      }
+      if (ch === "]") {
+        if (bracketDepth > 0) bracketDepth--;
+        out += ch;
+        continue;
+      }
+      if (ch === "(") {
+        var before = out.match(/([a-zA-Z]+)\s*$/);
+        var fn = before ? before[1].toLowerCase() : "";
+        multiArgStack.push(!!MULTI_ARG_FNS[fn]);
+        out += ch;
+        continue;
+      }
+      if (ch === ")") {
+        if (multiArgStack.length) multiArgStack.pop();
+        out += ch;
+        continue;
+      }
+      if (ch === ",") {
+        var inMultiArg = multiArgStack.some(Boolean);
+        if (bracketDepth === 0 && !inMultiArg &&
+            /\d$/.test(out) && /^\d{3}(?!\d)/.test(str.slice(i + 1))) {
+          continue;
+        }
+      }
+      out += ch;
+    }
+    return out;
+  }
+
   // Textual cleanup: unicode ops, percent, nCr/nPr, bare log, |x|, ^ etc.
   function preprocess(raw) {
-    var s = raw;
+    var s = stripThousandsCommas(raw);
     // Handwriting is case-blind about functions: Sin( → sin(, LOG( → log(.
     var caseWords = ["asinh","acosh","atanh","sinh","cosh","tanh","asin",
                      "acos","atan","sqrt","cbrt","floor","ceil","round",
-                     "sec","csc","cot","sin","cos","tan","log","ln","abs",
-                     "exp","mod","tau","phi","pi"];
+                     "sec","csc","cot","sin","cos","tan","log10","log2",
+                     "log","ln","abs","exp","mod","gcd","lcm","ncr","npr",
+                     "det","mean","median","std","factor","expand",
+                     "simplify","integrate","tau","phi","pi"];
     for (var cw = 0; cw < caseWords.length; cw++) {
       s = s.replace(new RegExp(caseWords[cw] + "\\s*\\(", "ig"), caseWords[cw] + "(");
       if (caseWords[cw].length > 2 || caseWords[cw] === "pi") {
         s = s.replace(new RegExp("\\b" + caseWords[cw] + "\\b", "ig"), caseWords[cw]);
       }
     }
+    s = s.replace(/\bncr\s*\(/g, "combinations(")
+         .replace(/\bnpr\s*\(/g, "permutations(");
     // "15% of 80" → (15/100)*80
     s = s.replace(/(\d+(?:\.\d+)?)\s*%\s*of\s*/gi, "($1/100)*");
     // "ans" = the previous answer, like a calculator's memory key.
     if (typeof globalThis.__penpalAns === "string" && globalThis.__penpalAns) {
       s = s.replace(/\bans\b/gi, "(" + globalThis.__penpalAns + ")");
     }
+    // Radical shorthand: "√144" → "sqrt(144)", "√x" → "sqrt(x)", before "√(" → "sqrt(".
+    s = s.replace(/√\s*(\d+(?:\.\d+)?|pi|tau|phi|[a-zA-Z])(?![a-zA-Z_(])/g, "sqrt($1)");
     s = s.replace(/[×✕·•]/g, "*").replace(/÷/g, "/")
          .replace(/[−–—]/g, "-").replace(/²/g, "^2").replace(/³/g, "^3")
          .replace(/√/g, "sqrt").replace(/π/g, "pi").replace(/τ/g, "tau")
-         .replace(/φ/g, "phi").replace(/°/g, " deg").replace(/,/g, "");
+         .replace(/φ/g, "phi").replace(/°/g, " deg");
     // |x| bars -> abs()
     if (s.indexOf("|") >= 0) {
       var out = "", open = false;
@@ -79,9 +135,12 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
     // nCr / nPr: 6c2, 52 C 5
     s = s.replace(/(\d+)\s*[cC]\s*(\d+)(?![\d.])/g, "combinations($1,$2)");
     s = s.replace(/(\d+)\s*[pP]\s*(\d+)(?![\d.])/g, "permutations($1,$2)");
-    // logN( -> log(..., N) is messy textually; log2/log10 are native.
     // bare log( -> log10( (handwriting convention; ln( is natural log)
     s = s.replace(/(^|[^a-zA-Z])log(\()/g, "$1log10$2");
+    // Implicit multiplication before log10(/log2(, then shield digit+"(" in function names.
+    s = s.replace(/(\d|\))\s*(log(?:10|2)\s*\()/g, "$1*$2");
+    s = s.replace(/(^|[^a-zA-Z])log10\s*\(/g, "$1@LOGTEN@(")
+         .replace(/(^|[^a-zA-Z])log2\s*\(/g, "$1@LOGTWO@(");
     // "5 x 3" -> "5 * 3" (x squeezed between numbers)
     s = s.replace(/(\d|\))\s*[xX]\s*(?=[\d(.]|[a-wyzA-WYZ])/g, "$1*");
     // Implicit multiplication for algebra: 3x → 3*x, 2(x+1) → 2*(x+1),
@@ -92,13 +151,14 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
     s = s.replace(/(\d|\))\s*\(/g, "$1*(");
     s = s.replace(/\b([a-df-z])\s*\(/g, "$1*(");
     s = s.replace(/§([^§]+)§/g, "$1");
+    s = s.replace(/@LOGTEN@\(/g, "log10(").replace(/@LOGTWO@\(/g, "log2(");
     // A constant before "(" is multiplication, not a call: 2pi(10) → 2pi*(10)
     // (no \b — "2pi" is all word-chars, so a boundary never fires there)
     s = s.replace(/(pi|tau|phi)\s*\(/g, "$1*(");
     return s;
   }
 
-  // Degree heuristic: trig args with no pi/deg/tau are degrees.
+  // Degree heuristic: trig args with no pi/deg/tau/rad are degrees.
   function degreeify(s) {
     var names = ["sin","cos","tan","sec","csc","cot"];
     for (var n = 0; n < names.length; n++) {
@@ -115,8 +175,13 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
           else if (s[j] === ")") { depth--; if (depth === 0) { close = j; break; } }
         }
         if (close === -1) break;
-        var arg = s.substring(openIdx + 1, close);
-        if (!/pi|deg|tau/.test(arg)) {
+        var rawArg = s.substring(openIdx + 1, close);
+        var arg = rawArg.replace(/\s+rad\s*$/i, "");
+        if (arg !== rawArg) {
+          s = s.substring(0, openIdx + 1) + arg + s.substring(close);
+          close = openIdx + 1 + arg.length;
+        }
+        if (!/pi|deg|tau|\brad\b/i.test(rawArg)) {
           s = s.substring(0, openIdx + 1) + "(" + arg + ") deg" + s.substring(close);
         }
         idx = close;
@@ -133,6 +198,12 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
       try {
         var us = math.format(v, { precision: 6 });
         return us.length <= 28 ? us : null;
+      } catch (e) { return null; }
+    }
+    if (v && (v.isMatrix || Array.isArray(v))) {
+      try {
+        var ms = math.format(v, { precision: 6 });
+        return ms.length <= 48 ? ms : null;
       } catch (e) { return null; }
     }
     if (typeof v === "object" && v.re !== undefined) {
@@ -168,10 +239,20 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
     return null;
   }
 
-  function evaluateNumeric(line) {
+  function evaluateNumeric(line, vars) {
     var pre = degreeify(preprocess(line));
+    var scope = {};
+    if (vars && typeof vars === "object") {
+      var keys = Object.keys(vars);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        if (typeof vars[key] === "number" && isFinite(vars[key])) {
+          scope[key] = vars[key];
+        }
+      }
+    }
     var v;
-    try { v = math.evaluate(pre, {}); }
+    try { v = math.evaluate(pre, scope); }
     catch (e) { return null; }
     // tan(90°) & friends: float dust explodes instead of erroring — an
     // absurd magnitude out of a trig call means "undefined", not an answer.
@@ -179,10 +260,12 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
         /(^|[^a-z])(sin|cos|tan|sec|csc|cot)\(/.test(pre)) return null;
     var formatted = formatValue(v);
     if (formatted === null) return null;
-    var frac = fractionForm(preprocess(line));
-    if (frac && frac !== formatted) return frac + " = " + formatted;
+    if (Object.keys(scope).length === 0) {
+      var frac = fractionForm(preprocess(line));
+      if (frac && frac !== formatted) return frac + " = " + formatted;
+    }
     // Exact radical form: sqrt(50) → "5sqrt(2) = 7.071068".
-    if (typeof nerdamer !== "undefined" && /sqrt\(/.test(pre) &&
+    if (Object.keys(scope).length === 0 && typeof nerdamer !== "undefined" && /sqrt\(/.test(pre) &&
         formatted.indexOf(" ") === -1 && /\./.test(formatted)) {
       try {
         var exact = nerdamer(pre).toString();
@@ -292,7 +375,8 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
       // integrate(expr) or ∫(expr)
       m = text.match(/^(?:integrate|∫)\s*\((.+)\)$/);
       if (m) {
-        var vars2 = (m[1].match(/[a-df-z]/g) || []);
+        var strippedIntegrand = m[1].replace(/[a-z]+\(/g, "(");
+        var vars2 = (strippedIntegrand.match(/[a-df-z]/g) || []);
         var v2 = vars2.length ? vars2[0] : "x";
         var r = nerdamer("integrate(" + m[1] + "," + v2 + ")").toString();
         return r.length <= 40 ? r.replace(/\*/g, "") + " + C" : null;
@@ -406,21 +490,23 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
   // ---- Systems of equations: "x+y=5 x-y=1" (boxed ink joins lines ----
   // ---- with spaces) or comma/semicolon separated.                  ----
 
-  function splitEquations(text) {
-    var parts = text.split(/[,;\n]+/).map(function (t) { return t.trim(); })
+  function splitEquations(raw) {
+    var clean = stripThousandsCommas(raw);
+    var parts = clean.split(/[,;\n]+/).map(function (t) { return t.trim(); })
       .filter(Boolean);
     if (parts.length >= 2 && parts.every(function (p) { return p.indexOf("=") !== -1; })) {
       return parts;
     }
     // Space-separated: close an equation once it has "=" and a trailing
-    // operand, and the next token starts something new.
-    var tokens = text.trim().split(/\s+/);
+    // operand, and the remaining tokens still contain another "=".
+    var tokens = clean.trim().split(/\s+/);
     var eqs = [], cur = "";
     for (var i = 0; i < tokens.length; i++) {
-      cur = cur ? cur + tokens[i] : tokens[i];
+      cur = cur ? cur + " " + tokens[i] : tokens[i];
       var next = tokens[i + 1];
+      var restHasEq = next !== undefined && tokens.slice(i + 1).join(" ").indexOf("=") !== -1;
       var closed = cur.indexOf("=") !== -1 && !/[=+\-*/^(]$/.test(cur);
-      if (closed && (next === undefined || !/^[=+\-*/^)]/.test(next))) {
+      if (closed && (next === undefined || (restHasEq && !/^[=+\-*/^)]/.test(next)))) {
         eqs.push(cur); cur = "";
       }
     }
@@ -428,10 +514,11 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
     return eqs.filter(function (e) { return e.indexOf("=") !== -1; });
   }
 
-  function solveSystem(pre) {
+  function solveSystem(raw) {
     if (!hasNerdamer) return null;
-    var eqs = splitEquations(pre);
+    var eqs = splitEquations(raw);
     if (eqs.length < 2 || eqs.length > 4) return null;
+    eqs = eqs.map(function (eq) { return preprocess(eq); });
     try {
       var result = nerdamer.solveEquations(eqs);
       var list = Array.isArray(result) ? result : [result];
@@ -449,14 +536,25 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
     } catch (e) { return null; }
   }
 
-  // Entry point. `line` is everything before the trailing "=".
-  globalThis.penpalEval = function (line) {
+  function rememberAns(v) {
+    if (!v) return;
+    var pure = String(v).split(" = ").pop();
+    if (/^-?[\d.]+(e[+-]?\d+)?$/.test(pure)) globalThis.__penpalAns = pure;
+  }
+
+  // Entry point. `line` is everything before (or optionally ending with) "=".
+  // Optional `vars` maps single-letter page variables (e.g. { r: 5 }) to numbers.
+  globalThis.penpalEval = function (line, vars) {
     line = String(line || "").trim();
+    if (line.endsWith("=") && !line.endsWith("==")) {
+      line = line.slice(0, -1).trim();
+    }
     if (!line) return null;
 
     // A bare number ("5=") isn't a question — nothing to compute.
-    if (/^[-\s\d.,]+$/.test(line)) return null;
+    if (/^\s*[+-]?\s*(?:\d[\d,]*(?:\.\d+)?|\.\d+)\s*$/.test(line)) return null;
 
+    var hasVars = vars && typeof vars === "object" && Object.keys(vars).length > 0;
     var attempts = [line, repairConfusions(line)];
     for (var a = 0; a < attempts.length; a++) {
       var text = attempts[a];
@@ -466,12 +564,12 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
       var calc = nerdCalculus(pre.trim());
       if (calc !== null) return calc;
 
-      // Equation(s)? Systems first, then single-variable through three
-      // tiers: polynomial (math.js) → symbolic (nerdamer) → numeric
-      // root-finding (bisection — sin(x)=0.5, x+ln(x)=3, anything).
+      // Equation(s)? Systems first (before preprocess merges adjacent spaces),
+      // then single-variable through three tiers: polynomial (math.js) →
+      // symbolic (nerdamer) → numeric root-finding.
       if (text.indexOf("=") !== -1) {
-        if ((pre.match(/=/g) || []).length >= 2) {
-          var sys = solveSystem(pre);
+        if ((text.match(/=/g) || []).length >= 2) {
+          var sys = solveSystem(text);
           if (sys !== null) return sys;
         }
         var solved = solveEquation(text);
@@ -492,17 +590,26 @@ var nerdamer=function(e){"use strict";var d=new P,S=e.bigInt,k=e.bigDec;k.set({p
         // last "=". Only when every segment is numeric (no free vars).
         var segs = text.split("=").filter(function (s) { return s.trim(); });
         if (segs.length >= 2) {
-          var tail = evaluateNumeric(segs[segs.length - 1]);
-          if (tail !== null) return tail;
+          var tail = evaluateNumeric(segs[segs.length - 1], null);
+          if (tail !== null) {
+            rememberAns(tail);
+            return tail;
+          }
         }
         continue;
       }
-      var v = evaluateNumeric(text);
+      var v = evaluateNumeric(text, null);
       if (v !== null) {
-        // Calculator memory: bare numeric answers become "ans".
-        var pure = v.split(" = ").pop();
-        if (/^-?[\d.]+(e[+-]?\d+)?$/.test(pure)) globalThis.__penpalAns = pure;
+        rememberAns(v);
         return v;
+      }
+      // Page-level math variables: e.g. "r = 5" above, then "2*pi*r =" here.
+      if (hasVars) {
+        var vScoped = evaluateNumeric(text, vars);
+        if (vScoped !== null) {
+          rememberAns(vScoped);
+          return vScoped;
+        }
       }
       // Not numeric — maybe symbolic: "2x+3x=" → "5x".
       var simplified = nerdSimplify(pre);

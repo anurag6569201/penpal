@@ -10,6 +10,7 @@ import Foundation
 
 enum TourEvent: String, Equatable, Hashable {
     case inkWritten
+    case undoPerformed
     case penpalToggled
     case boxDrawn
     case strikeDone

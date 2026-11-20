@@ -26,24 +26,61 @@ enum MathEvaluator {
 
     /// If the recognized handwriting is a solvable expression ending in "=",
     /// returns the formatted answer to write after the equals. Nil otherwise.
-    static func instantAnswer(for recognizedText: String) -> String? {
-        // Only the LAST line matters — earlier lines may be prose or prior work.
-        guard let lastLine = recognizedText
+    /// Pass `variables` (e.g. `["r": 5]`) for page-level Math Notes bindings.
+    static func instantAnswer(for recognizedText: String,
+                              variables: [String: Double] = [:]) -> String? {
+        // Only the LAST line matters — earlier lines may be prose, prior work,
+        // or variable assignments (e.g. "r = 5\n2*pi*r =").
+        let rawLines = recognizedText
             .split(separator: "\n", omittingEmptySubsequences: true)
-            .last.map(String.init) else { return nil }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let lastLine = rawLines.last else { return nil }
 
         let trimmed = lastLine.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasSuffix("=") else { return nil }
         let body = String(trimmed.dropLast())
 
+        // Collect any inline variable definitions from earlier lines in the
+        // same block, merged with page-level variables (newer lines win).
+        var mergedVars = variables
+        if rawLines.count > 1 {
+            let priorVars = extractVariables(from: Array(rawLines.dropLast()),
+                                             initial: variables)
+            for (k, v) in priorVars { mergedVars[k] = v }
+        }
+
         // Primary engine: math.js in JavaScriptCore (MathEngine). Handles
         // brackets, fractions, the full scientific set, OCR repair, tape
-        // chaining AND polynomial equations ("3x+5=17=" → "x = 4").
-        if let answer = MathEngine.shared.solve(body) { return answer }
+        // chaining, polynomial equations AND page-level variables.
+        if let answer = MathEngine.shared.solve(body, variables: mergedVars) {
+            return answer
+        }
+
+        // Multi-line systems of equations ("x+y=5\nx-y=1=" → "x = 3, y = 2"):
+        // only when 2–4 non-empty lines all contain "=" (e.g. boxed or paused system).
+        if (2...4).contains(rawLines.count) && rawLines.allSatisfy({ $0.contains("=") }) {
+            var sysLines = rawLines
+            if let last = sysLines.last, last.hasSuffix("=") {
+                sysLines[sysLines.count - 1] = String(last.dropLast())
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            if sysLines.allSatisfy({ $0.contains("=") }),
+               let answer = MathEngine.shared.solve(sysLines.joined(separator: "\n")) {
+                return answer
+            }
+        }
 
         // Fallback: the native parser (engine unavailable / exotic input).
         // Never tape-reduce equations with a free variable — taking only
         // "17" from "3x+5=17" would silently answer the wrong thing.
+        if !body.contains("="), !mergedVars.isEmpty {
+            let substituted = substituteVariables(body, variables: mergedVars)
+            if !Self.hasFreeVariable(substituted),
+               let answer = solve(normalize(substituted)) {
+                return answer
+            }
+        }
         if Self.hasFreeVariable(body) { return nil }
 
         // Chained tape math: "5+5=10" already answered, user continues
@@ -58,6 +95,93 @@ enum MathEvaluator {
         return solve(normalize(repairConfusions(segment)))
     }
 
+    // MARK: - Page-level math variables (e.g. "r = 5", then "2*pi*r =")
+
+    /// Parses a standalone single-letter variable assignment like `r = 5` or
+    /// `h = sqrt(16)` or `b = 2a + 1`. Returns nil for solve requests ending
+    /// in `=`, equations with multiple variables on the left, or prose.
+    static func parseAssignment(_ rawLine: String,
+                                knownVariables: [String: Double] = [:]) -> (name: String, value: Double)? {
+        let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasSuffix("="), !isTheoryOrProseContext(trimmed) else {
+            return nil
+        }
+        let parts = trimmed.split(separator: "=", omittingEmptySubsequences: false).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        guard parts.count == 2 else { return nil }
+        let lhs = parts[0].lowercased()
+        let rhs = parts[1]
+        guard lhs.count == 1, let ch = lhs.first,
+              ("a"..."z").contains(ch), ch != "e", ch != "i",
+              !rhs.isEmpty else { return nil }
+
+        // Direct numeric literal fast-path ("r = 5", "x = -3.5").
+        let cleanNum = rhs.replacingOccurrences(of: "−", with: "-")
+            .replacingOccurrences(of: ",", with: "")
+        if let direct = Double(cleanNum), direct.isFinite {
+            return (lhs, direct)
+        }
+        // Computable RHS ("a = 3 + 4", "b = 2a", "r = sqrt(25)").
+        if let solved = MathEngine.shared.solve(rhs, variables: knownVariables) {
+            let pure = solved.components(separatedBy: " = ").last ?? solved
+            if let v = Double(pure.trimmingCharacters(in: .whitespaces)), v.isFinite {
+                return (lhs, v)
+            }
+        }
+        let substituted = knownVariables.isEmpty ? rhs : substituteVariables(rhs, variables: knownVariables)
+        if !hasFreeVariable(substituted),
+           let v = evaluate(normalize(substituted)), v.isFinite {
+            return (lhs, v)
+        }
+        return nil
+    }
+
+    /// Walks lines top-to-bottom extracting page-level variable assignments.
+    static func extractVariables(from lines: [String],
+                                 initial: [String: Double] = [:]) -> [String: Double] {
+        var vars = initial
+        for line in lines {
+            if let (name, value) = parseAssignment(line, knownVariables: vars) {
+                vars[name] = value
+            }
+        }
+        return vars
+    }
+
+    /// Returns the subset of `variables` actually referenced as free variables in `expr`.
+    static func referencedVariables(in expr: String,
+                                    from variables: [String: Double]) -> [(name: String, value: Double)] {
+        guard !variables.isEmpty else { return [] }
+        var stripped = expr.lowercased()
+        for word in knownWords {
+            stripped = stripped.replacingOccurrences(of: word + "(", with: "#(")
+            stripped = stripped.replacingOccurrences(of: word, with: "#")
+        }
+        return variables.keys.sorted().compactMap { name in
+            guard stripped.range(of: "(?<![a-z])\(name)(?![a-z])",
+                                 options: .regularExpression) != nil,
+                  let val = variables[name] else { return nil }
+            return (name, val)
+        }
+    }
+
+    /// Substitutes single-letter variables into an expression, respecting function names.
+    static func substituteVariables(_ raw: String, variables: [String: Double]) -> String {
+        guard !variables.isEmpty else { return raw }
+        var out = raw
+        for (name, value) in variables {
+            let formatted = format(value)
+            let replacement = value < 0 ? "(\(formatted))" : "(\(formatted))"
+            out = out.replacingOccurrences(
+                of: "(?<![a-zA-Z])\(name)(?![a-zA-Z])",
+                with: replacement,
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        return out
+    }
+
     /// True when the text has a letter that isn't a known function/constant
     /// (so "3x+5=17" and "sin(x)=0.5" count, but "sin(30)" does not).
     static func hasFreeVariable(_ raw: String) -> Bool {
@@ -68,6 +192,21 @@ enum MathEvaluator {
         }
         return s.contains { $0.isLetter && ("a"..."z").contains($0) && $0 != "e" }
     }
+
+    /// Additional words valid inside on-device calculator expressions (units,
+    /// multi-arg commands, CAS verbs, memory). Kept separate from `knownWords` so
+    /// `hasFreeVariable(_:)` and `repairConfusions(_:)` keep their exact semantics.
+    private static let calculatorWords: Set<String> = [
+        "integrate", "factor", "expand", "simplify", "gcd", "lcm", "det",
+        "mean", "median", "std", "ncr", "npr", "log2", "log10", "ans", "deg", "rad",
+        "km", "cm", "mm", "mi", "ft", "yd", "in", "inch", "inches",
+        "kg", "lb", "lbs", "oz", "mg", "gal", "l", "ml",
+        "sec", "min", "minute", "minutes", "hour", "hours", "day", "days",
+        "meter", "meters", "mile", "miles", "gram", "grams",
+        "liter", "liters", "litre", "litres", "celsius", "fahrenheit", "kelvin",
+        "degc", "degf", "foot", "feet", "yard", "yards", "pound", "pounds",
+        "ounce", "ounces", "gallon", "gallons", "second", "seconds", "hr", "hrs", "mph",
+    ]
 
     /// True when text appears to be natural language prose, theory notes, or scientific formulas
     /// rather than a direct calculator expression. Prevents Penpal from hijacking notes like
@@ -91,22 +230,47 @@ enum MathEvaluator {
             "constant", "energy", "work", "power", "momentum", "velocity", "speed"
         ]
 
+        let loweredText = trimmed.lowercased()
+        let hasPercentOfIdiom = loweredText.range(
+            of: #"\d+(?:\.\d+)?\s*%\s*of\b"#,
+            options: .regularExpression
+        ) != nil
+        let hasUnitToIdiom = loweredText.range(
+            of: #"\d+(?:\.\d+)?\s*[a-z]+\s+to\s+[a-z]+\b"#,
+            options: .regularExpression
+        ) != nil
+
         var proseScore = 0
         var mathScore = 0
 
-        for token in tokens {
+        for (index, token) in tokens.enumerated() {
             let lower = token.lowercased()
+            if lower == "of" && hasPercentOfIdiom {
+                mathScore += 1
+                continue
+            }
+            if (lower == "to" || lower == "in") && hasUnitToIdiom {
+                mathScore += 1
+                continue
+            }
+            if lower == "a" || lower == "b" || lower == "c" || lower == "x" || lower == "y" {
+                // Single-letter math variables stay neutral unless flagged by theory words.
+                if index == 0, lower == "a", tokens.count > 2 {
+                    proseScore += 1
+                }
+                continue
+            }
             if theoryKeywords.contains(lower) {
                 proseScore += 2
                 continue
             }
-            if knownWords.contains(lower) {
+            if knownWords.contains(lower) || calculatorWords.contains(lower) {
                 mathScore += 1
                 continue
             }
             if lower.count >= 3 && lower.allSatisfy({ $0 >= "a" && $0 <= "z" }) {
                 proseScore += 1
-            } else if lower.contains(where: { $0.isNumber || "^*/+-=%!".contains($0) }) {
+            } else if lower.contains(where: { $0.isNumber || "^*/+-=%!×÷−√²³".contains($0) }) {
                 mathScore += 1
             }
         }
@@ -126,7 +290,16 @@ enum MathEvaluator {
         guard !clean.isEmpty else { return false }
 
         let hasDigits = clean.contains { $0.isNumber }
-        let hasMathOp = clean.contains { "^*/+-()%!".contains($0) }
+        let lowered = clean.lowercased()
+        let fnPrefixes = [
+            "sqrt(", "cbrt(", "sin(", "cos(", "tan(", "sec(", "csc(", "cot(",
+            "asin(", "acos(", "atan(", "sinh(", "cosh(", "tanh(",
+            "log(", "log2(", "log10(", "ln(", "abs(", "exp(",
+            "floor(", "ceil(", "round(", "gcd(", "lcm(", "ncr(", "npr(",
+            "mean(", "median(", "std(", "det(",
+        ]
+        let hasMathOp = clean.contains { "^*/+-()%!×÷−√²³".contains($0) }
+            || fnPrefixes.contains { lowered.contains($0) }
         guard hasDigits && hasMathOp else { return false }
 
         if hasFreeVariable(clean) { return false }
@@ -187,6 +360,12 @@ enum MathEvaluator {
     /// Cleans Vision-OCR quirks into strict parser input.
     static func normalize(_ raw: String) -> String {
         var s = raw.lowercased()
+        // Radical shorthand: "√144" → "sqrt(144)", before "√" → "sqrt".
+        s = s.replacingOccurrences(
+            of: #"√\s*(\d+(?:\.\d+)?|pi|tau|phi|[a-z])(?![a-z_(])"#,
+            with: "sqrt($1)",
+            options: .regularExpression
+        )
         // Unicode variants OCR loves to emit.
         let swaps: [(String, String)] = [
             ("×", "*"), ("✕", "*"), ("х", "*"), ("·", "*"), ("•", "*"),
@@ -252,20 +431,24 @@ enum MathEvaluator {
     // MARK: - Recursive-descent parser
 
     /// Evaluates a normalized expression. Nil on any parse error.
-    static func evaluate(_ expr: String) -> Double? {
-        var parser = Parser(Array(expr))
+    static func evaluate(_ expr: String, trigInRadians: Bool = false) -> Double? {
+        var parser = Parser(Array(expr), trigInRadians: trigInRadians)
         guard let v = parser.parseExpression(), parser.atEnd else { return nil }
         return v
     }
 
     private struct Parser {
         let chars: [Character]
+        let trigInRadians: Bool
         var pos = 0
         /// Set whenever "pi"/"tau"/"deg" is consumed — trig uses it to decide
         /// degrees vs radians (see parseTrig).
         var consumedPi = false
 
-        init(_ chars: [Character]) { self.chars = chars }
+        init(_ chars: [Character], trigInRadians: Bool = false) {
+            self.chars = chars
+            self.trigInRadians = trigInRadians
+        }
 
         var atEnd: Bool { pos >= chars.count }
         var peek: Character? { pos < chars.count ? chars[pos] : nil }
@@ -525,11 +708,12 @@ enum MathEvaluator {
 
         /// Handwritten trig heuristic: "sin(30)" means degrees to nearly
         /// everyone with a pen; "sin(pi/2)" or "sin(45°)" is explicit radians.
+        /// GraphPlotter passes `trigInRadians: true` so curves plot in radians.
         private mutating func parseTrig(_ fn: (Double) -> Double) -> Double? {
             let piBefore = consumedPi
             consumedPi = false
             guard let arg = parseParenArg() else { return nil }
-            let argUsedPi = consumedPi
+            let argUsedPi = consumedPi || trigInRadians
             consumedPi = piBefore || argUsedPi
             let radians = argUsedPi ? arg : arg * Double.pi / 180
             let v = fn(radians)

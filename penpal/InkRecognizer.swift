@@ -147,15 +147,49 @@ enum InkRecognizer {
             DispatchQueue.global(qos: .userInitiated).async {
                 let request = VNRecognizeTextRequest { request, _ in
                     let observations = request.results as? [VNRecognizedTextObservation] ?? []
-                    // Vision returns observations roughly top-to-bottom; join lines with spaces.
+                    // Group observations by visual line (Vision boundingBox uses
+                    // bottom-left normalized origin: larger midY is higher on page).
+                    struct LineBucket {
+                        var midY: CGFloat
+                        var height: CGFloat
+                        var items: [VNRecognizedTextObservation]
+                    }
+                    let sorted = observations.sorted {
+                        $0.boundingBox.midY > $1.boundingBox.midY
+                    }
+                    var buckets: [LineBucket] = []
+                    for obs in sorted {
+                        let box = obs.boundingBox
+                        if let idx = buckets.firstIndex(where: {
+                            abs(box.midY - $0.midY) < max(box.height, $0.height) * 0.55
+                        }) {
+                            var bucket = buckets[idx]
+                            let count = CGFloat(bucket.items.count)
+                            bucket.midY = (bucket.midY * count + box.midY) / (count + 1)
+                            bucket.height = max(bucket.height, box.height)
+                            bucket.items.append(obs)
+                            buckets[idx] = bucket
+                        } else {
+                            buckets.append(LineBucket(midY: box.midY, height: box.height, items: [obs]))
+                        }
+                    }
+                    for i in buckets.indices {
+                        buckets[i].items.sort { $0.boundingBox.minX < $1.boundingBox.minX }
+                    }
+
                     var readings: [String] = []
                     for rank in 0..<3 {
-                        let lines = observations.compactMap { obs -> String? in
-                            let candidates = obs.topCandidates(3)
-                            guard !candidates.isEmpty else { return nil }
-                            return candidates[min(rank, candidates.count - 1)].string
+                        let lines = buckets.compactMap { bucket -> String? in
+                            let words = bucket.items.compactMap { obs -> String? in
+                                let candidates = obs.topCandidates(3)
+                                guard !candidates.isEmpty else { return nil }
+                                return candidates[min(rank, candidates.count - 1)].string
+                            }
+                            let joined = words.joined(separator: " ")
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            return joined.isEmpty ? nil : joined
                         }
-                        let text = lines.joined(separator: " ")
+                        let text = lines.joined(separator: "\n")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         if !text.isEmpty, !readings.contains(text) {
                             readings.append(text)
