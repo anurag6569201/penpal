@@ -527,9 +527,14 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
         return cache
     }()
 
-    nonisolated static func makeThumbnail(drawingData: Data, cacheKey: String) -> UIImage? {
+    nonisolated static func makeThumbnail(
+        drawingData: Data,
+        cacheKey: String,
+        userInterfaceStyle: UIUserInterfaceStyle = .light
+    ) -> UIImage? {
         guard !drawingData.isEmpty else { return nil }
-        let key = cacheKey as NSString
+        let styleTag = userInterfaceStyle == .dark ? "dark" : "light"
+        let key = "\(cacheKey)-\(styleTag)" as NSString
         if let hit = Self.thumbnailCache.object(forKey: key) { return hit }
         let d = (try? PKDrawing(data: drawingData)) ?? PKDrawing()
         guard !d.strokes.isEmpty else { return nil }
@@ -544,7 +549,10 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
         bounds.size.height = min(bounds.height, coverHeight)
         let maxPixels: CGFloat = 384
         let scale = min(1.5, maxPixels / max(bounds.width, bounds.height))
-        let image = d.image(from: bounds, scale: scale)
+        var image = UIImage()
+        UITraitCollection(userInterfaceStyle: userInterfaceStyle).performAsCurrent {
+            image = d.image(from: bounds, scale: scale)
+        }
         let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
         Self.thumbnailCache.setObject(image, forKey: key, cost: cost)
         return image

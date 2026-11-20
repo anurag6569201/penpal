@@ -15,6 +15,8 @@ import SwiftUI
 final class HandwritingRenderer: UIView {
 
     var inkColor: UIColor = UIColor(Pen.inkAccent)
+    /// Ink color resolved for this view's active Light/Dark trait collection.
+    var resolvedInkColor: UIColor { inkColor.resolvedColor(with: traitCollection) }
     /// Pen speed in points per second.
     var speed: CGFloat = 320
     var widthScale: CGFloat = 1
@@ -97,6 +99,7 @@ final class HandwritingRenderer: UIView {
         isUserInteractionEnabled = false
         backgroundColor = .clear
         setupPen()
+        observeAppearanceChanges()
     }
 
     required init?(coder: NSCoder) {
@@ -104,6 +107,25 @@ final class HandwritingRenderer: UIView {
         isUserInteractionEnabled = false
         backgroundColor = .clear
         setupPen()
+        observeAppearanceChanges()
+    }
+
+    private func observeAppearanceChanges() {
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: HandwritingRenderer, _) in
+            self.refreshAppearance()
+        }
+    }
+
+    /// Re-resolves cached CGColors on live Light ↔ Dark mode switches.
+    func refreshAppearance() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        penDot.fillColor = inkColor.resolvedColor(with: traitCollection).cgColor
+        penNib.fillColor = UIColor(Pen.inkAccent).resolvedColor(with: traitCollection).cgColor
+        penNib.strokeColor = UIColor(Pen.paperRaised).resolvedColor(with: traitCollection).cgColor
+        nibSlit.strokeColor = penNib.strokeColor
+        nibSlit.fillColor = penNib.strokeColor
+        CATransaction.commit()
     }
 
     private func setupPen() {
@@ -172,7 +194,7 @@ final class HandwritingRenderer: UIView {
         } else {
             activeDurationScale = 1
         }
-        penDot.fillColor = inkColor.cgColor
+        penDot.fillColor = inkColor.resolvedColor(with: traitCollection).cgColor
         penNib.fillColor = UIColor(Pen.inkAccent).resolvedColor(with: traitCollection).cgColor
         penNib.strokeColor = UIColor(Pen.paperRaised).resolvedColor(with: traitCollection).cgColor
         nibSlit.strokeColor = penNib.strokeColor
@@ -239,7 +261,7 @@ final class HandwritingRenderer: UIView {
         wash.name = "analyzeWash"
         wash.path = UIBezierPath(roundedRect: washRect,
                                  cornerRadius: min(14, washRect.height * 0.4)).cgPath
-        wash.fillColor = inkColor.withAlphaComponent(0.11).cgColor
+        wash.fillColor = resolvedInkColor.withAlphaComponent(0.11).cgColor
         wash.opacity = 0.55
         layer.insertSublayer(wash, below: penDot)
         ponderLayers.append(wash)
@@ -253,7 +275,7 @@ final class HandwritingRenderer: UIView {
         line.addLine(to: CGPoint(x: bounds.maxX, y: y))
         underline.path = line.cgPath
         underline.fillColor = nil
-        underline.strokeColor = inkColor.withAlphaComponent(0.5).cgColor
+        underline.strokeColor = resolvedInkColor.withAlphaComponent(0.5).cgColor
         underline.lineWidth = max(1.5, bounds.height * 0.06)
         underline.lineCap = .round
         underline.opacity = 0.7
@@ -294,7 +316,7 @@ final class HandwritingRenderer: UIView {
         guide.name = "replyGuide"
         guide.path = path.cgPath
         guide.fillColor = nil
-        guide.strokeColor = inkColor.withAlphaComponent(0.28).cgColor
+        guide.strokeColor = resolvedInkColor.withAlphaComponent(0.28).cgColor
         guide.lineWidth = 1.5
         guide.lineCap = .round
         guide.lineDashPattern = [4, 6]
@@ -343,7 +365,7 @@ final class HandwritingRenderer: UIView {
             layer.name = "answerGhost"
             layer.path = path.cgPath
             layer.fillColor = nil
-            layer.strokeColor = inkColor.withAlphaComponent(0.42).cgColor
+            layer.strokeColor = resolvedInkColor.withAlphaComponent(0.42).cgColor
             layer.lineWidth = baseWidth
             layer.lineCap = .round
             layer.lineJoin = .round
@@ -434,7 +456,7 @@ final class HandwritingRenderer: UIView {
         mark.name = "workMark"
         mark.path = path.cgPath
         mark.fillColor = nil
-        mark.strokeColor = inkColor.withAlphaComponent(0.55).cgColor
+        mark.strokeColor = resolvedInkColor.withAlphaComponent(0.55).cgColor
         mark.lineWidth = max(1.6, rect.height * 0.07)
         mark.lineCap = .round
         layer.insertSublayer(mark, below: penDot)
@@ -566,7 +588,7 @@ final class HandwritingRenderer: UIView {
         let wash = CAShapeLayer()
         wash.path = UIBezierPath(roundedRect: rect.insetBy(dx: -pad, dy: -pad * 0.5),
                                  cornerRadius: min(10, rect.height * 0.35)).cgPath
-        wash.fillColor = inkColor.withAlphaComponent(0.16).cgColor
+        wash.fillColor = resolvedInkColor.withAlphaComponent(0.16).cgColor
         wash.opacity = 0
         layer.insertSublayer(wash, below: penDot)
         celebrateLayers.append(wash)
@@ -621,7 +643,7 @@ final class HandwritingRenderer: UIView {
             path.addLine(to: CGPoint(x: rect.maxX, y: y))
             underline.path = path.cgPath
             underline.fillColor = nil
-            underline.strokeColor = inkColor.withAlphaComponent(0.55).cgColor
+            underline.strokeColor = resolvedInkColor.withAlphaComponent(0.55).cgColor
             underline.lineWidth = max(1.6, xHeight * 0.07)
             underline.lineCap = .round
             underline.strokeEnd = 0
@@ -672,7 +694,7 @@ final class HandwritingRenderer: UIView {
             dot.path = UIBezierPath(ovalIn: CGRect(x: -radius, y: -radius,
                                                    width: 2 * radius,
                                                    height: 2 * radius)).cgPath
-            dot.fillColor = inkColor.withAlphaComponent(0.9).cgColor
+            dot.fillColor = resolvedInkColor.withAlphaComponent(0.9).cgColor
             dot.position = CGPoint(x: point.x + CGFloat(i) * gap, y: point.y)
             dot.opacity = 0
             layer.addSublayer(dot)
@@ -726,7 +748,7 @@ final class HandwritingRenderer: UIView {
                 let r = rawStroke.dotRadius
                 dot.path = UIBezierPath(ovalIn: CGRect(x: c.x - r, y: c.y - r,
                                                        width: 2 * r, height: 2 * r)).cgPath
-                dot.fillColor = inkColor.withAlphaComponent(inkColor.cgColor.alpha * rawStroke.opacity).cgColor
+                dot.fillColor = resolvedInkColor.withAlphaComponent(resolvedInkColor.cgColor.alpha * rawStroke.opacity).cgColor
                 layer.insertSublayer(dot, below: penDot)
                 inkLayers.append(dot)
                 continue
@@ -749,7 +771,7 @@ final class HandwritingRenderer: UIView {
                     // (connectors, retraces, ligature joins) compounded into
                     // visibly darker patches while single strokes stayed
                     // lighter, making the tone look uneven letter to letter.
-                    fill.fillColor = inkColor.withAlphaComponent(inkColor.cgColor.alpha * stroke.opacity).cgColor
+                    fill.fillColor = resolvedInkColor.withAlphaComponent(resolvedInkColor.cgColor.alpha * stroke.opacity).cgColor
                     fill.strokeColor = nil
                     layer.insertSublayer(fill, below: penDot)
                     inkLayers.append(fill)
@@ -758,7 +780,7 @@ final class HandwritingRenderer: UIView {
             }
             let shape = CAShapeLayer()
             shape.path = centerline.cgPath
-            shape.strokeColor = inkColor.withAlphaComponent(inkColor.cgColor.alpha * stroke.opacity).cgColor
+            shape.strokeColor = resolvedInkColor.withAlphaComponent(resolvedInkColor.cgColor.alpha * stroke.opacity).cgColor
             shape.fillColor = nil
             shape.lineWidth = baseWidth
             shape.lineCap = .round
@@ -930,7 +952,7 @@ final class HandwritingRenderer: UIView {
             let dot = CAShapeLayer()
             let r = rawStroke.dotRadius
             dot.path = UIBezierPath(ovalIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)).cgPath
-            dot.fillColor = inkColor.withAlphaComponent(inkColor.cgColor.alpha * rawStroke.opacity).cgColor
+            dot.fillColor = resolvedInkColor.withAlphaComponent(resolvedInkColor.cgColor.alpha * rawStroke.opacity).cgColor
             layer.insertSublayer(dot, below: penDot)
             inkLayers.append(dot)
             currentWriteLayers.append(dot)
@@ -997,7 +1019,7 @@ final class HandwritingRenderer: UIView {
             // that grows along the centerline.
             let fill = CAShapeLayer()
             fill.path = outline
-            fill.fillColor = inkColor.withAlphaComponent(inkColor.cgColor.alpha * stroke.opacity).cgColor
+            fill.fillColor = resolvedInkColor.withAlphaComponent(resolvedInkColor.cgColor.alpha * stroke.opacity).cgColor
             fill.strokeColor = nil
 
             let mask = CAShapeLayer()
@@ -1021,7 +1043,7 @@ final class HandwritingRenderer: UIView {
         } else {
             let shape = CAShapeLayer()
             shape.path = centerline.cgPath
-            shape.strokeColor = inkColor.withAlphaComponent(inkColor.cgColor.alpha * stroke.opacity).cgColor
+            shape.strokeColor = resolvedInkColor.withAlphaComponent(resolvedInkColor.cgColor.alpha * stroke.opacity).cgColor
             shape.fillColor = nil
             shape.lineWidth = baseWidth
             shape.lineCap = .round

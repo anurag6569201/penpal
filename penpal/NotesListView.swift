@@ -11,10 +11,12 @@ import UIKit
 private struct NoteThumbnailView<Placeholder: View>: View {
     let note: Note
     @ViewBuilder var placeholder: () -> Placeholder
+    @Environment(\.colorScheme) private var colorScheme
     @State private var image: UIImage?
 
     private var cacheKey: String {
-        "\(note.id.uuidString)-\(note.modifiedAt.timeIntervalSinceReferenceDate)-\(note.drawingData.count)"
+        let theme = colorScheme == .dark ? "dark" : "light"
+        return "\(note.id.uuidString)-\(note.modifiedAt.timeIntervalSinceReferenceDate)-\(note.drawingData.count)-\(theme)"
     }
 
     var body: some View {
@@ -34,8 +36,9 @@ private struct NoteThumbnailView<Placeholder: View>: View {
             }
             let data = note.drawingData
             let key = cacheKey
+            let style: UIUserInterfaceStyle = colorScheme == .dark ? .dark : .light
             let rendered = await Task.detached(priority: .utility) {
-                Note.makeThumbnail(drawingData: data, cacheKey: key)
+                Note.makeThumbnail(drawingData: data, cacheKey: key, userInterfaceStyle: style)
             }.value
             guard !Task.isCancelled else { return }
             image = rendered

@@ -125,7 +125,7 @@ struct PenpalControlBar: View {
             .padding(.horizontal, 8)
             .frame(height: 48)
             .background(Pen.paperRaised, in: Capsule())
-            .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+            .overlay(Capsule().strokeBorder(Pen.hairline, lineWidth: 0.75))
             .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
         }
         .font(.subheadline.weight(.medium))

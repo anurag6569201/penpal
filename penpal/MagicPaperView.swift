@@ -46,6 +46,10 @@ final class PaperBackgroundView: UIView {
         isOpaque = false
         isUserInteractionEnabled = false
         contentMode = .redraw
+        // Ensure ruled/grid/dot lines repaint immediately on live Light ↔ Dark switches.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: PaperBackgroundView, _) in
+            self.setNeedsDisplay()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -252,6 +256,72 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Scrollable paper height; grows as needed (infinite pages).
     private var contentHeight: CGFloat = 0
 
+    /// Extra bottom scroll clearance (in page coordinates) so bottom overlays
+    /// like the Penpal dock never trap ink off-screen in shortened windows.
+    var bottomChromeInset: CGFloat = 0 {
+        didSet {
+            guard abs(oldValue - bottomChromeInset) > 0.5 else { return }
+            applyChromeInsets()
+        }
+    }
+
+    private func applyChromeInsets() {
+        let bottom = max(0, bottomChromeInset)
+        if abs(canvas.contentInset.bottom - bottom) > 0.5 {
+            canvas.contentInset.bottom = bottom
+        }
+        let indicatorInsets = UIEdgeInsets(top: 64, left: 0, bottom: bottom, right: 0)
+        if canvas.verticalScrollIndicatorInsets != indicatorInsets {
+            canvas.verticalScrollIndicatorInsets = indicatorInsets
+        }
+    }
+
+    /// Converts a light-authored ink color into a dynamic color that matches
+    /// PencilKit's exact light/dark rendering — eliminating invisible black-on-black
+    /// live animation in dark mode and preventing any color jump when strokes bake.
+    private func displayInkColor(for lightColor: UIColor) -> UIColor {
+        let light = lightColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        return UIColor { traits in
+            guard traits.userInterfaceStyle == .dark else { return light }
+            let converted = PKInkingTool.convertColor(light, from: .light, to: .dark)
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+            if converted.getRed(&r, green: &g, blue: &b, alpha: &a) {
+                let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                if lum < 0.25 {
+                    return UIColor(red: 1 - r, green: 1 - g, blue: 1 - b, alpha: a)
+                }
+            }
+            return converted
+        }
+    }
+
+    /// Resolves a persisted typed-reply color dynamically for both light and dark themes.
+    private func displayTypedColor(from storedHex: String?, isUserMessage: Bool) -> UIColor {
+        if isUserMessage {
+            return .secondaryLabel
+        }
+        let lightBase = storedHex.flatMap(UIColor.init(hex:)) ?? settings.replyInkColor()
+        return displayInkColor(for: lightBase)
+    }
+
+    /// Refreshes all UIKit/CoreAnimation appearance-dependent elements on live
+    /// Dark ↔ Light theme changes.
+    private func refreshAppearanceForCurrentTheme() {
+        paper.setNeedsDisplay()
+        renderer.inkColor = displayInkColor(for: pendingBake?.color ?? bakedInkColor)
+        renderer.refreshAppearance()
+        for (idx, label) in typedLabels.enumerated() where idx < placedTexts.count {
+            let item = placedTexts[idx]
+            let color = displayTypedColor(from: item.colorHex, isUserMessage: item.isUserMessage)
+            if let attr = label.attributedText?.mutableCopy() as? NSMutableAttributedString {
+                attr.addAttribute(.foregroundColor, value: color,
+                                  range: NSRange(location: 0, length: attr.length))
+                label.attributedText = attr
+            } else {
+                label.textColor = color
+            }
+        }
+    }
     /// Pull-to-extend: how far past the bottom (already resisted by the
     /// scroll view's own elastic bounce) counts as "the user means it".
     /// A screen-relative distance so it feels the same on every device.
@@ -280,10 +350,19 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // .default (not .anyInput): only the default policy respects the
         // system "Draw with Finger" toggle in the tool picker's ⋯ menu.
         canvas.drawingPolicy = settings.pencilOnly ? .pencilOnly : .default
-        canvas.tool = PKInkingTool(.pen, color: UIColor(Pen.inkPrimary), width: 3)
+        // PencilKit treats tool colors as light-mode authored and auto-adapts them
+        // in dark mode — resolving in `.light` prevents dark-mode launches from
+        // authoring light-cream strokes that turn invisible in light mode.
+        let initialPenColor = UIColor(Pen.inkPrimary)
+            .resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        canvas.tool = PKInkingTool(.pen, color: initialPenColor, width: 3)
         canvas.delegate = self
         canvas.alwaysBounceVertical = true
         addSubview(canvas)
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: MagicPaperView, _) in
+            self.refreshAppearanceForCurrentTheme()
+        }
 
         paper.lineGap = lineGap
         paper.topInset = rulesTopInset
@@ -476,13 +555,10 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
         // Blocks are tap-activated (see setActiveCodeBlock) — their
         // interactivity no longer tracks the pencil-only setting.
-        // Lock the live-writing color to the same light-resolved value used
-        // when the stroke is baked into the canvas (see bakedInkColor).
-        // Using the raw dynamic color here would let it track the device's
-        // current light/dark appearance during animation, then jump to the
-        // fixed light variant the instant the stroke lands on the canvas —
-        // a visible color shift right as ink "gets into canvas".
-        renderer.inkColor = bakedInkColor
+        // Match the live renderer color to PencilKit's exact light/dark rendering
+        // of `bakedInkColor` so animated strokes are always legible in dark mode
+        // and never shift color the instant they bake into the canvas.
+        renderer.inkColor = displayInkColor(for: bakedInkColor)
         renderer.speed = 120 + CGFloat(settings.speedLevel) * 55
         renderer.widthScale = 1
         renderer.smoothness = CGFloat(settings.smoothness)
@@ -578,7 +654,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                        origin: CGPoint(x: text.x, y: text.y),
                                        xHeight: text.xHeight,
                                        maxX: text.maxX,
-                                       color: text.colorHex.flatMap(UIColor.init(hex:)) ?? settings.replyInkColor(),
+                                       color: displayTypedColor(from: text.colorHex,
+                                                                isUserMessage: text.isUserMessage),
                                        fontName: text.fontName)
             canvas.addSubview(label)
             typedLabels.append(label)
@@ -905,7 +982,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             allowSynthesis: false)
         guard !sequence.strokes.isEmpty else { return }
         let matched = Self.sampleUserInk(from: sourceStrokes)
-        renderer.inkColor = settings.replyInkColor(matching: matched?.color)
+        renderer.inkColor = displayInkColor(for: settings.replyInkColor(matching: matched?.color))
         renderer.showAnswerGhost(
             sequence.strokes,
             baseWidth: matched.map { max(1.2, $0.width * 0.9) }
@@ -928,7 +1005,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let top = content.isNull ? rulesTopInset + lineGap
                                  : max(lastReplyBottom, content.maxY) + lineGap
         let size = min(bounds.width - leftMargin - 40, 360)
-        let frame = CGRect(x: leftMargin, y: top, width: size, height: size * 0.75)
+        let visibleHeight = max(180, bounds.height - bottomChromeInset - 80)
+        let graphHeight = min(size * 0.75, max(160, visibleHeight * 0.65))
+        let frame = CGRect(x: leftMargin, y: top, width: size, height: graphHeight)
 
         ensureRoom(below: frame.maxY + lineGap * 2)
         guard let plot = GraphPlotter.plot(body, in: frame) else {
@@ -938,7 +1017,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
         let baseWidth = max(1.2, lineRelativeXHeight * 0.09
                             * CGFloat(settings.penWidthScale))
-        renderer.inkColor = bakedInkColor
+        renderer.inkColor = displayInkColor(for: bakedInkColor)
         beginUndoableAction("Draw Graph")          // PEN-14
         onWritingStateChange?(true)
         scrollToReveal(frame.minY)
@@ -999,7 +1078,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
 
         ensureRoom(below: frame.maxY + lineGap * 2)
-        renderer.inkColor = bakedInkColor
+        renderer.inkColor = displayInkColor(for: bakedInkColor)
         beginUndoableAction("Draw Illustration")
         onWritingStateChange?(true)
         scrollToReveal(frame.minY)
@@ -1132,7 +1211,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             settings: settings,
             allowSynthesis: false)          // math is never synthesised
         guard !sequence.strokes.isEmpty else { return }
-        renderer.inkColor = settings.replyInkColor(matching: matched?.color)
+        renderer.inkColor = displayInkColor(for: settings.replyInkColor(matching: matched?.color))
         renderer.showAnswerGhost(sequence.strokes, baseWidth: baseWidth)
     }
 
@@ -1846,6 +1925,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
         updateContentLayout()
         if resizing {
+            // Dismiss any floating math chip or hover guide anchored in the old
+            // coordinate box so rotation / window resizing never strands chrome.
+            dismissIntentChip()
+            renderer.clearReplyGuide()
+            applyChromeInsets()
             // Preserve the top visible page coordinate across rotation and
             // window resizing; clamp only if the viewport reaches the end.
             let inset = canvas.adjustedContentInset
@@ -1956,8 +2040,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     }
 
     private func scrollToReveal(_ y: CGFloat) {
-        let target = min(max(0, y - bounds.height * 0.35),
-                         max(0, contentHeight - bounds.height))
+        let visibleHeight = max(120, bounds.height - bottomChromeInset)
+        let maxOffset = max(0, contentHeight + bottomChromeInset - bounds.height)
+        let target = min(max(0, y - visibleHeight * 0.35), maxOffset)
         canvas.setContentOffset(CGPoint(x: 0, y: target), animated: true)
     }
 
@@ -2256,7 +2341,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         let preRoll = showDetection ? 0.45 : 0.10
         DispatchQueue.main.asyncAfter(deadline: .now() + preRoll) { [weak self] in
             guard let self else { return }
-            self.renderer.inkColor = bakeColor
+            self.renderer.inkColor = self.displayInkColor(for: bakeColor)
             self.beginUndoableAction("Penpal Reply")   // PEN-14
             self.dissolvePendingBoxIfNeeded()
             self.renderer.write(
@@ -3339,7 +3424,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 baseWidth: baseWidth
             )
             guard !plotted.isEmpty else { return }
-            renderer.inkColor = bakedInkColor
+            renderer.inkColor = displayInkColor(for: bakedInkColor)
             await awaitDrawingStep { done in
                 renderer.write(
                     plotted,
@@ -5335,7 +5420,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         DispatchQueue.main.asyncAfter(deadline: .now() + preRoll) { [weak self] in
             guard let self else { return }
             // Match animation color to bake color (and to the user's ink).
-            self.renderer.inkColor = bakeColor
+            self.renderer.inkColor = self.displayInkColor(for: bakeColor)
             // widths are already absolute tip sizes — don't re-scale by pen slider.
             let savedScale = self.renderer.widthScale
             self.renderer.widthScale = 1
@@ -5415,11 +5500,14 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                  color: UIColor? = nil,
                                  announceWriting: Bool = true,
                                  isUser: Bool = false) -> CGFloat {
+        let rawColor = color ?? settings.inkColor
+        let storedHex = rawColor.hexStringIncludingAlpha
+        let displayColor = displayTypedColor(from: storedHex, isUserMessage: isUser)
         let label = makeTypedLabel(text: text,
                                    origin: placement.origin,
                                    xHeight: placement.xHeight,
                                    maxX: placement.maxX,
-                                   color: color ?? settings.inkColor)
+                                   color: displayColor)
         label.alpha = 0
         label.transform = CGAffineTransform(translationX: 0, y: 4)
         canvas.addSubview(label)
@@ -5432,7 +5520,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                                          maxX: placement.maxX,
                                          isUserMessage: isUser,
                                          fontName: settings.replyFontName,
-                                         colorHex: (color ?? settings.inkColor).hexStringIncludingAlpha))
+                                         colorHex: storedHex))
         onTypedTextsChange?(placedTexts)
 
         if announceWriting { onWritingStateChange?(true) }

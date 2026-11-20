@@ -84,4 +84,60 @@ final class PaperViewportTests: XCTestCase {
         XCTAssertNil(restored.paperWidth)
         XCTAssertEqual(restored.resolvedPaperWidth, 768)
     }
+
+    func testShortenedAndNarrowWindowScalesBottomChromeInsetAndClampsScroll() throws {
+        let viewport = PaperViewport()
+        viewport.pageWidth = 768
+        viewport.bottomChromeInset = 100
+        resize(viewport, to: CGSize(width: 768, height: 1024))
+        let canvas = try XCTUnwrap(viewport.paperView.subviews.compactMap { $0 as? PKCanvasView }.first)
+        XCTAssertEqual(canvas.contentInset.bottom, 100, accuracy: 0.5)
+
+        // Narrow & shorten the window (Stage Manager / Split View): scale = 384 / 768 = 0.5
+        // So 100pt viewport bottom chrome becomes 200pt in page coordinates.
+        resize(viewport, to: CGSize(width: 384, height: 340))
+        XCTAssertEqual(viewport.paperView.bounds.width, 768, accuracy: 0.01)
+        XCTAssertEqual(viewport.paperView.bounds.height, 680, accuracy: 0.01)
+        XCTAssertEqual(canvas.contentInset.bottom, 200, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(canvas.contentOffset.y, 0)
+    }
+
+    func testDarkAndLightThumbnailsDoNotCollideInCache() throws {
+        let points = [CGPoint(x: 20, y: 20), CGPoint(x: 120, y: 80)]
+        let path = PKStrokePath(controlPoints: points.enumerated().map { index, point in
+            PKStrokePoint(location: point, timeOffset: Double(index) * 0.05,
+                          size: CGSize(width: 5, height: 5), opacity: 1,
+                          force: 1, azimuth: 0, altitude: .pi / 2)
+        }, creationDate: .now)
+        let drawing = PKDrawing(strokes: [PKStroke(ink: PKInk(.pen, color: .black), path: path)])
+        let data = drawing.dataRepresentation()
+        let key = "theme-test-\(UUID().uuidString)"
+
+        let lightThumb = try XCTUnwrap(Note.makeThumbnail(drawingData: data, cacheKey: key, userInterfaceStyle: .light))
+        let darkThumb = try XCTUnwrap(Note.makeThumbnail(drawingData: data, cacheKey: key, userInterfaceStyle: .dark))
+        // Separate cache entries must be produced for light vs dark appearances.
+        XCTAssertFalse(lightThumb === darkThumb)
+    }
+
+    func testDarkModeAdaptsBlackTypedRepliesToBeLegible() throws {
+        let viewport = PaperViewport()
+        viewport.overrideUserInterfaceStyle = .dark
+        resize(viewport, to: CGSize(width: 768, height: 1024))
+        let darkText = TypedNoteText(text: "Answer: 42", x: 64, y: 120,
+                                     xHeight: 18, maxX: 600, isUserMessage: false,
+                                     fontName: "Georgia-Italic", colorHex: "#000000")
+        viewport.paperView.loadDrawing(PKDrawing(), typedTexts: [darkText])
+        let canvas = try XCTUnwrap(viewport.paperView.subviews.compactMap { $0 as? PKCanvasView }.first)
+        let label = try XCTUnwrap(canvas.subviews.compactMap { $0 as? UILabel }.first)
+        let color = try XCTUnwrap(label.attributedText?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor)
+        let darkResolved = color.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        let lightResolved = color.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        var dr: CGFloat = 0, dg: CGFloat = 0, db: CGFloat = 0, da: CGFloat = 0
+        var lr: CGFloat = 0, lg: CGFloat = 0, lb: CGFloat = 0, la: CGFloat = 0
+        XCTAssertTrue(darkResolved.getRed(&dr, green: &dg, blue: &db, alpha: &da))
+        XCTAssertTrue(lightResolved.getRed(&lr, green: &lg, blue: &lb, alpha: &la))
+        // Pure black light-authored text stays dark in light mode and adapts to bright ink in dark mode.
+        XCTAssertLessThan(0.2126 * lr + 0.7152 * lg + 0.0722 * lb, 0.2)
+        XCTAssertGreaterThan(0.2126 * dr + 0.7152 * dg + 0.0722 * db, 0.5)
+    }
 }

@@ -93,7 +93,7 @@ extension HandwritingRenderer {
         for (i, origin) in samples.enumerated() {
             let dot = CAShapeLayer()
             dot.path = UIBezierPath(ovalIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)).cgPath
-            dot.fillColor = inkColor.withAlphaComponent(0.75).cgColor
+            dot.fillColor = resolvedInkColor.withAlphaComponent(0.75).cgColor
             dot.position = origin
             dot.opacity = 0
             layer.addSublayer(dot)
@@ -154,7 +154,7 @@ extension HandwritingRenderer {
         for (i, origin) in samples.enumerated() {
             let dot = CAShapeLayer()
             dot.path = UIBezierPath(ovalIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)).cgPath
-            dot.fillColor = inkColor.withAlphaComponent(0.55).cgColor
+            dot.fillColor = resolvedInkColor.withAlphaComponent(0.55).cgColor
             dot.position = origin
             layer.addSublayer(dot)
             celebrateLayers.append(dot)
@@ -237,7 +237,7 @@ extension HandwritingRenderer {
             shape.name = name
             shape.path = path.cgPath
             shape.fillColor = nil
-            shape.strokeColor = inkColor.withAlphaComponent(0.7).cgColor
+            shape.strokeColor = resolvedInkColor.withAlphaComponent(0.7).cgColor
             shape.lineWidth = max(2.0, rect.height * 1.1)
             shape.lineCap = .round
             shape.opacity = 0.85
@@ -281,7 +281,7 @@ extension HandwritingRenderer {
             filament.name = "filament"
             filament.path = path.cgPath
             filament.fillColor = nil
-            filament.strokeColor = inkColor.withAlphaComponent(0.35).cgColor
+            filament.strokeColor = resolvedInkColor.withAlphaComponent(0.35).cgColor
             filament.lineWidth = 1.1
             filament.lineCap = .round
             filament.lineDashPattern = [3, 4]
@@ -330,7 +330,7 @@ extension HandwritingRenderer {
                 let r = raw.dotRadius
                 dot.path = UIBezierPath(ovalIn: CGRect(x: c.x - r, y: c.y - r,
                                                        width: 2 * r, height: 2 * r)).cgPath
-                dot.fillColor = inkColor.withAlphaComponent(0.35).cgColor
+                dot.fillColor = resolvedInkColor.withAlphaComponent(0.35).cgColor
                 dot.name = "ghostInk"
                 dot.opacity = 0
                 layer.insertSublayer(dot, below: penDot)
@@ -345,7 +345,7 @@ extension HandwritingRenderer {
             let shape = CAShapeLayer()
             shape.path = path.cgPath
             shape.fillColor = nil
-            shape.strokeColor = inkColor.withAlphaComponent(0.4).cgColor
+            shape.strokeColor = resolvedInkColor.withAlphaComponent(0.4).cgColor
             shape.lineWidth = baseWidth * 0.9
             shape.lineCap = .round
             shape.lineJoin = .round

@@ -10,6 +10,13 @@ final class PaperViewport: UIView {
             if oldValue != pageWidth { setNeedsLayout() }
         }
     }
+    /// Bottom chrome height in viewport points (e.g. Penpal dock + follow-up bar).
+    /// Converted into page coordinates so shortened windows can always scroll past overlays.
+    var bottomChromeInset: CGFloat = 0 {
+        didSet {
+            if abs(oldValue - bottomChromeInset) > 0.5 { setNeedsLayout() }
+        }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -27,6 +34,7 @@ final class PaperViewport: UIView {
         paperView.bounds = CGRect(x: 0, y: 0, width: pageWidth, height: bounds.height / scale)
         paperView.center = CGPoint(x: bounds.midX, y: bounds.midY)
         paperView.transform = CGAffineTransform(scaleX: scale, y: scale)
+        paperView.bottomChromeInset = max(0, bottomChromeInset / scale)
         paperView.layoutIfNeeded()
     }
 }

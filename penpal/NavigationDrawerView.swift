@@ -71,7 +71,7 @@ struct NavigationDrawerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Pen.inkPrimary.opacity(0.1), lineWidth: 0.5)
+                .strokeBorder(Pen.hairline, lineWidth: 0.75)
         }
         .shadow(color: .black.opacity(0.18), radius: 24, x: 8, y: 8)
         .offset(x: min(0, dragOffset))

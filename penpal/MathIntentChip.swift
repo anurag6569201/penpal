@@ -34,6 +34,7 @@ final class MathIntentChip: UIView {
     private let stepsButton = UIButton(type: .system)
     private let graphButton = UIButton(type: .system)
     private let stack = UIStackView()
+    private var reviewBorderView: UIView?
     private var expression: String
     private let answerPreview: String?
     private let variableSummary: String?
@@ -109,14 +110,21 @@ final class MathIntentChip: UIView {
             border.layer.cornerRadius = 18
             border.layer.cornerCurve = .continuous
             border.layer.borderWidth = 1.5
-            border.layer.borderColor = Self.reviewAmber.withAlphaComponent(0.55).cgColor
+            border.layer.borderColor = Self.reviewAmber.resolvedColor(with: traitCollection).withAlphaComponent(0.55).cgColor
             addSubview(border)
+            reviewBorderView = border
             NSLayoutConstraint.activate([
                 border.topAnchor.constraint(equalTo: topAnchor),
                 border.bottomAnchor.constraint(equalTo: bottomAnchor),
                 border.leadingAnchor.constraint(equalTo: leadingAnchor),
                 border.trailingAnchor.constraint(equalTo: trailingAnchor),
             ])
+        }
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: MathIntentChip, _) in
+            self.reviewBorderView?.layer.borderColor = Self.reviewAmber
+                .resolvedColor(with: self.traitCollection)
+                .withAlphaComponent(0.55).cgColor
         }
 
         // The parsed expression — tap to correct it. Empty / uncertain reads

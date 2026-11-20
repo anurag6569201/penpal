@@ -63,6 +63,18 @@ enum Pen {
     /// Ruled lines and separators.
     static let rule = inkPrimary.opacity(0.12)
 
+    /// Crisp pill/card outline: subtle in light mode, visibly elevated on OLED black in dark mode.
+    static let hairline = Color(
+        light: Color(red: 26/255, green: 43/255, blue: 42/255).opacity(0.08),
+        dark: Color(red: 236/255, green: 234/255, blue: 228/255).opacity(0.18)
+    )
+
+    /// Backdrop scrim behind modal surfaces (drawer).
+    static let scrim = Color(
+        light: Color.black.opacity(0.16),
+        dark: Color.black.opacity(0.55)
+    )
+
     // MARK: Typography — stationery, not software.
 
     /// An editorial serif wordmark complements the handwritten page.

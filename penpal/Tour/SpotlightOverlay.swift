@@ -271,23 +271,29 @@ struct SpotlightOverlay: View {
     }
 
     private func calculateCardPosition(targetRect: CGRect?, cardWidth: CGFloat) -> CGPoint {
+        let padding: CGFloat = 16
+        let safeTop = max(padding, proxy.safeAreaInsets.top + 12)
+        let safeBottom = max(padding, proxy.safeAreaInsets.bottom + 12)
+        let estimatedHeight: CGFloat = min(260, max(160, proxy.size.height - safeTop - safeBottom))
+        let minY = safeTop + estimatedHeight / 2
+        let maxY = max(minY, proxy.size.height - safeBottom - estimatedHeight / 2)
+        let minX = min(proxy.size.width / 2, cardWidth / 2 + padding)
+        let maxX = max(minX, proxy.size.width - cardWidth / 2 - padding)
+
         guard let targetRect else {
-            return CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            return CGPoint(x: proxy.size.width / 2,
+                           y: min(maxY, max(minY, proxy.size.height / 2)))
         }
 
-        let cardHeight: CGFloat = 260
-        let padding: CGFloat = 20
-
-        // If target is in bottom half, place card above it
+        let x = max(minX, min(maxX, targetRect.midX))
+        // If target is in bottom half, place card above it; otherwise below it —
+        // always clamped strictly inside the visible window so short/rotated windows never clip it.
         if targetRect.midY > proxy.size.height / 2 {
-            let y = max(cardHeight / 2 + padding + 60, targetRect.minY - cardHeight / 2 - padding)
-            let x = max(cardWidth / 2 + padding, min(proxy.size.width - cardWidth / 2 - padding, targetRect.midX))
-            return CGPoint(x: x, y: y)
+            let preferredY = targetRect.minY - estimatedHeight / 2 - padding
+            return CGPoint(x: x, y: min(maxY, max(minY, preferredY)))
         } else {
-            // Target is in top half, place card below it
-            let y = min(proxy.size.height - cardHeight / 2 - padding, targetRect.maxY + cardHeight / 2 + padding)
-            let x = max(cardWidth / 2 + padding, min(proxy.size.width - cardWidth / 2 - padding, targetRect.midX))
-            return CGPoint(x: x, y: y)
+            let preferredY = targetRect.maxY + estimatedHeight / 2 + padding
+            return CGPoint(x: x, y: min(maxY, max(minY, preferredY)))
         }
     }
 

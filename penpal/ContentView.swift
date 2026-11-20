@@ -21,6 +21,7 @@ struct MagicPaper: UIViewRepresentable {
     var settings: HandwritingSettings
     var penpalEnabled: Bool
     var pageWidth: CGFloat
+    var bottomChromeInset: CGFloat = 0
     var onWritingStateChange: (Bool) -> Void
     var onThinkingChange: (Bool) -> Void
     var onReadingChange: (Bool) -> Void
@@ -43,6 +44,7 @@ struct MagicPaper: UIViewRepresentable {
     func makeUIView(context: Context) -> PaperViewport {
         let viewport = PaperViewport()
         viewport.pageWidth = pageWidth
+        viewport.bottomChromeInset = bottomChromeInset
         proxy.view = viewport.paperView
         apply(to: viewport.paperView)
         return viewport
@@ -50,6 +52,7 @@ struct MagicPaper: UIViewRepresentable {
 
     func updateUIView(_ viewport: PaperViewport, context: Context) {
         viewport.pageWidth = pageWidth
+        viewport.bottomChromeInset = bottomChromeInset
         apply(to: viewport.paperView)
     }
 
@@ -94,6 +97,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var pageWidth: CGFloat = 768
+    @State private var windowSize: CGSize = CGSize(width: 768, height: 1024)
     @State private var editorToolbarHeight: CGFloat = 56
     @State private var toolbarSection: TourToolbarSection = .pageTools
     @State private var proxy = PaperProxy()
@@ -189,20 +193,37 @@ struct ContentView: View {
     private var penpalBarClearance: CGFloat { penpalDockHeight + 12 }
     private let stackedOverlayGap: CGFloat = 54
 
+    private var isCompactWidth: Bool { windowSize.width < 520 }
+    private var isShortWindow: Bool { windowSize.height < 520 }
+    private var effectiveBottomChromeInset: CGFloat {
+        var inset: CGFloat = 24
+        if penpalOn { inset = max(inset, penpalBarClearance + 24) }
+        if mathChipsVisible { inset += stackedOverlayGap }
+        if toolsVisible { inset = max(inset, 128) }
+        return inset
+    }
+
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
-                let drawerWidth = min(380, max(280, geometry.size.width - 32))
+                let isCompact = geometry.size.width < 520
+                let isShort = geometry.size.height < 520
+                let drawerLeading: CGFloat = isCompact ? 8 : 12
+                let drawerWidth = min(380, max(240, geometry.size.width - (isCompact ? 24 : 32)))
+                let stickyTop = geometry.safeAreaInsets.top
+                    + editorToolbarTopInset
+                    + editorToolbarHeight
+                    + (isShort ? 8 : toolbarToStickyNoteGap)
 
                 ZStack(alignment: .leading) {
                     editorDetail(
-                        stickyNoteTop: geometry.safeAreaInsets.top
-                            + editorToolbarTopInset
-                            + editorToolbarHeight
-                            + toolbarToStickyNoteGap
+                        stickyNoteTop: stickyTop,
+                        availableSize: geometry.size
                     )
 
-                    Color.black.opacity(navigationDrawerPresented ? 0.16 : 0)
+                    Color.clear
+                        .background(Pen.scrim)
+                        .opacity(navigationDrawerPresented ? 1 : 0)
                         .ignoresSafeArea()
                         .contentShape(Rectangle())
                         .onTapGesture { closeNavigationDrawer() }
@@ -223,14 +244,18 @@ struct ContentView: View {
                         onClose: closeNavigationDrawer
                     )
                     .frame(width: drawerWidth)
-                    .padding(.leading, 12)
-                    .padding(.vertical, 12)
-                    .offset(x: navigationDrawerPresented ? 0 : -(drawerWidth + 24))
+                    .padding(.leading, drawerLeading)
+                    .padding(.vertical, isShort ? 6 : 12)
+                    .offset(x: navigationDrawerPresented ? 0 : -(drawerWidth + drawerLeading + 16))
                     .opacity(navigationDrawerPresented ? 1 : 0.7)
                     .allowsHitTesting(navigationDrawerPresented)
                     .accessibilityHidden(!navigationDrawerPresented)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear { windowSize = geometry.size }
+                .onChange(of: geometry.size) { _, newSize in
+                    windowSize = newSize
+                }
             }
         }
         .tint(accent)
@@ -531,8 +556,10 @@ struct ContentView: View {
 
     // MARK: - Editor detail
 
-    private func editorDetail(stickyNoteTop: CGFloat) -> some View {
-        ZStack(alignment: .bottom) {
+    private func editorDetail(stickyNoteTop: CGFloat, availableSize: CGSize) -> some View {
+        let shortWindow = availableSize.height < 520
+        let veryShortWindow = availableSize.height < 380
+        return ZStack(alignment: .bottom) {
             Pen.paper.ignoresSafeArea()
 
             if store.isLoading {
@@ -542,7 +569,7 @@ struct ContentView: View {
                     // Coded paper: the note is a rendered HTML page, not a canvas.
                     CodedPaperView(store: store)
                 } else {
-                    noteSurface(stickyNoteTop: stickyNoteTop)
+                    noteSurface(stickyNoteTop: stickyNoteTop, availableSize: availableSize)
                         .tourAnchor(.page)
 
                     if penpalOn {
@@ -573,6 +600,7 @@ struct ContentView: View {
                             } action: { height in
                                 penpalDockHeight = height
                             }
+                            .padding(.bottom, shortWindow ? 2 : 6)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
@@ -583,18 +611,21 @@ struct ContentView: View {
                     }
 
                     // PEN-33 — taught on the page, once, and only when there
-                    // is nothing to interrupt.
-                    if onboarding.isShowing && !tour.isActive {
+                    // is nothing to interrupt (hidden on ultra-short windows so it
+                    // never overlaps the top toolbar).
+                    if onboarding.isShowing && !tour.isActive && !veryShortWindow {
                         BoxGestureHint(
                             sample: boxHintSample,
                             message: boxHintMessage,
                             accessibilityHint: boxHintAccessibility
                         ) { onboarding.dismiss() }
-                            .padding(.bottom, penpalBarClearance + stackedOverlayGap)
+                            .padding(.bottom, shortWindow
+                                     ? penpalBarClearance + 10
+                                     : penpalBarClearance + stackedOverlayGap)
                             .transition(.scale(scale: 0.94).combined(with: .opacity))
                     }
 
-                    if showPrefer, settings.replyStyle == "hand", !isWriting, !isThinking {
+                    if showPrefer, settings.replyStyle == "hand", !isWriting, !isThinking, !veryShortWindow {
                         preferenceBar
                             .padding(.bottom,
                                      (penpalOn ? penpalBarClearance : 28)
@@ -776,7 +807,7 @@ struct ContentView: View {
                             Text(noteHeading)
                                 .font(.system(.subheadline, design: .serif, weight: .semibold))
                                 .lineLimit(1)
-                                .frame(maxWidth: 150, alignment: .leading)
+                                .frame(maxWidth: isCompactWidth ? 92 : 150, alignment: .leading)
                             if activeNote?.pinned == true {
                                 Image(systemName: "pin.fill")
                                     .font(.system(size: 9))
@@ -858,7 +889,7 @@ struct ContentView: View {
         }
         .foregroundStyle(Pen.inkPrimary)
         .background(Pen.paperRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .overlay(Capsule().strokeBorder(Pen.hairline, lineWidth: 0.75))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Open Penpal library, \(noteHeading) in \(folderSubtitle)")
@@ -1001,7 +1032,7 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .frame(height: 48)
         .background(Pen.paperRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .overlay(Capsule().strokeBorder(Pen.hairline, lineWidth: 0.75))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
         .tourAnchor(.undo)
     }
@@ -1091,7 +1122,7 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .frame(height: 48)
         .background(Pen.paperRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .overlay(Capsule().strokeBorder(Pen.hairline, lineWidth: 0.75))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
     }
 
@@ -1148,7 +1179,7 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .frame(height: 48)
         .background(Pen.paperRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5))
+        .overlay(Capsule().strokeBorder(Pen.hairline, lineWidth: 0.75))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 4)
     }
 
@@ -1203,7 +1234,7 @@ struct ContentView: View {
 
     /// One-tap follow-ups after a math reply — the words the brain understands.
     private var mathFollowUpBar: some View {
-        HStack(spacing: 8) {
+        let row = HStack(spacing: 8) {
             mathChip("Explain", icon: "questionmark.circle", send: "explain")
             mathChip("Another way", icon: "arrow.triangle.branch", send: "another way")
             mathChip("Harder", icon: "flame", send: "harder")
@@ -1229,14 +1260,22 @@ struct ContentView: View {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Pen.inkFaded)
+                    .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+
+        return ViewThatFits(in: .horizontal) {
+            row
+            ScrollView(.horizontal, showsIndicators: false) { row }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(Pen.paperRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.2), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(Pen.inkAccent.opacity(0.24), lineWidth: 1))
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+        .padding(.horizontal, 12)
     }
 
     private func mathChip(_ title: String, icon: String, send message: String) -> some View {
@@ -1303,16 +1342,19 @@ struct ContentView: View {
         return nil
     }
 
-    private func noteSurface(stickyNoteTop: CGFloat) -> some View {
+    private func noteSurface(stickyNoteTop: CGFloat, availableSize: CGSize) -> some View {
         // The page (handwriting canvas) fills everything; the heading/note
         // float on top as a compact, left-aligned sticky note that never
         // blocks writing below it.
-        ZStack(alignment: .topLeading) {
+        let stickyMaxWidth = min(300, max(200, availableSize.width - 32))
+        let stickyMaxHeight = max(110, availableSize.height - stickyNoteTop - effectiveBottomChromeInset - 16)
+        return ZStack(alignment: .topLeading) {
             MagicPaper(
                 proxy: proxy,
                 settings: settings,
                 penpalEnabled: penpalOn,
                 pageWidth: pageWidth,
+                bottomChromeInset: effectiveBottomChromeInset,
                 onWritingStateChange: { writing in
                     isWriting = writing
                     if !writing, settings.replyStyle == "hand", penpalOn {
@@ -1380,7 +1422,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if !stickyHidden {
-                stickyNoteCard
+                stickyNoteCard(maxWidth: stickyMaxWidth, maxHeight: stickyMaxHeight)
                     .padding(.leading, 12)
                     .padding(.trailing, 20)
                     // Measure the floating toolbar and safe area so the card
@@ -1392,45 +1434,48 @@ struct ContentView: View {
         .animation(reduceMotion ? nil : Pen.spring, value: stickyHidden)
     }
 
-    private var stickyNoteCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "note.text")
-                    .font(.caption2)
-                Text(store.selectedNote?.modifiedAt.formatted(date: .abbreviated, time: .shortened) ?? "")
-                    .font(.caption2)
+    private func stickyNoteCard(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "note.text")
+                        .font(.caption2)
+                    Text(store.selectedNote?.modifiedAt.formatted(date: .abbreviated, time: .shortened) ?? "")
+                        .font(.caption2)
+                }
+                .foregroundStyle(Pen.inkFaded)
+                .padding(.bottom, 4)
+
+                TextField("Title", text: $titleText)
+                    .font(.headline.weight(.bold))
+                    .textFieldStyle(.plain)
+                    .focused($titleFocused)
+                    .submitLabel(.done)
+                    .onChange(of: titleText) { _, value in
+                        store.updateSelectedTitle(value)
+                    }
+
+                Divider()
+                    .padding(.vertical, 6)
+
+                TextField("Take a note…", text: $bodyText, axis: .vertical)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(1...5)
+                    .focused($bodyFocused)
+                    .onChange(of: bodyText) { _, value in
+                        store.updateSelectedBody(value)
+                    }
             }
-            .foregroundStyle(Pen.inkFaded)
-            .padding(.bottom, 4)
-
-            TextField("Title", text: $titleText)
-                .font(.headline.weight(.bold))
-                .textFieldStyle(.plain)
-                .focused($titleFocused)
-                .submitLabel(.done)
-                .onChange(of: titleText) { _, value in
-                    store.updateSelectedTitle(value)
-                }
-
-            Divider()
-                .padding(.vertical, 6)
-
-            TextField("Take a note…", text: $bodyText, axis: .vertical)
-                .font(.subheadline)
-                .foregroundStyle(.primary.opacity(0.85))
-                .lineLimit(1...5)
-                .focused($bodyFocused)
-                .onChange(of: bodyText) { _, value in
-                    store.updateSelectedBody(value)
-                }
+            .padding(14)
         }
-        .padding(14)
-        .frame(maxWidth: 300, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: maxWidth, maxHeight: maxHeight, alignment: .topLeading)
         .background(Pen.paperRaised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 14, x: 0, y: 6)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Pen.inkPrimary.opacity(0.08), lineWidth: 0.5)
+                .strokeBorder(Pen.hairline, lineWidth: 0.75)
         )
         .foregroundStyle(Pen.inkPrimary)
     }
@@ -1781,7 +1826,7 @@ struct ContentView: View {
     }
 
     private var preferenceBar: some View {
-        HStack(spacing: 14) {
+        let row = HStack(spacing: 14) {
             Text("Looks like your writing?")
                 .font(.footnote.weight(.medium))
             Button {
@@ -1807,10 +1852,18 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Pen.inkFaded)
         }
+        .fixedSize(horizontal: true, vertical: false)
+
+        return ViewThatFits(in: .horizontal) {
+            row
+            ScrollView(.horizontal, showsIndicators: false) { row }
+        }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(Pen.paperRaised, in: Capsule())
+        .overlay(Capsule().strokeBorder(Pen.hairline, lineWidth: 0.75))
         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .padding(.horizontal, 12)
     }
 }
 

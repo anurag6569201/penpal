@@ -1611,14 +1611,14 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         // Live ring (normal mode, active only). Below the ink visually, like
         // the block itself — it marks the block, it doesn't float over ink.
         activeRing.fillColor = UIColor.clear.cgColor
-        activeRing.strokeColor = UIColor(Pen.inkAccent).withAlphaComponent(0.55).cgColor
+        activeRing.strokeColor = UIColor(Pen.inkAccent).resolvedColor(with: traitCollection).withAlphaComponent(0.55).cgColor
         activeRing.lineWidth = 2
         activeRing.isHidden = true
         layer.addSublayer(activeRing)
 
         // Dashed selection outline (edit mode only).
         outline.fillColor = UIColor.clear.cgColor
-        outline.strokeColor = UIColor(Pen.inkAccent).withAlphaComponent(0.9).cgColor
+        outline.strokeColor = UIColor(Pen.inkAccent).resolvedColor(with: traitCollection).withAlphaComponent(0.9).cgColor
         outline.lineWidth = 1.5
         outline.lineDashPattern = [6, 4]
         outline.isHidden = true
@@ -1629,7 +1629,7 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
             let h = UIView()
             h.tag = corner
             h.backgroundColor = UIColor(Pen.paperRaised)
-            h.layer.borderColor = UIColor(Pen.inkAccent).cgColor
+            h.layer.borderColor = UIColor(Pen.inkAccent).resolvedColor(with: traitCollection).cgColor
             h.layer.borderWidth = 2
             h.layer.cornerRadius = handleSize / 2
             h.isHidden = true
@@ -1637,6 +1637,10 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
             h.addGestureRecognizer(pan)
             addSubview(h)
             handles.append(h)
+        }
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: CodeBlockView, _) in
+            self.refreshAppearanceColors()
         }
 
         // Floating toolbar above the block (edit mode only).
@@ -2406,6 +2410,15 @@ final class CodeBlockView: UIView, UIGestureRecognizerDelegate, WKNavigationDele
         if !toolbar.isHidden, toolbar.frame.contains(point) { return true }
         for h in handles where !h.isHidden && h.frame.contains(point) { return true }
         return false
+    }
+
+    private func refreshAppearanceColors() {
+        let accent = UIColor(Pen.inkAccent).resolvedColor(with: traitCollection)
+        activeRing.strokeColor = accent.withAlphaComponent(0.55).cgColor
+        outline.strokeColor = accent.withAlphaComponent(0.9).cgColor
+        for h in handles {
+            h.layer.borderColor = accent.cgColor
+        }
     }
 
     // MARK: Layout
