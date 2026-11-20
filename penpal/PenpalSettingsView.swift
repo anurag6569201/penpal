@@ -440,10 +440,11 @@ struct PenpalSettingsView: View {
         writingPreview
         Section {
             Toggle("Apple Pencil only", isOn: $settings.pencilOnly)
+            Toggle("Draw & hold to snap shapes", isOn: $settings.drawAndHoldShapes)
         } header: {
             Label("Drawing input", systemImage: "hand.draw")
         } footer: {
-            Text("When enabled, your finger scrolls and operates page controls. Turn it off to draw with a finger instead.")
+            Text("When Apple Pencil only is on, your finger scrolls and operates page controls. With Draw & hold on, pause at the end of a line, circle, square, triangle, or arrow to snap it clean — or toggle Smart Shapes in the toolbar for instant snapping.")
         }
         Section {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 12)],
@@ -703,7 +704,7 @@ struct PenpalSettingsView: View {
         } header: {
             Label("Debug", systemImage: "waveform.path.ecg")
         } footer: {
-            Text("Gestures: 2-finger tap or 3-finger swipe left to undo · 3-finger tap or swipe right to redo · scribble over a term or strike through ink to erase · box a problem to send · double-underline your working to have it checked.")
+            Text("Gestures: 2-finger tap or 3-finger swipe left to undo · 3-finger tap or swipe right to redo · draw & hold to snap geometric shapes · scribble over a term or strike through ink to erase · box a problem to send · double-underline your working to have it checked.")
         }
     }
 

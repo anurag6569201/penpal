@@ -20,6 +20,7 @@ struct MagicPaper: UIViewRepresentable {
     let proxy: PaperProxy
     var settings: HandwritingSettings
     var penpalEnabled: Bool
+    var smartShapesMode: Bool = false
     var pageWidth: CGFloat
     var bottomChromeInset: CGFloat = 0
     var onWritingStateChange: (Bool) -> Void
@@ -59,6 +60,7 @@ struct MagicPaper: UIViewRepresentable {
     private func apply(to view: MagicPaperView) {
         view.settings = settings
         view.penpalEnabled = penpalEnabled
+        view.smartShapesMode = smartShapesMode
         view.onWritingStateChange = onWritingStateChange
         view.onThinkingChange = onThinkingChange
         view.onReadingChange = onReadingChange
@@ -111,6 +113,7 @@ struct ContentView: View {
     @State private var canUndo = false
     @State private var canRedo = false
     @State private var rulerActive = false
+    @State private var smartShapesOn = false
     @State private var gestureFeedback: MagicPaperView.GestureFeedback?
     @State private var showPlotSheet = false
     @State private var plotExpressionDraft = ""
@@ -578,6 +581,7 @@ struct ContentView: View {
                             activityPhase: penpalActivityPhase,
                             statusText: penpalStatusText,
                             rulerActive: rulerActive,
+                            smartShapesActive: smartShapesOn,
                             onAsk: { proxy.view?.replyNow() },
                             onCheckWork: { proxy.view?.checkMyWorking() },
                             onSolveWholePage: { proxy.view?.solveWholePageAsWorksheet() },
@@ -589,6 +593,7 @@ struct ContentView: View {
                                 rulerActive.toggle()
                                 proxy.view?.setRulerActive(rulerActive)
                             },
+                            onToggleSmartShapes: toggleSmartShapesMode,
                             onVisionCamera: openVisionCamera,
                             onVisionPhoto: { showVisionPhotos = true },
                             onClose: {
@@ -974,6 +979,20 @@ struct ContentView: View {
         }
     }
 
+    private func toggleSmartShapesMode() {
+        Pen.tapHaptic()
+        smartShapesOn.toggle()
+        showGestureFeedback(MagicPaperView.GestureFeedback(
+            icon: smartShapesOn ? "square.on.circle.fill" : "square.on.circle",
+            message: smartShapesOn
+                ? "Smart Shapes On · Instant snap"
+                : (settings.drawAndHoldShapes
+                   ? "Smart Shapes Off · Draw & hold active"
+                   : "Smart Shapes Off"),
+            didPerform: smartShapesOn
+        ))
+    }
+
     private var paperStyleIcon: String {
         switch settings.paperStyle {
         case "grid": "squareshape.split.3x3"
@@ -1017,6 +1036,15 @@ struct ContentView: View {
             }
             .disabled(store.selectedNote == nil || selectedIsCoded)
             .accessibilityLabel(rulerActive ? "Hide Straightedge Ruler" : "Show Straightedge Ruler")
+
+            Button(action: toggleSmartShapesMode) {
+                Image(systemName: smartShapesOn ? "square.on.circle.fill" : "square.on.circle")
+                    .foregroundStyle(smartShapesOn ? Pen.inkAccent : Pen.inkPrimary)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(store.selectedNote == nil || selectedIsCoded)
+            .accessibilityLabel(smartShapesOn ? "Turn Off Smart Shapes Mode" : "Turn On Smart Shapes Mode")
+            .accessibilityHint("Snaps lines, circles, squares, triangles, and arrows automatically on lift. Draw and hold works even when off.")
 
             Button {
                 withAnimation(reduceMotion ? nil : Pen.spring) { stickyHidden.toggle() }
@@ -1353,6 +1381,7 @@ struct ContentView: View {
                 proxy: proxy,
                 settings: settings,
                 penpalEnabled: penpalOn,
+                smartShapesMode: smartShapesOn,
                 pageWidth: pageWidth,
                 bottomChromeInset: effectiveBottomChromeInset,
                 onWritingStateChange: { writing in

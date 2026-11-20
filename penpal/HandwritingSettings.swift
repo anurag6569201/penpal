@@ -53,6 +53,9 @@ final class HandwritingSettings: ObservableObject {
     @Published var speedLevel: Double { didSet { save() } }
     @Published var variation: Double { didSet { save() } }
     @Published var pencilOnly: Bool { didSet { save() } }
+    /// Draw & Hold: pause the pen at the end of a stroke (~0.45s) to snap rough
+    /// ink into a crisp geometric shape without switching modes.
+    @Published var drawAndHoldShapes: Bool { didSet { save() } }
     /// "indigo" | "blue" | "black" | "green" | "purple" | "custom" | "active".
     @Published var inkColorName: String { didSet { save() } }
     /// The color picked via the full color picker ("custom" swatch), stored as hex.
@@ -129,6 +132,7 @@ final class HandwritingSettings: ObservableObject {
         // input cannot carry both meanings without guessing. V3 key so the
         // old stored preference doesn't reinstate finger drawing.
         pencilOnly = defaults.object(forKey: "penpal.settings.pencilOnlyV3") as? Bool ?? true
+        drawAndHoldShapes = defaults.object(forKey: "penpal.settings.drawAndHoldShapes") as? Bool ?? true
         inkColorName = defaults.string(forKey: "penpal.settings.inkColor") ?? "indigo"
         customColorHex = defaults.string(forKey: "penpal.settings.customColorHex") ?? "#3B3B3B"
         writingIndicator = PenpalWritingIndicator(
@@ -212,6 +216,7 @@ final class HandwritingSettings: ObservableObject {
         d.set(speedLevel, forKey: "penpal.settings.speed")
         d.set(variation, forKey: "penpal.settings.variation")
         d.set(pencilOnly, forKey: "penpal.settings.pencilOnlyV3")
+        d.set(drawAndHoldShapes, forKey: "penpal.settings.drawAndHoldShapes")
         d.set(inkColorName, forKey: "penpal.settings.inkColor")
         d.set(customColorHex, forKey: "penpal.settings.customColorHex")
         // PEN-41 removed auto reply: every capability now waits for Ask or a

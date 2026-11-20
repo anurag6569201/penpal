@@ -55,11 +55,13 @@ struct PenpalControlBar: View {
     var activityPhase: InkThinkingIndicator.Phase?
     var statusText: String?
     var rulerActive: Bool = false
+    var smartShapesActive: Bool = false
     var onAsk: () -> Void
     var onCheckWork: () -> Void = {}
     var onSolveWholePage: () -> Void = {}
     var onPlotGraph: () -> Void = {}
     var onToggleRuler: () -> Void = {}
+    var onToggleSmartShapes: () -> Void = {}
     var onVisionCamera: () -> Void
     var onVisionPhoto: () -> Void
     var onClose: () -> Void
@@ -338,6 +340,10 @@ struct PenpalControlBar: View {
             Button(rulerActive ? "Hide Ruler" : "Show Ruler",
                    systemImage: rulerActive ? "ruler.fill" : "ruler") {
                 onToggleRuler()
+            }
+            Button(smartShapesActive ? "Smart Shapes: Instant" : "Smart Shapes: Draw & Hold",
+                   systemImage: smartShapesActive ? "square.on.circle.fill" : "square.on.circle") {
+                onToggleSmartShapes()
             }
             Divider()
             Toggle("Instant \"=\" (Skip Chip)", isOn: Binding(

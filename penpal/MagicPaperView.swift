@@ -130,6 +130,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     var settings: HandwritingSettings = .shared { didSet { applySettings() } }
     /// When false, ink is normal Notes drawing — no OCR / brain / reply.
     var penpalEnabled: Bool = false
+    /// When true (Smart Shapes Mode toggle), every lifted stroke snaps
+    /// immediately to a clean geometric shape and box-to-send / idle OCR pause.
+    var smartShapesMode: Bool = false
     /// How long the pen must rest before the page looks for a drawn gesture
     /// or a finished "=" expression. Deliberately a constant and not a
     /// setting: it is a recognition delay, not a reply delay, and no
@@ -208,7 +211,26 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Delays the "Reading…" banner so short OCR doesn't flash chrome.
     private var readingBannerTask: Task<Void, Never>?
     private var lastReplyStrokeCount = 0
+    private var lastObservedStrokeCount = 0
     private var lastReplyBottom: CGFloat = 0
+
+    // MARK: Hybrid Smart Shapes (Draw & Hold + Smart Shapes Mode)
+    private var shapeHoldObserver: UILongPressGestureRecognizer?
+    private let shapeHoldLayer: CAShapeLayer = {
+        let layer = CAShapeLayer()
+        layer.fillColor = nil
+        layer.lineCap = .round
+        layer.lineJoin = .round
+        layer.zPosition = 999
+        layer.isHidden = true
+        return layer
+    }()
+    private var liveStrokePoints: [CGPoint] = []
+    private var holdAnchorPoint: CGPoint?
+    private var holdTimer: Timer?
+    private var holdSnappedShape: SmartShapeEngine.RecognizedShape?
+    private var holdSnapExpiryWork: DispatchWorkItem?
+    private var didSnapLastStroke = false
     /// True while a brain request is IN FLIGHT (network await). The
     /// `renderer.isWriting` guard alone left a race: pause mid-sentence →
     /// request A departs → user writes more → idle fires again while A is
@@ -310,6 +332,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         paper.setNeedsDisplay()
         renderer.inkColor = displayInkColor(for: pendingBake?.color ?? bakedInkColor)
         renderer.refreshAppearance()
+        if !shapeHoldLayer.isHidden, let inkingTool = canvas.tool as? PKInkingTool {
+            shapeHoldLayer.strokeColor = displayInkColor(for: inkingTool.color)
+                .resolvedColor(with: traitCollection).cgColor
+            shapeHoldLayer.shadowColor = UIColor(Pen.inkAccent)
+                .resolvedColor(with: traitCollection).cgColor
+        }
         for (idx, label) in typedLabels.enumerated() where idx < placedTexts.count {
             let item = placedTexts[idx]
             let color = displayTypedColor(from: item.colorHex, isUserMessage: item.isUserMessage)
@@ -369,6 +397,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         paper.leftMargin = leftMargin
         canvas.insertSubview(paper, at: 0)
         canvas.addSubview(renderer)
+        canvas.layer.addSublayer(shapeHoldLayer)
 
         // PEN-12 — anything the outbox eventually delivers still gets written
         // on the page, exactly as if it had arrived first time.
@@ -423,6 +452,20 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         pencilDown.delaysTouchesEnded = false
         pencilDown.delegate = self
         canvas.addGestureRecognizer(pencilDown)
+
+        // Draw & Hold observer for Hybrid Smart Shapes: watches the active pen
+        // stroke without cancelling or delaying PencilKit, snapping to a clean
+        // shape when the tip holds still for ~0.45s.
+        let shapeHold = UILongPressGestureRecognizer(target: self,
+                                                     action: #selector(handleShapeHold(_:)))
+        shapeHold.minimumPressDuration = 0
+        shapeHold.allowableMovement = .greatestFiniteMagnitude
+        shapeHold.cancelsTouchesInView = false
+        shapeHold.delaysTouchesBegan = false
+        shapeHold.delaysTouchesEnded = false
+        shapeHold.delegate = self
+        canvas.addGestureRecognizer(shapeHold)
+        shapeHoldObserver = shapeHold
 
         // Keep the undo/redo buttons in sync with the canvas's undo stack.
         for name in [NSNotification.Name.NSUndoManagerDidUndoChange,
@@ -553,6 +596,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // .anyInput would silently ignore it (finger keeps drawing).
         let policy: PKCanvasViewDrawingPolicy = settings.pencilOnly ? .pencilOnly : .default
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
+        let shapeTouchTypes = settings.pencilOnly
+            ? [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+            : [NSNumber(value: UITouch.TouchType.pencil.rawValue),
+               NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        if shapeHoldObserver?.allowedTouchTypes != shapeTouchTypes {
+            shapeHoldObserver?.allowedTouchTypes = shapeTouchTypes
+        }
         // Blocks are tap-activated (see setActiveCodeBlock) — their
         // interactivity no longer tracks the pencil-only setting.
         // Match the live renderer color to PencilKit's exact light/dark rendering
@@ -634,11 +684,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         renderer.clearInk()
         dismissIntentChip()
         idleTimer?.invalidate()
+        cancelShapeHold(clearSnapped: true)
 
         let migration = migrateReplyInks(replyInks, into: drawing)
         suppressChanges = true
         canvas.drawing = migration.drawing
         lastReplyStrokeCount = migration.drawing.strokes.count
+        lastObservedStrokeCount = migration.drawing.strokes.count
 
         typedLabels.forEach { $0.removeFromSuperview() }
         typedLabels.removeAll()
@@ -866,9 +918,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         renderer.clearInk()
         dismissIntentChip()
         idleTimer?.invalidate()
+        cancelShapeHold(clearSnapped: true)
         suppressChanges = true
         canvas.drawing = PKDrawing()
         lastReplyStrokeCount = 0
+        lastObservedStrokeCount = 0
         lastReplyBottom = 0
         typedLabels.forEach { $0.removeFromSuperview() }
         typedLabels.removeAll()
@@ -1323,6 +1377,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         suppressChanges = true
         canvas.drawing = drawing
         suppressChanges = false
+        lastObservedStrokeCount = drawing.strokes.count
         lastReplyStrokeCount = min(lastReplyStrokeCount, drawing.strokes.count)
         onDrawingChange?(drawing)
         publishUndoRedo()
@@ -1347,6 +1402,7 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         drawing.strokes.insert(pk, at: at)
         canvas.drawing = drawing
         lastReplyStrokeCount += 1
+        lastObservedStrokeCount = drawing.strokes.count
         suppressChanges = false
         onDrawingChange?(canvas.drawing)   // debounced persistence
         return true
@@ -1738,6 +1794,20 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// toolbar…) or touches inside an active code block must not fire them.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
+        if gestureRecognizer === shapeHoldObserver {
+            guard !isPageEditMode,
+                  canvas.tool is PKInkingTool,
+                  (settings.drawAndHoldShapes || smartShapesMode) else { return false }
+            var v = touch.view
+            while let cur = v, cur !== canvas {
+                if cur is UIControl || cur is MathIntentChip { return false }
+                if let active = activeCodeBlock, cur === active, touch.type != .pencil {
+                    return false
+                }
+                v = cur.superview
+            }
+            return true
+        }
         guard gestureRecognizer is UITapGestureRecognizer
             || gestureRecognizer is UISwipeGestureRecognizer else { return true }
         var v = touch.view
@@ -1749,6 +1819,217 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
                 return false
             }
             v = cur.superview
+        }
+        return true
+    }
+
+    // MARK: - Hybrid Smart Shapes (Draw & Hold + Smart Shapes Mode)
+
+    private func cancelShapeHold(clearSnapped: Bool = true) {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        holdSnapExpiryWork?.cancel()
+        holdSnapExpiryWork = nil
+        liveStrokePoints.removeAll()
+        holdAnchorPoint = nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shapeHoldLayer.isHidden = true
+        shapeHoldLayer.path = nil
+        CATransaction.commit()
+        if clearSnapped {
+            holdSnappedShape = nil
+        }
+    }
+
+    private func currentSnapContext(excludingLastStroke: Bool) -> SmartShapeEngine.SnapContext {
+        let all = canvas.drawing.strokes
+        let reference = excludingLastStroke && !all.isEmpty ? Array(all.dropLast()) : all
+        var ctx = SmartShapeEngine.SnapContext(
+            existingEndpoints: SmartShapeEngine.collectEndpoints(from: reference)
+        )
+        switch settings.paperStyle {
+        case "grid":
+            ctx.gridOrigin = CGPoint(x: 12, y: rulesTopInset)
+            ctx.gridSpacing = lineGap / 2
+        case "dots":
+            ctx.gridOrigin = CGPoint(x: 16, y: rulesTopInset)
+            ctx.gridSpacing = lineGap / 2
+        default:
+            break
+        }
+        return ctx
+    }
+
+    @objc private func handleShapeHold(_ g: UILongPressGestureRecognizer) {
+        guard !isPageEditMode,
+              let inkingTool = canvas.tool as? PKInkingTool,
+              (settings.drawAndHoldShapes || smartShapesMode) else {
+            if g.state == .began || g.state == .ended || g.state == .cancelled {
+                cancelShapeHold(clearSnapped: true)
+            }
+            return
+        }
+
+        let pt = g.location(in: canvas)
+        switch g.state {
+        case .began:
+            cancelShapeHold(clearSnapped: true)
+            liveStrokePoints = [pt]
+            holdAnchorPoint = pt
+            scheduleHoldSnapTimer()
+
+        case .changed:
+            if let active = holdSnappedShape {
+                // Dragging after Draw & Hold snap live-adjusts lines, arrows, circles, squares.
+                let updated = SmartShapeEngine.adjusted(
+                    active,
+                    draggingTo: pt,
+                    context: currentSnapContext(excludingLastStroke: false)
+                )
+                holdSnappedShape = updated
+                updateShapePreviewLayer(for: updated, tool: inkingTool)
+            } else {
+                if let last = liveStrokePoints.last,
+                   hypot(pt.x - last.x, pt.y - last.y) >= 2 {
+                    liveStrokePoints.append(pt)
+                }
+                if let anchor = holdAnchorPoint,
+                   hypot(pt.x - anchor.x, pt.y - anchor.y) > 7.5 {
+                    holdAnchorPoint = pt
+                    scheduleHoldSnapTimer()
+                }
+            }
+
+        case .ended:
+            holdTimer?.invalidate()
+            holdTimer = nil
+            liveStrokePoints.removeAll()
+            holdAnchorPoint = nil
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            shapeHoldLayer.isHidden = true
+            CATransaction.commit()
+            // Keep `holdSnappedShape` briefly so `canvasViewDrawingDidChange`
+            // consumes it immediately when PencilKit commits the lifted stroke.
+            if holdSnappedShape != nil {
+                holdSnapExpiryWork?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.holdSnappedShape = nil
+                }
+                holdSnapExpiryWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            }
+
+        case .cancelled, .failed:
+            cancelShapeHold(clearSnapped: true)
+
+        default:
+            break
+        }
+    }
+
+    private func scheduleHoldSnapTimer() {
+        holdTimer?.invalidate()
+        holdTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.evaluateHoldSnap()
+            }
+        }
+    }
+
+    private func evaluateHoldSnap() {
+        holdTimer = nil
+        guard !isPageEditMode,
+              holdSnappedShape == nil,
+              let inkingTool = canvas.tool as? PKInkingTool,
+              (settings.drawAndHoldShapes || smartShapesMode),
+              liveStrokePoints.count >= 5 else { return }
+
+        guard let shape = SmartShapeEngine.recognize(
+            points: liveStrokePoints,
+            context: currentSnapContext(excludingLastStroke: false)
+        ) else { return }
+
+        holdSnappedShape = shape
+        updateShapePreviewLayer(for: shape, tool: inkingTool)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        onGestureFeedback?(GestureFeedback(
+            icon: shape.symbolName,
+            message: shape.displayName,
+            didPerform: true
+        ))
+    }
+
+    private func updateShapePreviewLayer(for shape: SmartShapeEngine.RecognizedShape,
+                                         tool: PKInkingTool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shapeHoldLayer.path = SmartShapeEngine.previewPath(for: shape).cgPath
+        shapeHoldLayer.lineWidth = max(1.8, tool.width)
+        shapeHoldLayer.strokeColor = displayInkColor(for: tool.color)
+            .resolvedColor(with: traitCollection).cgColor
+        shapeHoldLayer.shadowColor = UIColor(Pen.inkAccent)
+            .resolvedColor(with: traitCollection).cgColor
+        shapeHoldLayer.shadowRadius = 4
+        shapeHoldLayer.shadowOpacity = 0.5
+        shapeHoldLayer.shadowOffset = .zero
+        shapeHoldLayer.isHidden = false
+        CATransaction.commit()
+    }
+
+    private func trySnapLatestStrokeIfNeeded(in canvasView: PKCanvasView) -> Bool {
+        // 1. Draw & Hold snap (user already felt haptic + saw live preview while holding).
+        if let shape = holdSnappedShape {
+            holdSnappedShape = nil
+            holdSnapExpiryWork?.cancel()
+            holdSnapExpiryWork = nil
+            shapeHoldLayer.isHidden = true
+            return applySnappedShape(shape, in: canvasView, emitFeedback: false)
+        }
+        // 2. Smart Shapes Mode ON: instant snap on lift without needing to hold.
+        if smartShapesMode,
+           !isPageEditMode,
+           canvasView.tool is PKInkingTool,
+           let rawLast = canvasView.drawing.strokes.last,
+           let shape = SmartShapeEngine.recognize(
+               stroke: rawLast,
+               context: currentSnapContext(excludingLastStroke: true)
+           ) {
+            return applySnappedShape(shape, in: canvasView, emitFeedback: true)
+        }
+        return false
+    }
+
+    private func applySnappedShape(_ shape: SmartShapeEngine.RecognizedShape,
+                                   in canvasView: PKCanvasView,
+                                   emitFeedback: Bool) -> Bool {
+        guard let rawLast = canvasView.drawing.strokes.last,
+              let snapped = SmartShapeEngine.makeStroke(for: shape, matching: rawLast) else {
+            return false
+        }
+        // Single undoable step so a 2-finger tap restores the original hand-drawn stroke.
+        performUndoable("Snap to \(shape.displayName)") {
+            suppressChanges = true
+            var drawing = canvasView.drawing
+            drawing.strokes[drawing.strokes.count - 1] = snapped
+            canvasView.drawing = drawing
+            suppressChanges = false
+        }
+        didSnapLastStroke = true
+        lastObservedStrokeCount = canvasView.drawing.strokes.count
+        lastReplyStrokeCount = canvasView.drawing.strokes.count
+        idleTimer?.invalidate()
+        ensureRoom(below: snapped.renderBounds.maxY + lineGap * 2)
+        onDrawingChange?(canvasView.drawing)
+        publishUndoRedo()
+        if emitFeedback {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            onGestureFeedback?(GestureFeedback(
+                icon: shape.symbolName,
+                message: shape.displayName,
+                didPerform: true
+            ))
         }
         return true
     }
@@ -2059,6 +2340,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     /// Boxing is a direct canvas action, so don't make the user wait for the
     /// normal pause/OCR timer. A boxed question is an explicit send, like Ask.
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        if didSnapLastStroke {
+            didSnapLastStroke = false
+            return
+        }
+        // In Smart Shapes mode, pause box-to-send so drawing rectangles/squares
+        // around geometry labels never accidentally triggers a question send.
+        guard !smartShapesMode else { return }
         guard !isPageEditMode, !renderer.isWriting, pendingBake == nil, !brainBusy else { return }
         let all = canvasView.drawing.strokes
         guard all.count > lastReplyStrokeCount else { return }
@@ -2073,6 +2361,12 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard !suppressChanges else { return }
+        let currentCount = canvasView.drawing.strokes.count
+        let addedSingleStroke = (currentCount == lastObservedStrokeCount + 1)
+        lastObservedStrokeCount = currentCount
+        if addedSingleStroke, trySnapLatestStrokeIfNeeded(in: canvasView) {
+            return
+        }
         if renderer.isWriting {
             // The user started writing over the reply — complete it instantly
             // (identical ink, no animation) and persist it.
@@ -2100,6 +2394,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         // seen" marker — clamp it or new ink would never trigger again.
         lastReplyStrokeCount = min(lastReplyStrokeCount, canvasView.drawing.strokes.count)
         idleTimer?.invalidate()
+        // While Smart Shapes Mode is active, pause idle gesture/OCR scanning so
+        // sketching geometry diagrams stays completely calm and uninterrupted.
+        guard !smartShapesMode else { return }
         // This scan is NOT auto-reply — no capability can fire from it.
         // `replyNow(auto: true)` returns early for every specialist mode; the
         // scan exists so drawn gestures (box, strike-through, double
