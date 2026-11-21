@@ -2220,13 +2220,15 @@ class IllustratorTraceTests(GeminiTestCase):
         self.assertGreater(len(simplified), 1000)
 
     def test_tracer_turns_a_real_image_into_bounded_ordered_strokes(self):
-        import numpy as np
-        import cv2
-        img = np.full((240, 240, 3), 255, np.uint8)
-        cv2.rectangle(img, (40, 40), (200, 200), (0, 0, 0), 3)   # big outline
-        cv2.circle(img, (120, 120), 18, (0, 0, 0), 2)            # small detail
-        _, buf = cv2.imencode(".png", img)
-        plan = gemini.tracer.trace(buf.tobytes(), label="shapes")
+        import io
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (240, 240), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([40, 40, 200, 200], outline=(0, 0, 0), width=3)  # big outline
+        draw.ellipse([102, 102, 138, 138], outline=(0, 0, 0), width=2)  # small detail
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        plan = gemini.tracer.trace(buf.getvalue(), label="shapes")
         self.assertEqual(plan["kind"], "strokes")
         self.assertTrue(plan["strokes"])
         self.assertLessEqual(len(plan["strokes"]), 120)
@@ -2238,26 +2240,30 @@ class IllustratorTraceTests(GeminiTestCase):
                 self.assertTrue(0 <= x <= 1000 and 0 <= y <= 1000)
 
     def test_detailed_tracer_keeps_two_pixel_feature(self):
-        import numpy as np
-        import cv2
-        img = np.full((32, 32, 3), 255, np.uint8)
-        cv2.line(img, (10, 16), (12, 16), (0, 0, 0), 1)
-        _, buf = cv2.imencode(".png", img)
+        import io
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (32, 32), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.line([(10, 16), (12, 16)], fill=(0, 0, 0), width=1)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
 
-        quick = gemini.tracer.trace(buf.tobytes(), quality="quick")
-        detailed = gemini.tracer.trace(buf.tobytes(), quality="detailed")
+        quick = gemini.tracer.trace(buf.getvalue(), quality="quick")
+        detailed = gemini.tracer.trace(buf.getvalue(), quality="detailed")
 
         self.assertEqual(quick["kind"], "refusal")
         self.assertEqual(detailed["kind"], "strokes")
         self.assertTrue(detailed["strokes"])
 
     def test_tracer_reports_original_wide_image_ratio(self):
-        import numpy as np
-        import cv2
-        img = np.full((100, 300, 3), 255, np.uint8)
-        cv2.line(img, (10, 50), (290, 50), (0, 0, 0), 2)
-        _, buf = cv2.imencode(".png", img)
-        result = gemini.tracer.trace(buf.tobytes(), quality="detailed")
+        import io
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (300, 100), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.line([(10, 50), (290, 50)], fill=(0, 0, 0), width=2)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        result = gemini.tracer.trace(buf.getvalue(), quality="detailed")
         self.assertEqual(result["kind"], "strokes")
         self.assertEqual(result["aspect_ratio"], 3)
 
@@ -2316,13 +2322,15 @@ class IllustratorTraceEndpointTests(GeminiTestCase):
 def _line_art_png_b64() -> str:
     """A small black-line drawing, base64 PNG — a stand-in for a picked image."""
     import base64
-    import numpy as np
-    import cv2
-    img = np.full((240, 240, 3), 255, np.uint8)
-    cv2.rectangle(img, (40, 40), (200, 200), (0, 0, 0), 3)
-    cv2.line(img, (40, 40), (200, 200), (0, 0, 0), 2)
-    _, buf = cv2.imencode(".png", img)
-    return base64.b64encode(buf.tobytes()).decode()
+    import io
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (240, 240), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([40, 40, 200, 200], outline=(0, 0, 0), width=3)
+    draw.line([(40, 40), (200, 200)], fill=(0, 0, 0), width=2)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 class TraceImageTests(GeminiTestCase):
@@ -2340,11 +2348,11 @@ class TraceImageTests(GeminiTestCase):
                 self.assertTrue(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0)
 
     def test_blank_image_degrades_to_refusal_not_noise(self):
-        import base64
-        import numpy as np
-        import cv2
-        _, buf = cv2.imencode(".png", np.full((120, 120, 3), 255, np.uint8))
-        result = gemini.trace_image(buf.tobytes(), label="blank")
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 120), (255, 255, 255)).save(buf, format="PNG")
+        result = gemini.trace_image(buf.getvalue(), label="blank")
         self.assertEqual(result["kind"], "refusal")
 
 
@@ -2378,10 +2386,11 @@ class TraceImageEndpointTests(GeminiTestCase):
 
     def test_untraceable_image_is_a_503(self):
         import base64
-        import numpy as np
-        import cv2
-        _, buf = cv2.imencode(".png", np.full((120, 120, 3), 255, np.uint8))
-        blank = base64.b64encode(buf.tobytes()).decode()
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 120), (255, 255, 255)).save(buf, format="PNG")
+        blank = base64.b64encode(buf.getvalue()).decode()
         response = self.api.post("/api/trace-image/",
                                  {"image": blank}, format="json")
         # A refusal from trace_image is a strokes-less 200; a blank image traces
@@ -2655,6 +2664,14 @@ class VisionTurnTests(GeminiTestCase):
             gemini.vision_turn(PNG, "illustrator")
         self.assertEqual(models.calls, [])
 
+    def test_interactive_and_arranger_photos_route_to_companion_vision(self):
+        for cap in ("interactive", "arranger"):
+            replies = iter(['{"kind":"other"}', f"Explained for {cap}."])
+            self.install(solver=lambda _: next(replies))
+            result = gemini.vision_turn(PNG, cap)
+            self.assertEqual(result["kind"], "companion")
+            self.assertEqual(result["reply"], f"Explained for {cap}.")
+
 
 @override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
                    GEMINI_VISION_MODEL="")
@@ -2682,6 +2699,15 @@ class VisionTurnEndpointTests(GeminiTestCase):
         self.assertEqual(self.api.post("/api/vision-turn/", {
             "image": _b64(PNG), "capability": "illustrator",
         }, format="json").status_code, 400)
+        for cap in ("interactive", "arranger"):
+            replies = iter(['{"kind":"other"}', "Explained."])
+            self.install(solver=lambda _: next(replies))
+            resp = self.api.post("/api/vision-turn/", {
+                "image": _b64(PNG),
+                "mime_type": "image/png",
+                "capability": cap,
+            }, format="json")
+            self.assertEqual(resp.status_code, 200)
 
     def test_rejects_non_list_history_and_unknown_image_type(self):
         self.assertEqual(self.api.post("/api/vision-turn/", {
@@ -3349,3 +3375,134 @@ class DevModeTests(GeminiTestCase):
         response = APIClient().post("/api/chat/", {"message": "hi"},
                                     format="json")
         self.assertEqual(response.status_code, 200)
+
+
+# --------------------------------------------------------------------------
+# Cloudflare Python Worker router & entrypoint
+# --------------------------------------------------------------------------
+
+@override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model",
+                   PENPAL_TOKENS=set())
+class CloudflareWorkerRouterTests(GeminiTestCase):
+    """
+    Verifies the zero-Django Cloudflare Python Worker request dispatcher
+    (`chat.router.dispatch`) and entrypoint (`src.worker.Default`).
+    """
+
+    def setUp(self):
+        super().setUp()
+        access.reset()
+        self.addCleanup(access.reset)
+
+    def test_health_endpoint_via_router_and_trailing_slash_normalization(self):
+        import json
+        from . import router
+        for url in ("https://penpal.workers.dev/api/health",
+                    "https://penpal.workers.dev/api/health/"):
+            res = router.dispatch("GET", url, {}, b"")
+            self.assertEqual(res.status, 200)
+            payload = json.loads(res.body.decode("utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["service"], "penpal-brain")
+
+    def test_cors_preflight_options(self):
+        from . import router
+        res = router.dispatch("OPTIONS", "/api/chat/", {}, b"")
+        self.assertEqual(res.status, 204)
+        self.assertEqual(res.headers.get("Access-Control-Allow-Origin"), "*")
+        self.assertIn("Authorization",
+                      res.headers.get("Access-Control-Allow-Headers", ""))
+
+    def test_worker_env_binding_enforces_token_and_dispatches_chat(self):
+        import json
+        from . import router
+        self.install(solver="Hello from Cloudflare Worker!")
+
+        class FakeWorkerEnv:
+            GEMINI_API_KEY = "worker-bound-key"
+            GEMINI_MODEL = "fake-model"
+            PENPAL_TOKENS = "cf-secret-token"
+
+        # Without token -> 401
+        unauth = router.dispatch(
+            "POST",
+            "https://penpal.workers.dev/api/chat/",
+            {"Content-Type": "application/json"},
+            json.dumps({"message": "hi"}).encode("utf-8"),
+            env=FakeWorkerEnv(),
+        )
+        self.assertEqual(unauth.status, 401)
+
+        # With valid token -> 200
+        authed = router.dispatch(
+            "POST",
+            "https://penpal.workers.dev/api/chat/",
+            {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer cf-secret-token",
+            },
+            json.dumps({"message": "hi"}).encode("utf-8"),
+            env=FakeWorkerEnv(),
+        )
+        self.assertEqual(authed.status, 200)
+        data = json.loads(authed.body.decode("utf-8"))
+        self.assertEqual(data["reply"], "Hello from Cloudflare Worker!")
+
+    def test_worker_router_traces_image_and_streams_sse(self):
+        import json
+        from . import router
+
+        # 1. Pure-Python image tracing
+        trace_res = router.dispatch(
+            "POST",
+            "/api/trace-image/",
+            {"Content-Type": "application/json"},
+            json.dumps({
+                "image": _line_art_png_b64(),
+                "label": "doodle",
+                "quality": "quick",
+            }).encode("utf-8"),
+        )
+        self.assertEqual(trace_res.status, 200)
+        trace_payload = json.loads(trace_res.body.decode("utf-8"))
+        self.assertEqual(trace_payload["kind"], "strokes")
+        self.assertTrue(trace_payload["strokes"])
+
+        # 2. SSE streaming math endpoint
+        models = FakeModels(verifier='{"verdict": "correct", "reason": "ok"}')
+        models.generate_content_stream = (
+            lambda model, contents, config: [StreamChunk("Ans: 4")]
+        )
+        with patch.object(gemini, "_client", lambda: FakeClient(models)):
+            sse_res = router.dispatch(
+                "POST",
+                "/api/solve-image/stream/",
+                {"Content-Type": "application/json"},
+                json.dumps({"message": "2+2 ="}).encode("utf-8"),
+            )
+            self.assertEqual(sse_res.status, 200)
+            self.assertTrue(
+                sse_res.headers["Content-Type"].startswith("text/event-stream")
+            )
+            self.assertIn(b'"type": "final"', sse_res.body)
+
+    def test_worker_entrypoint_fetch_async(self):
+        import asyncio
+        import json
+        from src.worker import Default
+        self.install(solver="Worker fetch reply")
+
+        class FakeRequest:
+            method = "POST"
+            url = "https://penpal.workers.dev/api/chat/"
+            headers = {"Content-Type": "application/json"}
+
+            async def text(self):
+                return json.dumps({"message": "hello worker"})
+
+        worker = Default()
+        response = asyncio.run(worker.fetch(FakeRequest()))
+        self.assertEqual(response.status, 200)
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["reply"], "Worker fetch reply")
+

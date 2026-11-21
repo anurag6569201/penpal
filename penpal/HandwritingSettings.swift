@@ -148,7 +148,10 @@ final class HandwritingSettings: ObservableObject {
         paperStyle = defaults.string(forKey: "penpal.settings.paperStyle") ?? "blank"
         replyStyle = defaults.string(forKey: "penpal.settings.replyStyle") ?? "hand"
         replyFontName = defaults.string(forKey: "penpal.settings.replyFont") ?? "SnellRoundhand"
-        apiBaseURL = defaults.string(forKey: "penpal.settings.apiBaseURL") ?? "http://127.0.0.1:8000"
+        let bundleBaseURL = (Bundle.main.object(forInfoDictionaryKey: "PENPAL_API_BASE_URL") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultBaseURL = (bundleBaseURL?.isEmpty == false) ? bundleBaseURL! : "http://127.0.0.1:8000"
+        apiBaseURL = defaults.string(forKey: "penpal.settings.apiBaseURL") ?? defaultBaseURL
         useBrain = defaults.object(forKey: "penpal.settings.useBrain") as? Bool ?? true
         capability = defaults.string(forKey: "penpal.settings.capability") ?? "companion"
         targetLanguage = defaults.string(forKey: "penpal.settings.targetLanguage") ?? "es-ES"

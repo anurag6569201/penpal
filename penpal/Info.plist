@@ -3,11 +3,19 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Penpal uses the camera for external pages and for an interactive block only after you approve that block.</string>
+	<string>Penpal uses the camera to import physical notebook pages, ask about external photos, or provide video to an interactive block only after you approve that block.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Penpal accesses your selected photos when you import a notebook page, trace an image, or ask about a photo.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Penpal saves exported note images and PDFs to your photo library when you choose to save them.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Penpal lets an interactive block use the microphone only after you approve that block.</string>
+	<string>Penpal uses the microphone when you dictate a question or math problem, and for an interactive block only after you approve that block.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Penpal uses speech recognition to transcribe spoken questions and math problems onto your page.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Penpal lets an interactive block use your location only after you approve that block.</string>
+	<key>PENPAL_API_BASE_URL</key>
+	<string></string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

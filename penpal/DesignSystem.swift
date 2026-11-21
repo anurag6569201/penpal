@@ -19,7 +19,7 @@ enum Pen {
 
     /// Warm cream in light mode, true AMOLED black in dark mode — the
     /// deepest layer, the canvas itself.
-    static let paper = Color(
+    nonisolated static let paper = Color(
         light: Color(red: 247/255, green: 244/255, blue: 237/255),
         dark: .black)
 
@@ -29,48 +29,48 @@ enum Pen {
     /// to the soft cream page. Dark: a bare lift off true black (not grey —
     /// still reads as black at a glance) so elevation comes from the
     /// surface itself, not only from a shadow that barely shows on OLED.
-    static let paperRaised = Color(
+    nonisolated static let paperRaised = Color(
         light: Color(red: 255/255, green: 253/255, blue: 249/255),
         dark: Color(red: 14/255, green: 13/255, blue: 16/255))
 
     /// Text and drawn ink.
-    static let inkPrimary = Color(
+    nonisolated static let inkPrimary = Color(
         light: Color(red: 26/255, green: 43/255, blue: 42/255),
         dark: Color(red: 236/255, green: 234/255, blue: 228/255))
 
     /// Penpal's presence: actions, its pen, its highlights. ONE accent per
     /// screen — a page with three accent colours is a dashboard.
-    static let inkAccent = Color(
+    nonisolated static let inkAccent = Color(
         light: Color(red: 27/255, green: 93/255, blue: 86/255),
         dark: Color(red: 126/255, green: 206/255, blue: 185/255))
 
-    static let accentWash = inkAccent.opacity(0.10)
-    static let onAccent = Color(light: .white, dark: Color(red: 10/255, green: 36/255, blue: 31/255))
+    nonisolated static let accentWash = inkAccent.opacity(0.10)
+    nonisolated static let onAccent = Color(light: .white, dark: Color(red: 10/255, green: 36/255, blue: 31/255))
 
     /// Secondary text. Derived, not a separate hue.
-    static let inkFaded = inkPrimary.opacity(0.68)
+    nonisolated static let inkFaded = inkPrimary.opacity(0.68)
 
     /// Verified / success. Appears only as MEANING, never decoration.
-    static let inkPositive = Color(
+    nonisolated static let inkPositive = Color(
         light: Color(red: 0.180, green: 0.431, blue: 0.306),
         dark: Color(red: 0.498, green: 0.749, blue: 0.627))
 
     /// Offline / degraded / caution.
-    static let inkCaution = Color(
+    nonisolated static let inkCaution = Color(
         light: Color(red: 0.690, green: 0.486, blue: 0.173),
         dark: Color(red: 0.851, green: 0.659, blue: 0.361))
 
     /// Ruled lines and separators.
-    static let rule = inkPrimary.opacity(0.12)
+    nonisolated static let rule = inkPrimary.opacity(0.12)
 
     /// Crisp pill/card outline: subtle in light mode, visibly elevated on OLED black in dark mode.
-    static let hairline = Color(
+    nonisolated static let hairline = Color(
         light: Color(red: 26/255, green: 43/255, blue: 42/255).opacity(0.08),
         dark: Color(red: 236/255, green: 234/255, blue: 228/255).opacity(0.18)
     )
 
     /// Backdrop scrim behind modal surfaces (drawer).
-    static let scrim = Color(
+    nonisolated static let scrim = Color(
         light: Color.black.opacity(0.16),
         dark: Color.black.opacity(0.55)
     )
@@ -117,7 +117,7 @@ enum Pen {
 
 extension Color {
     /// A colour with explicit light and dark variants, resolved by trait.
-    init(light: Color, dark: Color) {
+    nonisolated init(light: Color, dark: Color) {
         self.init(uiColor: UIColor { traits in
             traits.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light)
         })

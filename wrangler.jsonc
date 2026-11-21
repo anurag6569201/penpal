@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "penpal-brain",
+  "main": "src/worker.py",
+  "compatibility_date": "2026-11-21",
+  "compatibility_flags": [
+    "python_workers"
+  ],
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "vars": {
+    "GEMINI_MODEL": "gemini-2.5-flash",
+    "GEMINI_IMAGE_MODEL": "gemini-2.5-flash-image",
+    "ILLUSTRATOR_TRACE_ENABLED": "true",
+    "RATE_LIMIT_PER_MINUTE": "20",
+    "RATE_LIMIT_PER_DAY": "500"
+  }
+}

@@ -47,18 +47,21 @@ final class VoiceInput: NSObject, ObservableObject {
     private var tapInstalled = false
     private var finishHandler: ((String) -> Void)?
     private var delivered = false
+    private var shouldConvertMath = true
 
     var isAvailable: Bool { recognizer?.isAvailable ?? false }
 
     /// Asks for permission, then starts. `onFinish` receives the final text
-    /// converted to written maths. Pass a BCP-47 locale (e.g. in Language
-    /// Partner mode) to recognise speech in that language.
+    /// (converted to written maths when `convertMath` is true). Pass a BCP-47
+    /// locale (e.g. in Language Partner mode) to recognise speech in that language.
     func start(locale localeIdentifier: String? = nil,
+               convertMath: Bool = true,
                onFinish: @escaping (String) -> Void) {
         guard !isListening else { return }
         errorMessage = nil
         transcript = ""
         delivered = false
+        shouldConvertMath = convertMath
         finishHandler = onFinish
 
         let targetLocale = localeIdentifier.flatMap { id -> Locale? in
@@ -176,7 +179,7 @@ final class VoiceInput: NSObject, ObservableObject {
         delivered = true
         let raw = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty, let handler = finishHandler else { return }
-        let written = SpokenMath.toWrittenForm(raw)
+        let written = shouldConvertMath ? SpokenMath.toWrittenForm(raw) : raw
         if !written.isEmpty { handler(written) }
     }
 

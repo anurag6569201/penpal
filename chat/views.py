@@ -489,7 +489,14 @@ def vision_turn(request):
     if err is not None:
         return err
     capability = str(data.get("capability") or "companion").strip().lower()
-    if capability not in ("companion", "mathematician", "language", "debate"):
+    if capability not in (
+        "companion",
+        "mathematician",
+        "language",
+        "debate",
+        "interactive",
+        "arranger",
+    ):
         return Response({"error": "unsupported vision capability"},
                         status=status.HTTP_400_BAD_REQUEST)
     if not isinstance(data.get("history") or [], list):

@@ -11,7 +11,14 @@ enum PenpalAPI {
     /// Stored in the keychain-backed defaults rather than compiled in, so it
     /// can be rotated without shipping a build.
     static var accessToken: String {
-        get { UserDefaults.standard.string(forKey: "penpal.accessToken") ?? "" }
+        get {
+            if let saved = UserDefaults.standard.string(forKey: "penpal.accessToken"),
+               !saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return saved
+            }
+            return (Bundle.main.object(forInfoDictionaryKey: "PENPAL_ACCESS_TOKEN") as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
         set { UserDefaults.standard.set(newValue, forKey: "penpal.accessToken") }
     }
 

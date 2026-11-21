@@ -1,11 +1,12 @@
 # Penpal
 
-One living handwriting workspace on iOS, plus a Django + Gemini brain for
-conversation, maths, sketches, languages, debate, and interactive page blocks.
-Penpal opens directly on the same persistent page; a resumable interactive tour
-lets people try the real controls, gestures, training, and settings. Skipping
-keeps a Resume tour action, completing removes it, and the workspace badge opens
-the legacy page library only when it is needed.
+One living handwriting workspace on iOS/iPadOS, backed by a **Cloudflare Python
+Worker + Gemini** brain (also runnable locally as a standalone zero-Django Python
+server or via Django) for conversation, maths, sketches, languages, debate, and
+interactive page blocks. Penpal opens directly on the same persistent page; a
+resumable interactive tour lets people try the real controls, gestures, training,
+and settings. Skipping keeps a Resume tour action, completing removes it, and the
+workspace badge opens the legacy page library only when it is needed.
 
 ## Capabilities
 
@@ -40,6 +41,14 @@ Pick who Penpal is from the on-page Penpal control bar:
   good-faith opposing case plus one question that tests your position. It is
   explicitly labelled as another perspective, never a verified verdict or a
   grade on the writer.
+- **Interactive** — ask for a live simulation, chart, or interactive widget
+  and Penpal generates a sandboxed HTML/CSS/JS block embedded directly under
+  your handwriting layer, with per-block domain/capability consent and
+  bounded self-healing repair.
+- **Arranger** — write a study topic and Penpal plans and executes multiple
+  specialist sections in parallel (handwritten explanations, verified math
+  examples, traced diagrams, tables, checklists, and interactive widgets),
+  then composes them into a multi-column ruled-line page on device.
 
 Always on, in any capability:
 
@@ -69,38 +78,43 @@ Always on, in any capability:
   through the image-aware solve-and-verify pipeline. This is intentionally
   separate from Import Page, which reconstructs rather than answers.
 
-## Quick start (brain)
+## Quick start (Cloudflare Python Worker & Local Brain)
+
+### 1. Deploy or run as a Cloudflare Python Worker (Recommended for Production)
+
+The backend is built natively as a **Cloudflare Python Worker** (`src/worker.py` + `wrangler.jsonc` + `pyproject.toml`), with zero Django or C++ OpenCV dependency required at runtime:
+
+```bash
+# Local Cloudflare Worker runtime (via uv + pywrangler)
+cp .env.example .dev.vars   # put GEMINI_API_KEY in .dev.vars
+uv run pywrangler dev
+
+# Production deploy to Cloudflare Workers
+npx wrangler secret put GEMINI_API_KEY
+npx wrangler secret put PENPAL_TOKENS
+uv run pywrangler deploy
+```
+
+### 2. Zero-Django standalone local server (or Django dev server)
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # add GEMINI_API_KEY from https://aistudio.google.com/apikey
-python manage.py migrate
+
+# Run the standalone zero-Django worker server directly on :8000
+python src/worker.py
+
+# Or run via Django (also used by the test runner)
 PENPAL_DEV=1 python manage.py runserver 0.0.0.0:8000
 ```
 
-`PENPAL_DEV=1` is required for local development. The brain is **secure by
-default**: without it, the server refuses to start unless `DJANGO_SECRET_KEY`
-and `PENPAL_TOKENS` are set. That's deliberate — this server spends a Gemini
-API key on request, so an unauthenticated deploy is a bill waiting to happen.
+The brain is **secure by default**: in production, requests must authenticate with `Authorization: Bearer <token>` or `X-Penpal-Token: <token>` matching `PENPAL_TOKENS`. Put the same token in the iOS app under **Settings → Behavior → Access token** (or bundle it for App Store release via `PENPAL_API_BASE_URL` and `PENPAL_ACCESS_TOKEN` in `penpal/Info.plist`). Rate limits default to 20 requests/minute and 500/day per token (`RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_PER_DAY`).
 
-Deploying:
+Tests: `PENPAL_DEV=1 python manage.py test chat` (302 tests, no network).
 
-```bash
-export DJANGO_SECRET_KEY="$(python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())')"
-export PENPAL_TOKENS="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export ALLOWED_HOSTS="your.host.name"
-python manage.py runserver   # or a real WSGI server
-```
-
-Put the same token in the app: Settings → Behavior → Access token. Rate limits
-default to 20 requests/minute and 500/day per token (`RATE_LIMIT_PER_MINUTE`,
-`RATE_LIMIT_PER_DAY`).
-
-Tests: `PENPAL_DEV=1 python manage.py test chat` (92 tests, no network).
-
-Then open the iOS app → type in the bottom bar → Penpal replies on the page (hand or font).
+Then open the iOS app → write or speak on the page → Penpal replies in your handwriting or clean font.
 
 Details: [backend/README.md](backend/README.md)
 # penpal

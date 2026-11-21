@@ -1938,8 +1938,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
     private func scheduleHoldSnapTimer() {
         holdTimer?.invalidate()
         holdTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.evaluateHoldSnap()
+                self.evaluateHoldSnap()
             }
         }
     }
@@ -2513,7 +2514,11 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         }
 
         guard settings.useBrain else {
-            // Offline canned path
+            // Offline: evaluate math expressions locally before falling back to canned companion lines.
+            if let instant = MathEvaluator.instantAnswer(for: Self.ensureTrailingEquals(trimmed)) {
+                writeReplyText(instant)
+                return
+            }
             if case .text(let reply) = provider.reply(toNewInk: []) {
                 writeReplyText(reply)
             }
@@ -3922,7 +3927,8 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         brainBusy = true
         let gen = loadGeneration
 
-        Task { @MainActor in
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             let store = ConversationStore.shared
             do {
                 let result = try await PenpalAPI.interactive(

@@ -580,6 +580,7 @@ struct ContentView: View {
                             settings: settings,
                             activityPhase: penpalActivityPhase,
                             statusText: penpalStatusText,
+                            isVoiceListening: voice.isListening,
                             rulerActive: rulerActive,
                             smartShapesActive: smartShapesOn,
                             onAsk: { proxy.view?.replyNow() },
@@ -594,6 +595,9 @@ struct ContentView: View {
                                 proxy.view?.setRulerActive(rulerActive)
                             },
                             onToggleSmartShapes: toggleSmartShapesMode,
+                            onStopVoice: {
+                                voice.stop()
+                            },
                             onVisionCamera: openVisionCamera,
                             onVisionPhoto: { showVisionPhotos = true },
                             onClose: {
@@ -1218,6 +1222,17 @@ struct ContentView: View {
     private var isLanguagePartner: Bool { settings.capability == "language" }
     private var isDebatePartner: Bool { settings.capability == "debate" }
 
+    private var voiceActionTitle: String {
+        if voice.isListening { return "Stop Listening" }
+        if isMathematician { return "Speak a Problem" }
+        if isLanguagePartner {
+            let langTitle = PenpalControlOptions.languages
+                .first { $0.tag == settings.targetLanguage }?.title ?? "Language"
+            return "Speak in \(langTitle)"
+        }
+        return "Speak to Penpal"
+    }
+
     private var boxHintSample: String {
         switch settings.capability {
         case "illustrator": "a red bicycle"
@@ -1829,12 +1844,16 @@ struct ContentView: View {
                 plotExpressionDraft = lastPlottableFunction ?? ""
                 showPlotSheet = true
             }
-            Button(voice.isListening ? "Stop Listening" : "Speak a Problem",
+            Button(voiceActionTitle,
                    systemImage: voice.isListening ? "stop.circle" : "mic") {
                 if voice.isListening {
                     voice.stop()
                 } else {
-                    voice.start(locale: isLanguagePartner ? settings.targetLanguage : nil) { spoken in
+                    withAnimation(reduceMotion ? nil : Pen.spring) { penpalOn = true }
+                    voice.start(
+                        locale: isLanguagePartner ? settings.targetLanguage : nil,
+                        convertMath: isMathematician
+                    ) { spoken in
                         proxy.view?.sendTextMessage(spoken)
                     }
                 }

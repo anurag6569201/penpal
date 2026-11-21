@@ -1,0 +1,21 @@
+[project]
+name = "penpal-brain"
+version = "1.0.0"
+description = "Penpal handwriting AI brain on Cloudflare Python Workers"
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai>=1.0",
+    "sympy>=1.13,<2.0",
+    "latex2sympy2-extended>=1.10,<2.0",
+    "numpy>=2.0",
+    "Pillow>=10.0",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+    "django>=5.1,<7.0",
+    "djangorestframework>=3.15,<4.0",
+    "python-dotenv>=1.0,<2.0",
+]

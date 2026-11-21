@@ -1,39 +1,20 @@
 """
 PEN-26 — access control and rate limiting.
 
-Threat model, stated plainly: this server holds a Gemini API key and will
-spend it on request. Every endpoint was `AllowAny` with no throttle, so
-anyone who could reach the host — anyone on the coffee-shop wifi, anyone
-who found the box on the open internet — could burn the owner's quota.
-That is the practical risk here; not data theft, but a bill.
-
-Design choices:
-
-* **Shared tokens, not user accounts.** Penpal has no notion of users and
-  doesn't want one. A per-device token in the app's settings is the smallest
-  thing that solves the actual problem. Adding accounts would be a bigger
-  product decision that this security fix should not smuggle in.
-* **In-process counters, not Redis.** One small server, one process. A
-  dependency-free limiter that is always on beats a better one that isn't
-  deployed. Documented as the upgrade point if this ever scales out.
-* **Constant-time comparison.** Token checks use `secrets.compare_digest` so
-  a timing side channel can't leak the token character by character.
-* **Dev mode stays frictionless.** With `PENPAL_DEV=1` and no tokens set,
-  everything is open, exactly as before. Settings refuses to boot in any
-  other configuration without tokens, so the insecure path cannot be reached
-  by accident.
+Works in both Cloudflare Python Workers (via `check_headers`) and Django
+(via `check(request)`).
 """
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
+from collections.abc import Mapping
 import secrets
 import threading
 import time
-from collections import defaultdict, deque
+from typing import Any
 
-from django.conf import settings
-from rest_framework import status
-from rest_framework.response import Response
+from .config import runtime_settings as settings
 
 _lock = threading.Lock()
 # token -> deque[timestamp]; bounded by pruning, never grows unbounded.
@@ -44,21 +25,38 @@ MINUTE = 60
 DAY = 86_400
 
 
+def _token_from_headers(headers: Mapping[str, Any]) -> str | None:
+    """
+    Extract token from `Authorization: Bearer <token>` or `X-Penpal-Token`.
+    Handles both standard HTTP header names and WSGI `HTTP_*` META keys.
+    """
+    lowered = {str(k).lower(): str(v) for k, v in headers.items() if v is not None}
+    auth = lowered.get("authorization") or lowered.get("http_authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    custom = (
+        lowered.get("x-penpal-token")
+        or lowered.get("http_x_penpal_token")
+        or ""
+    ).strip()
+    return custom or None
+
+
 def _client_token(request) -> str | None:
-    """
-    Token from `Authorization: Bearer <token>` or `X-Penpal-Token`.
-    Returns None when absent.
-    """
-    header = request.META.get("HTTP_AUTHORIZATION", "")
-    if header.lower().startswith("bearer "):
-        return header[7:].strip() or None
-    return request.META.get("HTTP_X_PENPAL_TOKEN", "").strip() or None
+    meta = getattr(request, "META", None)
+    if isinstance(meta, Mapping):
+        return _token_from_headers(meta)
+    headers = getattr(request, "headers", None)
+    if isinstance(headers, Mapping):
+        return _token_from_headers(headers)
+    return None
 
 
-def _token_is_valid(candidate: str) -> bool:
-    # Constant-time against every configured token.
-    return any(secrets.compare_digest(candidate, known)
-               for known in settings.PENPAL_TOKENS)
+def _token_is_valid(candidate: str, configured: set[str]) -> bool:
+    return any(
+        secrets.compare_digest(candidate, known)
+        for known in configured
+    )
 
 
 def _prune(hits: deque, window: int, now: float) -> None:
@@ -66,51 +64,65 @@ def _prune(hits: deque, window: int, now: float) -> None:
         hits.popleft()
 
 
-def check(request) -> Response | None:
+def check_headers(
+    headers: Mapping[str, Any],
+) -> tuple[int, dict[str, str], dict[str, Any]] | None:
     """
-    Returns an error Response when the request must be refused, else None.
-
-    Callers use it as a guard:
-        denied = access.check(request)
-        if denied is not None:
-            return denied
+    Framework-agnostic access & rate-limit guard for Cloudflare Workers and HTTP routers.
+    Returns `(status_code, extra_headers, json_body)` when denied, else `None`.
     """
-    configured = settings.PENPAL_TOKENS
-
-    # Dev mode with no tokens configured: wide open, as before.
+    configured = set(getattr(settings, "PENPAL_TOKENS", set()) or set())
     if not configured:
         return None
 
-    token = _client_token(request)
-    if not token or not _token_is_valid(token):
-        return Response(
-            {"error": "Invalid or missing access token."},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
+    token = _token_from_headers(headers)
+    if not token or not _token_is_valid(token, configured):
+        return (401, {}, {"error": "Invalid or missing access token."})
 
     now = time.time()
+    per_minute = int(getattr(settings, "RATE_LIMIT_PER_MINUTE", 20))
+    per_day = int(getattr(settings, "RATE_LIMIT_PER_DAY", 500))
     with _lock:
         minute, day = _minute_hits[token], _day_hits[token]
         _prune(minute, MINUTE, now)
         _prune(day, DAY, now)
 
-        if len(minute) >= settings.RATE_LIMIT_PER_MINUTE:
-            retry = int(MINUTE - (now - minute[0])) + 1
-            return _limited("Too many requests — give it a moment.", retry)
+        if len(minute) >= per_minute:
+            retry = max(1, int(MINUTE - (now - minute[0])) + 1)
+            return (
+                429,
+                {"Retry-After": str(retry)},
+                {"error": "Too many requests — give it a moment."},
+            )
 
-        if len(day) >= settings.RATE_LIMIT_PER_DAY:
-            retry = int(DAY - (now - day[0])) + 1
-            return _limited("Daily limit reached.", retry)
+        if len(day) >= per_day:
+            retry = max(1, int(DAY - (now - day[0])) + 1)
+            return (
+                429,
+                {"Retry-After": str(retry)},
+                {"error": "Daily limit reached."},
+            )
 
         minute.append(now)
         day.append(now)
     return None
 
 
-def _limited(message: str, retry_after: int) -> Response:
-    response = Response({"error": message},
-                        status=status.HTTP_429_TOO_MANY_REQUESTS)
-    response["Retry-After"] = str(max(1, retry_after))
+def check(request):
+    """
+    Django REST Framework wrapper around `check_headers`.
+    Returns an error `Response` when the request must be refused, else `None`.
+    """
+    from rest_framework.response import Response
+
+    meta = getattr(request, "META", None) or getattr(request, "headers", None) or {}
+    denied = check_headers(meta)
+    if denied is None:
+        return None
+    status_code, extra_headers, payload = denied
+    response = Response(payload, status=status_code)
+    for k, v in extra_headers.items():
+        response[k] = v
     return response
 
 

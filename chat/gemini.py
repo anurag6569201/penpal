@@ -12,7 +12,7 @@ import unicodedata
 from urllib.parse import urlparse
 from typing import Any
 
-from django.conf import settings
+from .config import runtime_settings as settings
 from google import genai
 from google.genai import types
 
@@ -1644,7 +1644,14 @@ def vision_turn(
     if not image_bytes:
         raise GeminiError("No image supplied.")
     capability = (capability or "companion").strip().lower()
-    if capability not in ("companion", "mathematician", "language", "debate"):
+    if capability not in (
+        "companion",
+        "mathematician",
+        "language",
+        "debate",
+        "interactive",
+        "arranger",
+    ):
         raise GeminiError("That capability cannot respond to a photo.")
 
     defaults = {
@@ -1652,6 +1659,8 @@ def vision_turn(
         "mathematician": "Solve the mathematical problem in this image.",
         "language": "Talk with me in the target language about what is shown here.",
         "debate": "Treat the visible text as the claim and give its strongest counterpoint.",
+        "interactive": "What is this? Explain the concept or system shown here clearly for a student.",
+        "arranger": "What is this? Summarize and explain the key ideas shown here clearly for a student's study page.",
     }
     prompt = (message or "").strip()[:4000] or defaults[capability]
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
@@ -1673,9 +1682,9 @@ def vision_turn(
         or settings.GEMINI_MODEL
     client = _client()
 
-    # Companion photos may still be maths. Classify first so a visible
-    # equation can never receive an unchecked conversational answer.
-    if capability == "companion":
+    # Companion / Interactive / Arranger photos may still be maths. Classify
+    # first so a visible equation can never receive an unchecked conversational answer.
+    if capability in ("companion", "interactive", "arranger"):
         if _classify_vision(client, model, image_part, prompt) == "math":
             return {
                 "kind": "math",

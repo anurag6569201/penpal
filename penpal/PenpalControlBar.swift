@@ -54,6 +54,7 @@ struct PenpalControlBar: View {
     @ObservedObject var settings: HandwritingSettings
     var activityPhase: InkThinkingIndicator.Phase?
     var statusText: String?
+    var isVoiceListening: Bool = false
     var rulerActive: Bool = false
     var smartShapesActive: Bool = false
     var onAsk: () -> Void
@@ -62,6 +63,7 @@ struct PenpalControlBar: View {
     var onPlotGraph: () -> Void = {}
     var onToggleRuler: () -> Void = {}
     var onToggleSmartShapes: () -> Void = {}
+    var onStopVoice: () -> Void = {}
     var onVisionCamera: () -> Void
     var onVisionPhoto: () -> Void
     var onClose: () -> Void
@@ -246,18 +248,34 @@ struct PenpalControlBar: View {
     @ViewBuilder
     private var statusSection: some View {
         HStack(spacing: 6) {
-            if let activityPhase {
+            if isVoiceListening {
+                Image(systemName: "waveform")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Pen.inkAccent)
+            } else if let activityPhase {
                 InkThinkingIndicator(phase: activityPhase)
             }
             if let statusText {
                 Text(statusText)
-                    .foregroundStyle(Pen.inkFaded)
+                    .foregroundStyle(isVoiceListening ? Pen.inkPrimary : Pen.inkFaded)
                     .lineLimit(1)
-                    .frame(maxWidth: 220, alignment: .leading)
+                    .frame(maxWidth: 200, alignment: .leading)
                     .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             }
+            if isVoiceListening {
+                Button(action: onStopVoice) {
+                    Label("Done", systemImage: "stop.fill")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .foregroundStyle(Pen.onAccent)
+                        .background(Pen.inkAccent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stop listening and send")
+            }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: isVoiceListening ? .contain : .combine)
         .accessibilityLabel("Penpal status")
         .accessibilityValue(statusText ?? "Working")
     }

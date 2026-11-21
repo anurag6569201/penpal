@@ -1,31 +1,25 @@
 """
-PEN-36 — image → ordered pen-stroke tracer.
+PEN-36 — image → ordered pen-stroke tracer (Cloudflare Worker / Pyodide ready).
 
-Turns a raster (a Gemini line-art render, or later any picked image) into the
-same ordered `outline`/`detail` path plan the Illustrator already draws. The
-output is deliberately in the *raw* 0..1000 shape that `gemini._clean_illustration`
-validates and bounds, so every cap, safety check and normalisation lives in one
-place and this module never needs to know the on-page geometry.
+Turns a raster (a Gemini line-art render, or any picked image) into the same
+ordered `outline`/`detail` path plan the Illustrator draws. Built exclusively on
+Pillow + NumPy (no OpenCV or scikit-image C++ dependencies) so it runs within
+Cloudflare Python Workers' memory and bundle limits while preserving 1px medial
+axis skeletonization.
 
-Why centre-lines, not `potrace`: potrace traces the *outline* of a filled black
-region, so a single drawn line comes back as two parallel strokes wrapping it.
-A pen draws one line once. Skeletonising to a 1px medial axis and walking that
-into polylines makes one drawn line == one pen stroke — the whole point of a
-"traced, not pasted" sketch.
-
-Pipeline: line extraction (threshold for clean line art, XDoG for photos) →
-skeletonize → skeleton graph walk → Ramer-Douglas-Peucker → order biggest
-silhouettes first.
+Pipeline: line extraction (Otsu threshold for clean line art, XDoG for photos) →
+Zhang–Suen skeletonize → skeleton graph walk → Ramer-Douglas-Peucker → order
+biggest silhouettes first.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import io
 import math
 from typing import Any
 
-import cv2
 import numpy as np
-from skimage.morphology import skeletonize
+from PIL import Image, ImageFilter
 
 _OUTLINE_FRACTION = 0.45         # a stroke is "outline" if its bbox diagonal is
                                  # >= this fraction of the biggest one
@@ -82,38 +76,182 @@ def normalize_quality(value: Any, default: str = "detailed") -> str:
 def profile_for(quality: Any) -> TraceProfile:
     return QUALITY_PROFILES[normalize_quality(quality)]
 
+
 _NB = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
 _DEFAULT_REFUSAL = "I couldn't find clean lines to trace in that image."
 
 
 # --------------------------------------------------------------------------
-# 1. line extraction
+# 1. Pure Pillow + NumPy image primitives (replaces OpenCV + scikit-image)
 # --------------------------------------------------------------------------
+def _gaussian_blur(gray_float: np.ndarray, sigma: float) -> np.ndarray:
+    """Separable 1D Gaussian blur in NumPy matching cv2.GaussianBlur(g, (0, 0), sigma)."""
+    if sigma <= 0:
+        return gray_float
+    radius = max(1, int(round(sigma * 3.0)))
+    x = np.arange(-radius, radius + 1, dtype=np.float32)
+    kernel = np.exp(-(x * x) / (2.0 * sigma * sigma))
+    kernel /= kernel.sum()
+    padded_h = np.pad(gray_float, ((0, 0), (radius, radius)), mode="reflect")
+    horiz = np.apply_along_axis(
+        lambda row: np.convolve(row, kernel, mode="valid"), 1, padded_h
+    )
+    padded_v = np.pad(horiz, ((radius, radius), (0, 0)), mode="reflect")
+    vert = np.apply_along_axis(
+        lambda col: np.convolve(col, kernel, mode="valid"), 0, padded_v
+    )
+    return vert.astype(np.float32)
+
+
 def _xdog(gray: np.ndarray, sigma=0.8, k=4.5, tau=0.98, phi=10.0) -> np.ndarray:
     """eXtended Difference-of-Gaussians — an inked-looking line map for photos."""
     g = gray.astype(np.float32) / 255.0
-    g1 = cv2.GaussianBlur(g, (0, 0), sigma)
-    g2 = cv2.GaussianBlur(g, (0, 0), sigma * k)
+    g1 = _gaussian_blur(g, sigma)
+    g2 = _gaussian_blur(g, sigma * k)
     d = g1 - tau * g2
     e = np.where(d >= 0, 1.0, 1.0 + np.tanh(phi * d))
     return (e * 255).astype(np.uint8)
 
 
-def _line_mask(img_bgr: np.ndarray, mode: str = "auto") -> np.ndarray:
+def _otsu_binary_inv(gray: np.ndarray) -> np.ndarray:
+    """
+    Matches `cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)`.
+    Returns boolean mask where dark ink pixels are True.
+    """
+    if gray.size == 0:
+        return np.zeros_like(gray, dtype=bool)
+    min_val = int(gray.min())
+    max_val = int(gray.max())
+    if min_val == max_val:
+        # Uniform image (e.g. blank white canvas -> 255 > 0 -> all False).
+        return gray <= 0
+
+    hist = np.bincount(gray.ravel(), minlength=256).astype(np.float64)
+    total = float(gray.size)
+    sum_all = float(np.dot(np.arange(256, dtype=np.float64), hist))
+
+    weight_bg = 0.0
+    sum_bg = 0.0
+    best_var = -1.0
+    best_thresh = 0
+
+    for t in range(256):
+        weight_bg += hist[t]
+        if weight_bg == 0.0:
+            continue
+        weight_fg = total - weight_bg
+        if weight_fg == 0.0:
+            break
+        sum_bg += t * hist[t]
+        mean_bg = sum_bg / weight_bg
+        mean_fg = (sum_all - sum_bg) / weight_fg
+        var_between = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
+        if var_between > best_var:
+            best_var = var_between
+            best_thresh = t
+
+    return gray <= best_thresh
+
+
+def _morph_close_ellipse_3x3(mask: np.ndarray) -> np.ndarray:
+    """
+    Matches `cv2.morphologyEx(bw, cv2.MORPH_CLOSE, getStructuringElement(MORPH_ELLIPSE, (3, 3)))`.
+    Note that OpenCV's 3x3 MORPH_ELLIPSE structuring element is a 3x3 cross
+    (center + 4 cardinal neighbors), or 3x3 box for diagonal gap bridging.
+    """
+    if mask.size == 0 or not mask.any():
+        return mask.astype(bool)
+    # 3x3 cross structuring element (matches cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    p = np.pad(mask.astype(bool), 1, mode="constant", constant_values=False)
+    dilated = (
+        p[1:-1, 1:-1]
+        | p[:-2, 1:-1]
+        | p[2:, 1:-1]
+        | p[1:-1, :-2]
+        | p[1:-1, 2:]
+    )
+    # Replicate border on erosion so edge strokes aren't chewed away
+    pe = np.pad(dilated, 1, mode="edge")
+    eroded = (
+        pe[1:-1, 1:-1]
+        & pe[:-2, 1:-1]
+        & pe[2:, 1:-1]
+        & pe[1:-1, :-2]
+        & pe[1:-1, 2:]
+    )
+    return eroded
+
+
+def _skeletonize(mask: np.ndarray) -> np.ndarray:
+    """
+    Vectorized Zhang–Suen 1-pixel medial-axis thinning in pure NumPy.
+    Replaces `skimage.morphology.skeletonize` with zero C++/SciPy dependencies.
+    """
+    skel = np.pad(mask.astype(bool), 1, mode="constant", constant_values=False)
+    if not skel.any():
+        return mask.astype(bool)
+
+    while True:
+        changed = False
+        for step in (0, 1):
+            p2 = skel[:-2, 1:-1]
+            p3 = skel[:-2, 2:]
+            p4 = skel[1:-1, 2:]
+            p5 = skel[2:, 2:]
+            p6 = skel[2:, 1:-1]
+            p7 = skel[2:, :-2]
+            p8 = skel[1:-1, :-2]
+            p9 = skel[:-2, :-2]
+
+            b = (
+                p2.astype(np.uint8)
+                + p3.astype(np.uint8)
+                + p4.astype(np.uint8)
+                + p5.astype(np.uint8)
+                + p6.astype(np.uint8)
+                + p7.astype(np.uint8)
+                + p8.astype(np.uint8)
+                + p9.astype(np.uint8)
+            )
+            a = (
+                ((~p2) & p3).astype(np.uint8)
+                + ((~p3) & p4).astype(np.uint8)
+                + ((~p4) & p5).astype(np.uint8)
+                + ((~p5) & p6).astype(np.uint8)
+                + ((~p6) & p7).astype(np.uint8)
+                + ((~p7) & p8).astype(np.uint8)
+                + ((~p8) & p9).astype(np.uint8)
+                + ((~p9) & p2).astype(np.uint8)
+            )
+
+            if step == 0:
+                cond = (~(p2 & p4 & p6)) & (~(p4 & p6 & p8))
+            else:
+                cond = (~(p2 & p4 & p8)) & (~(p2 & p6 & p8))
+
+            drop = skel[1:-1, 1:-1] & (b >= 2) & (b <= 6) & (a == 1) & cond
+            if drop.any():
+                skel[1:-1, 1:-1] &= ~drop
+                changed = True
+
+        if not changed:
+            break
+
+    return skel[1:-1, 1:-1]
+
+
+def _line_mask(img_gray: np.ndarray, mode: str = "auto") -> np.ndarray:
     """Return a boolean mask: True where ink lines are."""
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray = img_gray if img_gray.ndim == 2 else img_gray.mean(axis=2).astype(np.uint8)
     if mode == "auto":
         # Line art is mostly white with thin dark strokes -> few dark pixels.
         dark_frac = float((gray < 128).mean())
         mode = "lineart" if dark_frac < 0.25 else "photo"
     if mode == "photo":
         gray = _xdog(gray)
-    # Otsu threshold -> ink is dark.
-    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE,
-                          cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-    return bw > 0
+    bw = _otsu_binary_inv(gray)
+    return _morph_close_ellipse_3x3(bw)
 
 
 # --------------------------------------------------------------------------
@@ -233,20 +371,27 @@ def trace(image_bytes: bytes, label: str = "illustration",
     """
     quality = normalize_quality(quality)
     profile = profile_for(quality)
-    arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
+    if not image_bytes:
         return {"kind": "refusal", "message": "That image could not be read."}
 
-    h, w = img.shape[:2]
-    source_aspect_ratio = w / max(1, h)
-    scale = min(1.0, profile.work_max_side / max(h, w))
-    if scale < 1.0:
-        img = cv2.resize(img, (int(w * scale), int(h * scale)),
-                         interpolation=cv2.INTER_AREA)
-        h, w = img.shape[:2]
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as pil_img:
+            gray_pil = pil_img.convert("L")
+            w, h = gray_pil.size
+            if w <= 0 or h <= 0:
+                return {"kind": "refusal", "message": "That image could not be read."}
+            source_aspect_ratio = w / max(1, h)
+            scale = min(1.0, profile.work_max_side / max(h, w))
+            if scale < 1.0:
+                new_w = max(1, int(w * scale))
+                new_h = max(1, int(h * scale))
+                gray_pil = gray_pil.resize((new_w, new_h), Image.Resampling.BOX)
+                w, h = gray_pil.size
+            gray = np.asarray(gray_pil, dtype=np.uint8)
+    except Exception:  # noqa: BLE001
+        return {"kind": "refusal", "message": "That image could not be read."}
 
-    skel = skeletonize(_line_mask(img, mode))
+    skel = _skeletonize(_line_mask(gray, mode))
     polys = _skeleton_to_paths(skel)
 
     strokes: list[dict[str, Any]] = []
