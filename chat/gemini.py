@@ -50,6 +50,8 @@ class GeminiError(Exception):
 
 
 def _client() -> genai.Client:
+    import sys
+
     key = (settings.GEMINI_API_KEY or "").strip()
     if not key or key.startswith("your_"):
         raise GeminiError(
@@ -59,10 +61,22 @@ def _client() -> genai.Client:
     # restarted. Large interactive builds legitimately run for minutes, so the
     # ceiling is generous — it exists to end hangs, not to cut work short.
     timeout_seconds = getattr(settings, "GEMINI_TIMEOUT_SECONDS", 240)
+    emscripten_args: dict[str, Any] = {}
+    if sys.platform == "emscripten":
+        # On Cloudflare Python Workers (Pyodide), httpx2 uses httpx2_jsfetch
+        # rather than httpcore2. Setting verify/ssl=True prevents google-genai
+        # from calling httpx2.create_ssl_context() -> `import httpcore2`.
+        emscripten_args = {
+            "client_args": {"verify": True},
+            "async_client_args": {"verify": True, "ssl": True},
+        }
     try:
         return genai.Client(
             api_key=key,
-            http_options=types.HttpOptions(timeout=int(timeout_seconds) * 1000),
+            http_options=types.HttpOptions(
+                timeout=int(timeout_seconds) * 1000,
+                **emscripten_args,
+            ),
         )
     except Exception:  # noqa: BLE001 — older SDKs lack the option
         return genai.Client(api_key=key)

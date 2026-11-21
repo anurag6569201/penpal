@@ -611,14 +611,23 @@ def dispatch(
             except json.JSONDecodeError:
                 return _json({"error": "Invalid JSON body"}, status=400)
 
-        response = handler(data)
-        if response.is_stream and response.stream is not None:
-            # Materialize inside the bound env context so streaming yields see
-            # the Worker's secrets and model settings.
-            chunks = list(response.stream)
-            return RouteResponse(
-                status=response.status,
-                headers=response.headers,
-                stream=iter(chunks),
+        try:
+            response = handler(data)
+            if response.is_stream and response.stream is not None:
+                # Materialize inside the bound env context so streaming yields see
+                # the Worker's secrets and model settings.
+                chunks = list(response.stream)
+                return RouteResponse(
+                    status=response.status,
+                    headers=response.headers,
+                    stream=iter(chunks),
+                )
+            return response
+        except GeminiError as exc:
+            return _json({"error": str(exc)}, status=503)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unhandled error in Worker router")
+            return _json(
+                {"error": f"{type(exc).__name__}: {exc}"},
+                status=503,
             )
-        return response
