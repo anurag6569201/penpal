@@ -16,5 +16,6 @@ dev = [
     "workers-runtime-sdk",
     "django>=5.1,<7.0",
     "djangorestframework>=3.15,<4.0",
+    "django-cors-headers>=4.4,<5.0",
     "python-dotenv>=1.0,<2.0",
 ]
