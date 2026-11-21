@@ -179,6 +179,7 @@ def transcribe_math(image_bytes: bytes, mime_type: str = "image/png") -> str:
         logger.exception("Gemini math transcription failed")
         raise GeminiError(str(exc)) from exc
 
+    _account(settings.GEMINI_MODEL, response)
     text = (getattr(response, "text", None) or "").strip()
     # Strip any stray fences/labels; keep the expression on one line.
     if text.startswith("```"):
@@ -194,14 +195,16 @@ def _agrees_with_cas(draft: str, cas_value: str) -> bool:
     """
     Does the written answer actually contain the value SymPy proved?
 
-    Compared as whole tokens, so "42" does not count as containing "4".
+    Compared as an ordered token sequence on the final answer expression,
+    so "42" does not count as containing "4", "6/5" does not satisfy "5/6",
+    and "- 4" or "4/5" does not satisfy "4".
     Conservative by design: anything unclear returns False and the LLM
     referee runs, because a false "they agree" would ship an unverified
     answer while reporting it as verified — the BB-03 failure mode.
     """
     import re
 
-    if not cas_value:
+    if not cas_value or not cas_value.strip():
         return False
     # Prefer the final answer line when there is one.
     lines = [ln for ln in draft.splitlines() if ln.strip()]
@@ -210,13 +213,21 @@ def _agrees_with_cas(draft: str, cas_value: str) -> bool:
     if not tail:
         return False
 
-    def tokens(text: str) -> set[str]:
-        return set(re.findall(r"-?\d+(?:\.\d+)?|[A-Za-z]+|[^\s\w]", text))
+    def tokenize(text: str) -> list[str]:
+        return re.findall(r"\d+(?:\.\d+)?|[A-Za-z]+|[^\s\w]", text)
 
-    wanted = tokens(cas_value)
+    wanted = tokenize(cas_value)
     if not wanted:
         return False
-    return wanted.issubset(tokens(tail))
+
+    # Strip leading "Ans:" / "Answer:" and optional variable prefix ("x =").
+    rhs = re.sub(r"^\s*ans(?:wer)?\s*:?\s*", "", tail, flags=re.IGNORECASE).strip()
+    rhs = rhs.rstrip(".")
+    if "=" in rhs:
+        rhs = rhs.split("=")[-1].strip()
+
+    got = tokenize(rhs)
+    return got == wanted
 
 
 def _account(model: str, response: Any) -> None:
@@ -455,6 +466,7 @@ def _verify_math(
             ),
         )
 
+    _account(settings.GEMINI_MODEL, response)
     text = _extract_text(response).strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -496,6 +508,7 @@ def _run_math_pipeline(
     Verification fails open: the draft is returned if checking breaks.
     """
     route = route or routing.Route(settings.GEMINI_MODEL, "default")
+    telemetry.record(telemetry.SOLVE_STARTED)
     try:
         response = client.models.generate_content(
             model=route.model,
@@ -566,6 +579,7 @@ def _run_math_pipeline(
                 max_output_tokens=2000,
             ),
         )
+        _account(settings.GEMINI_MODEL, response)
         corrected = _clean_reply(_extract_text(response), keep_newlines=True)
         if corrected:
             telemetry.record(telemetry.VERIFY_CORRECTED)
@@ -920,6 +934,7 @@ def solve_worksheet(
         logger.exception("Worksheet solve failed")
         raise GeminiError(str(exc)) from exc
 
+    _account(settings.GEMINI_MODEL, response)
     try:
         problems = _clean_problems(_parse_json_block(_extract_text(response)))
     except ValueError as exc:
@@ -1619,6 +1634,8 @@ def vision_turn(
     mime_type: str = "image/jpeg",
     math_detail: str = "compact",
     language_code: str = "es-ES",
+    mood: str | None = None,
+    custom_mood: str | None = None,
 ) -> dict[str, Any]:
     """
     PEN-39 — respond to external visual content through the selected
@@ -1671,7 +1688,11 @@ def vision_turn(
                 ),
             }
         system_prompt = (
-            build_system_prompt(capability="companion")
+            build_system_prompt(
+                capability="companion",
+                mood=mood,
+                custom_mood=custom_mood,
+            )
             + "\n\n" + VISION_COMPANION_NOTE
         )
         try:
@@ -1718,6 +1739,7 @@ def vision_turn(
                 top_p=0.9,
                 max_output_tokens=3000,
                 response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -1763,6 +1785,7 @@ def _verify_worksheet(client, image_part, prompt_part, system_prompt,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
+        _account(settings.GEMINI_MODEL, response)
         verdict = _parse_json_block(_extract_text(response))
         wrong = verdict.get("wrong", []) if isinstance(verdict, dict) else []
         wrong = [w for w in wrong if isinstance(w, dict) and w.get("label")]
@@ -1794,6 +1817,7 @@ def _verify_worksheet(client, image_part, prompt_part, system_prompt,
                 response_mime_type="application/json",
             ),
         )
+        _account(settings.GEMINI_MODEL, response)
         corrected = _clean_problems(_parse_json_block(_extract_text(response)))
         if corrected:
             telemetry.record(telemetry.VERIFY_CORRECTED)
@@ -1852,6 +1876,7 @@ def grade_working(
         logger.exception("Grading failed")
         raise GeminiError(str(exc)) from exc
 
+    _account(settings.GEMINI_MODEL, response)
     try:
         raw = _parse_json_block(_extract_text(response))
     except ValueError as exc:
@@ -1931,6 +1956,7 @@ def _confirm_error(client, image_part, result: dict[str, Any]) -> dict[str, Any]
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
+        _account(settings.GEMINI_MODEL, response)
         verdict = _parse_json_block(_extract_text(response))
         if isinstance(verdict, dict) and verdict.get("real") is False:
             telemetry.record(telemetry.VERIFY_WRONG)
@@ -1997,13 +2023,17 @@ def stream_math_reply(
                 max_output_tokens=route.max_output_tokens,
             ),
         )
+        last_chunk = None
         for chunk in stream:
+            last_chunk = chunk
             piece = getattr(chunk, "text", None) or ""
             if not piece:
                 continue
             draft += piece
             yield {"type": "draft",
                    "text": _clean_reply(draft, keep_newlines=True)}
+        if last_chunk is not None:
+            _account(route.model, last_chunk)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Streaming solve failed")
         yield {"type": "error", "message": str(exc)}
@@ -2049,7 +2079,8 @@ def stream_math_reply(
         )
         _account(settings.GEMINI_MODEL, response)
         corrected = _clean_reply(_extract_text(response), keep_newlines=True)
-        telemetry.record(telemetry.VERIFY_CORRECTED)
+        if corrected:
+            telemetry.record(telemetry.VERIFY_CORRECTED)
         telemetry.record(telemetry.SOLVE_COMPLETED)
         # The client replaces the ghost entirely — the rejected draft is never
         # committed to the page.
@@ -2749,6 +2780,7 @@ def generate_reply(
         logger.exception("Gemini generate_content failed")
         raise GeminiError(str(exc)) from exc
 
+    _account(settings.GEMINI_MODEL, response)
     cleaned = _clean_reply(_extract_text(response), keep_newlines=False)
     if not cleaned:
         raise GeminiError("Gemini returned an empty reply.")

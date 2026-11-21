@@ -660,4 +660,23 @@ extension HandwritingCoreTests {
         XCTAssertTrue(renderer.penDot.isHidden)
         renderer.cancelWriting()
     }
+
+    func testClearInkAndLoadDrawingRemoveMarksGhostsAndGuides() throws {
+        let view = MagicPaperView(frame: CGRect(x: 0, y: 0, width: 768, height: 1024))
+        let canvas = try XCTUnwrap(view.subviews.compactMap { $0 as? PKCanvasView }.first)
+        let renderer = try XCTUnwrap(canvas.subviews.compactMap { $0 as? HandwritingRenderer }.first)
+        renderer.markLine(CGRect(x: 40, y: 120, width: 180, height: 28))
+        renderer.showAnswerGhost([indicatorStroke()], baseWidth: 2)
+        renderer.showReplyGuide(at: 200, from: 40, to: 300)
+
+        XCTAssertFalse(renderer.markLayers.isEmpty)
+        XCTAssertTrue(renderer.isShowingAnswerGhost)
+        XCTAssertTrue(renderer.layer.sublayers?.contains(where: { $0.name == "replyGuide" }) == true)
+
+        // Switching notes via loadDrawing must wipe all transient overlays.
+        view.loadDrawing(PKDrawing())
+        XCTAssertTrue(renderer.markLayers.isEmpty)
+        XCTAssertFalse(renderer.isShowingAnswerGhost)
+        XCTAssertFalse(renderer.layer.sublayers?.contains(where: { $0.name == "replyGuide" }) == true)
+    }
 }

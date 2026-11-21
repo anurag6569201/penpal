@@ -680,6 +680,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         actionName = nil
         renderer.cancelWriting()
         renderer.endAnalyzing()
+        renderer.cancelMarking()
+        renderer.clearAnswerGhost()
+        renderer.clearReplyGuide()
         setReadingBanner(false)
         renderer.clearInk()
         dismissIntentChip()
@@ -914,6 +917,9 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         actionName = nil
         renderer.cancelWriting()
         renderer.endAnalyzing()
+        renderer.cancelMarking()
+        renderer.clearAnswerGhost()
+        renderer.clearReplyGuide()
         setReadingBanner(false)
         renderer.clearInk()
         dismissIntentChip()
@@ -2588,7 +2594,13 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
             return
         }
 
-        let handwritingSize = settings.resolvedSize(detected: placement.xHeight)
+        let adaptive = settings.sizeMode == .adaptive
+            ? AdaptiveWritingStyle.measure(canvas.drawing.strokes,
+                                           fallbackXHeight: placement.xHeight)
+            : nil
+        let handwritingSize = settings.resolvedSize(
+            detected: adaptive?.xHeight ?? placement.xHeight
+        )
         PersonalFontStore.shared.clearVAECache()
         InkUnity.shared.beginSentence()
         StyleRL.shared.beginEpisode(explore: false)
@@ -2613,13 +2625,23 @@ final class MagicPaperView: UIView, PKCanvasViewDelegate, UIEditMenuInteractionD
         if settings.diagnostics, sequence.confidence < 0.55 {
             onStatus?("This reply uses low-confidence fallback glyphs. Train its missing letters for a closer match.")
         }
-        let baseWidth = ReplyInkStyle.baseWidth(xHeight: placement.xHeight, weight: settings.penWidthScale)
-        let strokes = ReplyInkStyle.prepare(sequence.strokes, baseWidth: baseWidth)
+        let baseWidth = ReplyInkStyle.baseWidth(
+            xHeight: handwritingSize,
+            weight: settings.penWidthScale,
+            matching: adaptive?.tipWidth
+        )
+        let styledStrokes = adaptive?.apply(
+            to: sequence.strokes,
+            baseline: placement.origin.y
+        ) ?? sequence.strokes
+        let strokes = ReplyInkStyle.prepare(styledStrokes, baseWidth: baseWidth)
         let bottomY = sequence.bottomY
 
         let letters = text.filter { $0.isLetter || $0.isNumber }.count
-        StyleRL.shared.endEpisode(strokes: strokes,
-                                  xHeight: placement.xHeight,
+        // Learn from the original capture dynamics rather than the bounded
+        // visible widths prepared for PencilKit.
+        StyleRL.shared.endEpisode(strokes: sequence.strokes,
+                                  xHeight: handwritingSize,
                                   letterCount: max(1, letters))
         InkUnity.shared.endSentence()
 

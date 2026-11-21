@@ -1690,6 +1690,8 @@ struct ContentView: View {
                 .joined(separator: "\n\n")
             let html = note.isCoded ? note.htmlContent : nil
             let drawingData = note.drawingData
+            let typedTexts = note.typedTexts ?? []
+            let replyInks = note.replyInks ?? []
             let title = note.displayTitle
             let paperStyle = settings.paperStyle
             let attachmentURLs = note.attachments.map { store.attachmentURL($0) }
@@ -1697,6 +1699,8 @@ struct ContentView: View {
             let drawingFiles = await Task.detached(priority: .userInitiated) {
                 NoteExporter.shareFiles(
                     drawingData: drawingData,
+                    typedTexts: typedTexts,
+                    replyInks: replyInks,
                     title: title,
                     paperStyle: paperStyle
                 )
@@ -1713,7 +1717,7 @@ struct ContentView: View {
 
             isPreparingShare = false
             guard !items.isEmpty else {
-                statusMessage = drawingData.isEmpty
+                statusMessage = (drawingData.isEmpty && typedTexts.isEmpty && replyInks.isEmpty)
                     ? "Nothing to share yet."
                     : "Couldn't prepare this note to share."
                 showStatus = true

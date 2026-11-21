@@ -509,6 +509,8 @@ def vision_turn(request):
             history=_clean_history(data.get("history")),
             math_detail=str(data.get("math_detail") or "compact"),
             language_code=str(data.get("language") or "es-ES"),
+            mood=str(data.get("mood") or "warm").strip().lower(),
+            custom_mood=str(data.get("custom_mood") or "").strip()[:500],
         )
     except GeminiError as exc:
         return Response({"error": str(exc)},

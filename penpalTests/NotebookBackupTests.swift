@@ -1,4 +1,6 @@
 import XCTest
+import PencilKit
+import UIKit
 @testable import penpal
 
 final class NotebookBackupTests: XCTestCase {
@@ -139,5 +141,92 @@ final class NotebookBackupTests: XCTestCase {
         store.deleteNote(n2.id, permanently: true)
         store.deleteFolder(child.id)
         store.deleteFolder(parent.id)
+    }
+
+    @MainActor
+    func testDuplicateFolderClonesAttachmentsAndResetsInteractiveBlockIdentity() async throws {
+        let store = NotesStore.shared
+        await store.waitUntilLoaded()
+
+        let folder = store.createFolder(named: "Folder Dup Source", iconName: "atom", colorName: "amber")
+        let note = store.createNote(in: folder.id)
+        store.renameNote(note.id, to: "Lab Note")
+
+        // Attach real image data and an interactive block with granted permissions.
+        let att = try XCTUnwrap(store.addAttachment(imageData: Data([0x89, 0x50, 0x4E, 0x47]), to: note.id))
+        let origBlockID = UUID()
+        let block = CodeBlock(
+            id: origBlockID,
+            html: "<div data-penpal-kind=\"interactive\">Widget</div>",
+            kind: .interactive,
+            x: 20, y: 40, width: 320, height: 240,
+            runtime: InteractiveRuntimeMetadata(
+                title: "Widget",
+                manifest: .empty,
+                allowedDomains: ["cdn.jsdelivr.net"],
+                allowedCapabilities: ["clipboard.write"],
+                repairAttempts: 2,
+                lastRepairSummary: "Fixed"
+            )
+        )
+        store.updateSelectedCodeBlocks([block])
+
+        let dupFolder = try XCTUnwrap(store.duplicateFolder(folder.id))
+        XCTAssertEqual(dupFolder.iconName, "atom")
+        XCTAssertEqual(dupFolder.colorName, "amber")
+
+        let dupNote = try XCTUnwrap(store.notes.first(where: { $0.folderID == dupFolder.id }))
+        let dupAtt = try XCTUnwrap(dupNote.attachments.first)
+        XCTAssertNotEqual(dupAtt.filename, att.filename, "Duplicated folder note must copy attachment to a distinct file")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.attachmentURL(dupAtt).path))
+
+        let dupBlock = try XCTUnwrap(dupNote.codeBlocks?.first)
+        XCTAssertNotEqual(dupBlock.id, origBlockID, "Duplicated folder note must assign a fresh CodeBlock ID")
+        XCTAssertEqual(dupBlock.runtime?.allowedDomains, [])
+        XCTAssertEqual(dupBlock.runtime?.allowedCapabilities, [])
+        XCTAssertEqual(dupBlock.runtime?.repairAttempts, 0)
+        XCTAssertNil(dupBlock.runtime?.lastRepairSummary)
+
+        // Deleting the duplicated note permanently must NOT delete the original note's attachment file.
+        store.deleteNote(dupNote.id, permanently: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.attachmentURL(att).path))
+
+        // Cleanup
+        store.deleteNote(note.id, permanently: true)
+        store.deleteFolder(dupFolder.id)
+        store.deleteFolder(folder.id)
+    }
+
+    func testNoteExporterExportsTypedTextOnlyAndCombinedNotes() throws {
+        let typed = TypedNoteText(
+            text: "¡Hola! Por la mañana.",
+            x: 34, y: 120, xHeight: 18, maxX: 640,
+            isUserMessage: false,
+            fontName: "Georgia-Italic",
+            colorHex: "#1A2B2A"
+        )
+        let files = NoteExporter.shareFiles(
+            drawingData: Data(),
+            typedTexts: [typed],
+            replyInks: [],
+            title: "Spanish Practice",
+            paperStyle: "ruled"
+        )
+        let pdfURL = try XCTUnwrap(files.pdf)
+        let imgURL = try XCTUnwrap(files.image)
+        defer {
+            try? FileManager.default.removeItem(at: pdfURL)
+            try? FileManager.default.removeItem(at: imgURL)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pdfURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: imgURL.path))
+        let rendered = try XCTUnwrap(NoteExporter.image(
+            for: PKDrawing(),
+            typedTexts: [typed],
+            replyInks: [],
+            paperStyle: "ruled"
+        ))
+        XCTAssertGreaterThan(rendered.size.width, 100)
+        XCTAssertGreaterThan(rendered.size.height, 40)
     }
 }

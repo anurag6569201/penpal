@@ -1,7 +1,7 @@
 import PencilKit
 
 /// Shared appearance for the preview, animated reply and saved PencilKit ink.
-enum ReplyInkStyle {
+nonisolated enum ReplyInkStyle {
     /// Map the weight control into PencilKit's visible range. Multiplying a
     /// 1–2 pt tip and then clamping it to 3 made most of the slider do nothing.
     static func baseWidth(xHeight: CGFloat, weight: Double, matching: CGFloat? = nil) -> CGFloat {

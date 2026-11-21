@@ -244,7 +244,7 @@ final class HandwritingSettings: ObservableObject {
 
 // MARK: - Hex color bridging (for the custom ink color picker)
 
-extension UIColor {
+nonisolated extension UIColor {
     convenience init?(hex: String) {
         var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         s = s.hasPrefix("#") ? String(s.dropFirst()) : s

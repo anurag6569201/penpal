@@ -192,11 +192,14 @@ final class Outbox: ObservableObject {
             guard let data = Data(base64Encoded: item.payload) else {
                 throw PenpalAPI.APIError.emptyReply
             }
-            return try await PenpalAPI.solveMathImage(
+            let reply = try await PenpalAPI.solveMathImage(
                 pngData: data,
                 history: store.historyForAPI(),
                 baseURL: settings.apiBaseURL,
                 mathDetail: item.mathDetail)
+            store.append(role: "user", content: "[handwritten problem]")
+            store.append(role: "assistant", content: reply)
+            return reply
         }
     }
 

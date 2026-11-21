@@ -965,8 +965,11 @@ enum PenpalAPI {
             let capability: String
             let language: String
             let math_detail: String
+            let mood: String
+            let custom_mood: String
             let history: [ChatRequest.Turn]
         }
+        let settings = HandwritingSettings.shared
         request.httpBody = try JSONEncoder().encode(Body(
             image: jpegData.base64EncodedString(),
             mime_type: "image/jpeg",
@@ -974,6 +977,8 @@ enum PenpalAPI {
             capability: capability,
             language: language,
             math_detail: mathDetail,
+            mood: settings.companionMood,
+            custom_mood: settings.customMoodText,
             history: history
         ))
 

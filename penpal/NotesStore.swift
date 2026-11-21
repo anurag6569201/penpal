@@ -1248,17 +1248,18 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
-    /// Creates an independent copy of a note (including drawings, blocks, tags,
-    /// and copied attachment files so deleting one never affects the other).
-    @discardableResult
-    func duplicateNote(_ id: UUID) -> Note? {
-        guard let original = notes.first(where: { $0.id == id }) else { return nil }
+    /// Creates an independent deep copy of a note's attachments and page blocks
+    /// so deleting or editing the copy never affects the original note's files
+    /// or isolated interactive block storage.
+    private func cloneNoteContent(_ original: Note,
+                                  intoFolder folderID: UUID,
+                                  title: String) -> Note {
         var copy = original
         copy.id = UUID()
+        copy.folderID = folderID
         copy.deletedAt = nil
         copy.isPinned = nil
-        let baseTitle = original.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        copy.title = baseTitle.isEmpty ? "\(original.displayTitle) Copy" : "\(baseTitle) Copy"
+        copy.title = title
         copy.createdAt = .now
         copy.modifiedAt = .now
 
@@ -1277,9 +1278,24 @@ final class NotesStore: ObservableObject {
             copy.codeBlocks = blocks.map { block in
                 var b = block
                 b.id = UUID()
+                b.runtime?.allowedDomains = []
+                b.runtime?.allowedCapabilities = []
+                b.runtime?.repairAttempts = 0
+                b.runtime?.lastRepairSummary = nil
                 return b
             }
         }
+        return copy
+    }
+
+    /// Creates an independent copy of a note (including drawings, blocks, tags,
+    /// and copied attachment files so deleting one never affects the other).
+    @discardableResult
+    func duplicateNote(_ id: UUID) -> Note? {
+        guard let original = notes.first(where: { $0.id == id }) else { return nil }
+        let baseTitle = original.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let copyTitle = baseTitle.isEmpty ? "\(original.displayTitle) Copy" : "\(baseTitle) Copy"
+        let copy = cloneNoteContent(original, intoFolder: original.folderID, title: copyTitle)
         notes.insert(copy, at: 0)
         scheduleSave()
         return copy
@@ -1387,15 +1403,14 @@ final class NotesStore: ObservableObject {
     func duplicateFolder(_ id: UUID) -> NoteFolder? {
         guard let original = folders.first(where: { $0.id == id && $0.systemKind == nil }) else { return nil }
         let copyName = "\(original.name) Copy"
-        let copy = createFolder(named: copyName, parentID: original.parentID)
+        let copy = createFolder(named: copyName,
+                                parentID: original.parentID,
+                                iconName: original.iconName,
+                                colorName: original.colorName)
         let folderNotes = notes.filter { $0.folderID == id && !$0.isDeleted }
         for note in folderNotes {
-            var newNote = note
-            newNote.id = UUID()
-            newNote.folderID = copy.id
-            newNote.title = note.title.isEmpty ? "" : "\(note.title) Copy"
-            newNote.createdAt = .now
-            newNote.modifiedAt = .now
+            let newTitle = note.title.isEmpty ? "" : "\(note.title) Copy"
+            let newNote = cloneNoteContent(note, intoFolder: copy.id, title: newTitle)
             notes.insert(newNote, at: 0)
         }
         scheduleSave()

@@ -227,6 +227,9 @@ final class HandwritingRenderer: UIView {
 
     func clearInk() {
         cancelWriting()
+        cancelMarking()
+        clearAnswerGhost()
+        clearReplyGuide()
         inkLayers.forEach { $0.removeFromSuperlayer() }
         inkLayers.removeAll()
         currentWriteLayers.removeAll()

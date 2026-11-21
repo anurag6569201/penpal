@@ -1420,6 +1420,7 @@ class TelemetryTests(GeminiTestCase):
         snap = telemetry.snapshot()
         self.assertEqual(snap["status"], "healthy")
         self.assertEqual(snap["verification_coverage"], 1.0)
+        self.assertEqual(snap["solves"], 5)
         self.assertEqual(snap["verified"], 5)
         self.assertEqual(snap["failed_open"], 0)
 
@@ -2622,23 +2623,31 @@ class VisionTurnTests(GeminiTestCase):
     def test_companion_nonmath_photo_stays_unverified_prose(self):
         replies = iter(['{"kind":"other"}', "This looks like a leaf cross-section."])
         models = self.install(solver=lambda _: next(replies))
-        result = gemini.vision_turn(PNG, "companion")
+        result = gemini.vision_turn(
+            PNG, "companion", mood="custom", custom_mood="Ask guiding questions."
+        )
         self.assertEqual(result["kind"], "companion")
         self.assertEqual(result["trust"], "unverified")
         self.assertEqual(len(models.of_kind("verifier")), 0)
+        companion_instruction = models.calls[-1][2].system_instruction
+        self.assertIn("Ask guiding questions.", companion_instruction)
 
     def test_language_photo_reuses_confidence_gated_contract(self):
-        self.install(solver=LANGUAGE_TURN)
+        models = self.install(solver=LANGUAGE_TURN)
         result = gemini.vision_turn(
             PNG, "language", language_code="es-ES")
         self.assertEqual(result["kind"], "language")
         self.assertTrue(result["correction"]["found_error"])
+        self.assertIsNotNone(models.calls[-1][2].thinking_config)
+        self.assertEqual(models.calls[-1][2].thinking_config.thinking_budget, 1024)
 
     def test_debate_photo_keeps_perspective_trust_tier(self):
-        self.install(solver=DEBATE_TURN)
+        models = self.install(solver=DEBATE_TURN)
         result = gemini.vision_turn(PNG, "debate")
         self.assertEqual(result["kind"], "debate")
         self.assertEqual(result["trust"], "perspective")
+        self.assertIsNotNone(models.calls[-1][2].thinking_config)
+        self.assertEqual(models.calls[-1][2].thinking_config.thinking_budget, 1024)
 
     def test_illustrator_photo_fails_closed(self):
         models = self.install()
@@ -2942,6 +2951,15 @@ class CASAgreementTests(SimpleTestCase):
     def test_disagreement_is_caught(self):
         self.assertFalse(self.agrees("Ans: 5", "4"))
         self.assertFalse(self.agrees("Ans: 7/8", "5/6"))
+        # Inverted fractions, negated values, and extra terms share the same
+        # unordered token subset but are different answers — must never skip
+        # the referee.
+        self.assertFalse(self.agrees("Ans: 6/5", "5/6"))
+        self.assertFalse(self.agrees("Ans: -4", "4"))
+        self.assertFalse(self.agrees("Ans: - 4", "4"))
+        self.assertFalse(self.agrees("Ans: 4/5", "4"))
+        self.assertFalse(self.agrees("Ans: 4 + 1", "4"))
+        self.assertFalse(self.agrees("Ans: x = 4, 9", "4"))
 
     def test_missing_or_empty_input_never_agrees(self):
         # Unclear cases must fall through to the referee, never shortcut.
@@ -3038,6 +3056,30 @@ class RoutingIntegrationTests(GeminiTestCase):
         cost = telemetry.snapshot()["cost"]
         self.assertGreater(cost["usd_total"], 0)
         self.assertEqual(cost["prompt_tokens"], 500)
+
+    def test_cost_is_recorded_across_companion_worksheet_and_grading(self):
+        class Meta:
+            prompt_token_count = 200
+            candidates_token_count = 50
+            thoughts_token_count = 0
+
+        models = self.install(solver="Hello friend.")
+        original = models.generate_content
+
+        def with_usage(model, contents, config):
+            response = original(model, contents, config)
+            response.usage_metadata = Meta()
+            return response
+
+        models.generate_content = with_usage
+        gemini.generate_reply("hi", capability="companion")
+        self.assertEqual(telemetry.snapshot()["cost"]["prompt_tokens"], 200)
+
+        models.solver = SHEET
+        models.verifier = '{"wrong": []}'
+        gemini.solve_worksheet(PNG)
+        # Worksheet solver + worksheet referee = 2 more calls (400 prompt tokens).
+        self.assertEqual(telemetry.snapshot()["cost"]["prompt_tokens"], 600)
 
 
 # --------------------------------------------------------------------------
@@ -3150,6 +3192,17 @@ class StreamingTests(GeminiTestCase):
         events = list(gemini.stream_math_reply("2+2 ="))
         self.assertEqual(events[-1]["type"], "final")
         self.assertEqual(len(models.of_kind("verifier")), 0)
+
+    def test_empty_correction_in_stream_does_not_count_as_corrected(self):
+        self.install_stream(
+            ["Ans: x = 3"],
+            verifier='{"verdict": "wrong", "reason": "missed negative root"}',
+            corrected="   ",
+        )
+        events = self.collect()
+        self.assertEqual(events[-1]["type"], "corrected")
+        self.assertEqual(events[-1]["text"], "Ans: x = 3")
+        self.assertEqual(telemetry.snapshot()["corrections_applied"], 0)
 
 
 @override_settings(GEMINI_API_KEY="test-key", GEMINI_MODEL="fake-model")

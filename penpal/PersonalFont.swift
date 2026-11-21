@@ -147,10 +147,10 @@ final class PersonalFontStore {
 
     /// Drops every in-memory cache and reloads from the active hand's files.
     func reloadForActiveHand() {
+        saver.cancel()
         data = PersonalFontData()
         vaeCache.removeAll()
-        cachedMeans = nil
-        cachedIsolatedGain = nil
+        invalidateConsensus()
         OpticalKern.invalidateAll()
         GlyphPDM.shared.invalidateAll()
         load()
