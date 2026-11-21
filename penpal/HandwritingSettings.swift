@@ -148,10 +148,16 @@ final class HandwritingSettings: ObservableObject {
         paperStyle = defaults.string(forKey: "penpal.settings.paperStyle") ?? "blank"
         replyStyle = defaults.string(forKey: "penpal.settings.replyStyle") ?? "hand"
         replyFontName = defaults.string(forKey: "penpal.settings.replyFont") ?? "SnellRoundhand"
-        let bundleBaseURL = (Bundle.main.object(forInfoDictionaryKey: "PENPAL_API_BASE_URL") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let defaultBaseURL = (bundleBaseURL?.isEmpty == false) ? bundleBaseURL! : "http://127.0.0.1:8000"
-        apiBaseURL = defaults.string(forKey: "penpal.settings.apiBaseURL") ?? defaultBaseURL
+        let bundledURL = Self.bundledAPIBaseURL
+        let savedBaseURL = defaults.string(forKey: "penpal.settings.apiBaseURL")
+        let upgradedToBundledCloud: Bool
+        if let bundledURL, (savedBaseURL == nil || Self.isLocalDevURL(savedBaseURL ?? "")) {
+            apiBaseURL = bundledURL
+            upgradedToBundledCloud = (savedBaseURL != bundledURL)
+        } else {
+            apiBaseURL = savedBaseURL ?? bundledURL ?? "http://127.0.0.1:8000"
+            upgradedToBundledCloud = false
+        }
         useBrain = defaults.object(forKey: "penpal.settings.useBrain") as? Bool ?? true
         capability = defaults.string(forKey: "penpal.settings.capability") ?? "companion"
         targetLanguage = defaults.string(forKey: "penpal.settings.targetLanguage") ?? "es-ES"
@@ -162,8 +168,10 @@ final class HandwritingSettings: ObservableObject {
             forKey: "penpal.settings.illustratorQuality"
         ) ?? "detailed"
         confirmBeforeSolving = defaults.object(forKey: "penpal.settings.confirmSolve") as? Bool ?? true
-        if needsDefaultMigration { save() }
+        if needsDefaultMigration || upgradedToBundledCloud { save() }
     }
+
+    /// Explicit reply colors win in every capability. Matching source ink is
 
     var inkColor: UIColor {
         switch inkColorName {
@@ -177,7 +185,23 @@ final class HandwritingSettings: ObservableObject {
         }
     }
 
-    /// Explicit reply colors win in every capability. Matching source ink is
+    static var bundledAPIBaseURL: String? {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "PENPAL_API_BASE_URL") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if raw.isEmpty || raw.hasPrefix("$(") { return nil }
+        return raw
+    }
+
+    private static func isLocalDevURL(_ url: String) -> Bool {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty
+            || trimmed.hasPrefix("http://127.0.0.1")
+            || trimmed.hasPrefix("http://localhost")
+    }
+
+    func resetAPIBaseURLToDefault() {
+        apiBaseURL = Self.bundledAPIBaseURL ?? "http://127.0.0.1:8000"
+    }
     /// only a fallback for “Match my pen” before the tool picker has a color.
     func replyInkColor(matching sourceColor: UIColor? = nil) -> UIColor {
         let color = inkColorName == "active" ? (activeToolColor ?? sourceColor ?? inkColor) : inkColor

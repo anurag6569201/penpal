@@ -15,7 +15,9 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Penpal lets an interactive block use your location only after you approve that block.</string>
 	<key>PENPAL_API_BASE_URL</key>
-	<string></string>
+	<string>$(PENPAL_API_BASE_URL)</string>
+	<key>PENPAL_ACCESS_TOKEN</key>
+	<string>$(PENPAL_ACCESS_TOKEN)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

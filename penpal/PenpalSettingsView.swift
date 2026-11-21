@@ -30,6 +30,7 @@ struct PenpalSettingsView: View {
     @State private var showBackupImporter = false
     @State private var pendingBackupURL: URL?
     @State private var showRestoreConfirm = false
+    @State private var showAdvancedServer = (HandwritingSettings.bundledAPIBaseURL == nil)
     @State private var previewText = "Today is a good day."
     var onStatus: (String) -> Void
     var tourMode = false
@@ -603,25 +604,34 @@ struct PenpalSettingsView: View {
         }
 
         Section {
-            Toggle("Gemini brain", isOn: $settings.useBrain)
-            TextField("API base URL", text: $settings.apiBaseURL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            SecureField("Access token (optional)", text: $accessToken)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onChange(of: accessToken) { _, value in
-                    PenpalAPI.accessToken = value
-                }
+            Toggle("Penpal Cloud Brain", isOn: $settings.useBrain)
             Button("Reset conversation") {
                 ConversationStore.shared.reset()
                 onStatus("Conversation cleared.")
             }
+            DisclosureGroup("Custom server (advanced)", isExpanded: $showAdvancedServer) {
+                TextField("Worker / API base URL", text: $settings.apiBaseURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                SecureField("Access token", text: $accessToken)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: accessToken) { _, value in
+                        PenpalAPI.accessToken = value
+                    }
+                if let bundled = HandwritingSettings.bundledAPIBaseURL,
+                   settings.apiBaseURL != bundled {
+                    Button("Use default Penpal Cloud") {
+                        settings.resetAPIBaseURLToDefault()
+                        onStatus("Reconnected to Penpal Cloud.")
+                    }
+                }
+            }
         } header: {
             Label("Brain", systemImage: "brain.head.profile")
         } footer: {
-            Text("Penpal pen reads handwriting on-device, then sends text to Django → Gemini.\n\nLeave the token blank when running the brain locally. A deployed brain requires one (it matches PENPAL_TOKENS on the server).")
+            Text("Penpal reads your handwriting on-device and uses the Penpal Cloud Brain for conversation, step-by-step math verification, illustrations, and interactive blocks. When turned off, instant on-device math still works offline.")
         }
 
         Section {

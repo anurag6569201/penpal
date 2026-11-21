@@ -18,6 +18,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
+import sys
 
 from . import telemetry
 
@@ -345,9 +346,15 @@ def cas_hint(message: str) -> str:
     if not SYMPY_AVAILABLE:
         return ""
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(_attempt, message)
-            result = fut.result(timeout=CAS_TIMEOUT) or ""
+        if sys.platform == "emscripten":
+            result = _attempt(message) or ""
+        else:
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(_attempt, message)
+                    result = fut.result(timeout=CAS_TIMEOUT) or ""
+            except RuntimeError:
+                result = _attempt(message) or ""
         telemetry.record(telemetry.CAS_HIT if result else telemetry.CAS_MISS)
         return result
     except concurrent.futures.TimeoutError:

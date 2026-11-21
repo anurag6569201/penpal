@@ -1,4 +1,10 @@
 .venv/
+.venv-workers/
+python_modules/
+src/chat/
+.wrangler/
+.dev.vars
+Config/Secrets.xcconfig
 __pycache__/
 *.py[cod]
 *.sqlite3

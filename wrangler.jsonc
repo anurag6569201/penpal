@@ -2,10 +2,15 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "penpal-brain",
   "main": "src/worker.py",
+  "workers_dev": true,
+  "preview_urls": false,
   "compatibility_date": "2026-11-21",
   "compatibility_flags": [
     "python_workers"
   ],
+  "build": {
+    "command": "python3 scripts/sync_worker_src.py"
+  },
   "observability": {
     "enabled": true,
     "traces": {

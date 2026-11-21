@@ -64,6 +64,27 @@ def _prune(hits: deque, window: int, now: float) -> None:
         hits.popleft()
 
 
+def _rate_limit_key(token: str, headers: Mapping[str, Any]) -> str:
+    """
+    Build the rate-limit bucket key.
+
+    When all App Store devices share a bundled `PENPAL_ACCESS_TOKEN`, keying
+    solely on `token` would cause one heavy user to rate-limit other users.
+    We sub-key by Cloudflare's verified `CF-Connecting-IP` (or the app's
+    `X-Penpal-Device-Id`) when present, while preserving pure-token keying
+    when neither header is sent.
+    """
+    lowered = {str(k).lower(): str(v) for k, v in headers.items() if v is not None}
+    client_id = (
+        lowered.get("cf-connecting-ip")
+        or lowered.get("http_cf_connecting_ip")
+        or lowered.get("x-penpal-device-id")
+        or lowered.get("http_x_penpal_device_id")
+        or ""
+    ).strip()
+    return f"{token}:{client_id[:64]}" if client_id else token
+
+
 def check_headers(
     headers: Mapping[str, Any],
 ) -> tuple[int, dict[str, str], dict[str, Any]] | None:
@@ -79,11 +100,12 @@ def check_headers(
     if not token or not _token_is_valid(token, configured):
         return (401, {}, {"error": "Invalid or missing access token."})
 
+    bucket_key = _rate_limit_key(token, headers)
     now = time.time()
     per_minute = int(getattr(settings, "RATE_LIMIT_PER_MINUTE", 20))
     per_day = int(getattr(settings, "RATE_LIMIT_PER_DAY", 500))
     with _lock:
-        minute, day = _minute_hits[token], _day_hits[token]
+        minute, day = _minute_hits[bucket_key], _day_hits[bucket_key]
         _prune(minute, MINUTE, now)
         _prune(day, DAY, now)
 

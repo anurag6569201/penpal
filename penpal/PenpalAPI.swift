@@ -16,14 +16,28 @@ enum PenpalAPI {
                !saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return saved
             }
-            return (Bundle.main.object(forInfoDictionaryKey: "PENPAL_ACCESS_TOKEN") as? String)?
+            let bundled = (Bundle.main.object(forInfoDictionaryKey: "PENPAL_ACCESS_TOKEN") as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return bundled.hasPrefix("$(") ? "" : bundled
         }
         set { UserDefaults.standard.set(newValue, forKey: "penpal.accessToken") }
     }
 
+    /// Anonymous per-install identifier so the Cloudflare Worker rate-limits per
+    /// device rather than pooling all App Store users into a single bucket.
+    static var deviceId: String {
+        let key = "penpal.anonymousDeviceId"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+            return existing
+        }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
+    }
+
     /// Applies auth headers to every outgoing request.
     private static func authorize(_ request: inout URLRequest) {
+        request.setValue(deviceId, forHTTPHeaderField: "X-Penpal-Device-Id")
         let token = accessToken.trimmingCharacters(in: .whitespaces)
         guard !token.isEmpty else { return }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

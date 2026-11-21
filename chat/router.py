@@ -50,7 +50,7 @@ CORS_HEADERS: dict[str, str] = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": (
-        "Authorization, Content-Type, X-Penpal-Token, X-Conversation-Id"
+        "Authorization, Content-Type, X-Penpal-Token, X-Penpal-Device-Id, X-Conversation-Id"
     ),
 }
 

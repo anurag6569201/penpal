@@ -1,0 +1,7 @@
+// Base build configuration for Penpal (tracked in Git).
+// In xcconfig files `//` is treated as a comment, so `$()` is used inside `https://`.
+PENPAL_API_BASE_URL = https:/$()/penpal-brain.anuragsingh6569201.workers.dev
+PENPAL_ACCESS_TOKEN =
+
+// Optional local secrets override (Config/Secrets.xcconfig is gitignored).
+#include? "Secrets.xcconfig"

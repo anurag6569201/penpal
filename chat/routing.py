@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from django.conf import settings
+from .config import runtime_settings as settings
 
 # Rough per-million-token prices (USD). Only the RATIO matters here — this
 # exists to compare routes and spot runaway spend, not to bill anyone.

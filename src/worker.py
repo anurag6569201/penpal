@@ -55,6 +55,8 @@ class Default(WorkerEntrypoint):
                         "Authorization",
                         "Content-Type",
                         "X-Penpal-Token",
+                        "X-Penpal-Device-Id",
+                        "CF-Connecting-IP",
                         "X-Conversation-Id",
                     ):
                         val = req_headers.get(name)

@@ -3145,23 +3145,35 @@ def arrange_page(
     feel like one request instead of six.
     """
     from concurrent.futures import ThreadPoolExecutor
+    import sys
 
     plan = plan_page(message, history=history)
     sections = plan["sections"]
 
     workers = min(_ARRANGER_WORKERS, len(sections))
-    if workers <= 1:
-        rendered = [_render_section(
-            sections[0], language, math_detail, illustration_quality,
-            page_width)]
+    if workers <= 1 or sys.platform == "emscripten":
+        rendered = [
+            _render_section(
+                section, language, math_detail, illustration_quality, page_width
+            )
+            for section in sections
+        ]
     else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            rendered = list(pool.map(
-                lambda section: _render_section(
-                    section, language, math_detail, illustration_quality,
-                    page_width),
-                sections,
-            ))
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                rendered = list(pool.map(
+                    lambda section: _render_section(
+                        section, language, math_detail, illustration_quality,
+                        page_width),
+                    sections,
+                ))
+        except RuntimeError:
+            rendered = [
+                _render_section(
+                    section, language, math_detail, illustration_quality, page_width
+                )
+                for section in sections
+            ]
 
     rendered.sort(key=lambda section: section["priority"])
     usable = [section for section in rendered if section["ok"]]
